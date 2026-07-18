@@ -1,0 +1,10 @@
+{
+  "name": "bridge",
+  "version": "0.1.1",
+  "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
+  "author": {
+    "name": "SerdarDB"
+  },
+  "homepage": "https://github.com/SerdarDB/context-bridge",
+  "repository": "https://github.com/SerdarDB/context-bridge"
+}

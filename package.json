@@ -1,0 +1,30 @@
+{
+  "name": "context-bridge",
+  "version": "0.1.0",
+  "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
+  "type": "module",
+  "bin": {
+    "bridge": "bin/bridge.mjs"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "repository": "github:SerdarDB/context-bridge",
+  "license": "MIT",
+  "private": true,
+  "author": "SerdarDB",
+  "homepage": "https://github.com/SerdarDB/context-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/SerdarDB/context-bridge/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "ai-agents",
+    "context",
+    "session",
+    "bridge",
+    "cli",
+    "developer-tools"
+  ]
+}

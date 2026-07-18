@@ -1,0 +1,17 @@
+{
+  "name": "context-bridge",
+  "owner": {
+    "name": "SerdarDB"
+  },
+  "metadata": {
+    "description": "Marketplace for the context-bridge plugin. Switch agents. Not context.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "bridge",
+      "source": "./plugin",
+      "description": "Bidirectional session bridge between Claude Code and Codex (/bridge codex)"
+    }
+  ]
+}
