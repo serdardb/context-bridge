@@ -69,8 +69,8 @@ export function collect(projectDir) {
   const importReady = linked || !!companion;
   const routes = {
     claudeCodex: claudeReady && codexReady && importReady ? "READY" : "NOT READY",
-    claudeGemini: "UNAVAILABLE (v0.1)",
-    codexGemini: "UNAVAILABLE (v0.1)",
+    claudeGemini: "UNAVAILABLE (planned)",
+    codexGemini: "UNAVAILABLE (planned)",
   };
 
   return {

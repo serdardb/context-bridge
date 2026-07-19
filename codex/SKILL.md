@@ -7,7 +7,7 @@ The user invoked the context-bridge handoff, e.g. `$bridge claude`.
 
 Follow these steps exactly:
 
-1. If the requested target is not `claude`, tell the user that v0.1 only
+1. If the requested target is not `claude`, tell the user that today the bridge only
    supports `$bridge claude` from Codex, and stop.
 
 2. Compose two concise notes covering ONLY what happened in this Codex session

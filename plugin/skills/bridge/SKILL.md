@@ -11,7 +11,7 @@ Target agent: $ARGUMENTS
 
 Follow these steps exactly:
 
-1. If the target is not `codex`, tell the user that v0.1 only supports `/bridge codex` from Claude, and stop.
+1. If the target is not `codex`, tell the user that today the bridge only supports `/bridge codex` from Claude, and stop.
 
 2. Compose two concise notes from THIS conversation (only what happened since the
    last bridge sync, if any):

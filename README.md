@@ -77,7 +77,7 @@ shell
 
 ## Requirements
 
-- macOS (v0.1 is verified on macOS; Linux is untested, Windows unsupported)
+- macOS (verified on macOS; Linux is untested, Windows unsupported)
 - Node.js ≥ 18.18
 - [Claude Code](https://code.claude.com/docs/en/setup) ≥ 2.1.x, logged in with your Claude subscription
 - [Codex CLI](https://developers.openai.com/codex) ≥ 0.143.0, logged in with your ChatGPT subscription (`codex login`)
@@ -127,8 +127,8 @@ Bridge
 
 Available routes
   Claude <-> Codex     ✓ READY
-  Claude <-> Gemini    ○ UNAVAILABLE (v0.1)
-  Codex  <-> Gemini    ○ UNAVAILABLE (v0.1)
+  Claude <-> Gemini    ○ UNAVAILABLE (planned)
+  Codex  <-> Gemini    ○ UNAVAILABLE (planned)
 ```
 
 On a fresh machine the plugin/skill rows start as `✗` with the exact official command next to each; `--fix` offers to run them for you.
@@ -196,7 +196,7 @@ Verified against: **Claude Code 2.1.214** and **codex-cli 0.143.0** on macOS (No
 
 ## Known limitations
 
-- v0.1 is verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
+- Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
 - One linked Claude-session ⇄ Codex-thread pair per project (no `bridge unlink` yet — delete `.bridge/` to relink).
 - Codex's own one-time dialogs (folder trust, update prompt) can appear before a resumed session; answer them once and the flow continues.
 - Decision/Next quality depends on the departing agent following its handoff instructions; Conversation/Work sections are deterministic from session files and git regardless.
@@ -213,6 +213,14 @@ Verified against: **Claude Code 2.1.214** and **codex-cli 0.143.0** on macOS (No
 
 ## Development status
 
-v0.1 — first public version. The full Claude → Codex → original-Claude round-trip (twice, without re-import) passes a real end-to-end test on macOS. Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+0.3.0 — developer preview. The full Claude → Codex → original-Claude round-trip (repeatedly, without re-import) passes a real end-to-end test on macOS, and the bridge is developed with itself: Claude and Codex hand this repo's work back and forth through it daily.
+
+Since the first release:
+
+- **Adopt flow** — sessions started outside the bridge can be linked mid-flight (deterministic via `CODEX_THREAD_ID`, confirmed when heuristic)
+- **Full-context checkpoints** — every delta ships with an un-truncated companion file, so long prose survives handoffs
+- **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks, gated on ubuntu+macos × Node 18/20/22
+
+Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 MIT © SerdarDB
