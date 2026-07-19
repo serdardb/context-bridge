@@ -1,5 +1,7 @@
 # context-bridge
 
+[![CI](https://github.com/serdardb/context-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/serdardb/context-bridge/actions/workflows/ci.yml)
+
 **Switch agents. Not context.**
 
 Developers increasingly use multiple coding agents — but switching between them usually means losing conversational context, or manually copying summaries, session IDs and file lists from one tool to the other.
@@ -33,6 +35,10 @@ $bridge claude
 
 → Codex closes automatically
 → your **original** Claude session resumes, with what happened in Codex injected
+
+> Tip: if the `$` prefix is awkward on your keyboard layout, just ask in plain
+> language — e.g. "switch to claude with the bridge" — and the agent will invoke
+> the same skill for you.
 
 Highlights:
 
