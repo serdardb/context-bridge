@@ -127,7 +127,7 @@ function render(r) {
   log("");
   log(bold("Claude Code"));
   row(!!r.claude.version, `Installed: ${r.claude.version ?? "not found"}`, "curl -fsSL https://claude.ai/install.sh | bash");
-  row(r.claude.auth.ok, r.claude.auth.ok ? `Authenticated${r.claude.auth.account ? ` (${r.claude.auth.account})` : ""}` : "Not authenticated", "run `claude` and use /login (subscription, no API key)");
+  row(r.claude.auth.ok, r.claude.auth.ok ? `Authenticated${r.claude.auth.account ? ` (${displayAccount(r.claude.auth.account)})` : ""}` : "Not authenticated", "run `claude` and use /login (subscription, no API key)");
   row(r.claude.bridgePlugin, "context-bridge plugin installed", "bridge doctor --fix");
   row(!!r.claude.companionScript, r.claude.officialCodexPlugin ? "Official OpenAI Codex plugin installed" : r.claude.companionScript ? "Official transfer machinery available (vendor)" : "Official OpenAI Codex plugin missing", "claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex");
   log("");
@@ -147,6 +147,14 @@ function render(r) {
   log(`  Claude <-> Codex     ${r.routes.claudeCodex === "READY" ? OK + " READY" : BAD + " NOT READY"}`);
   log(`  Claude <-> Gemini    ${NONE} ${r.routes.claudeGemini}`);
   log(`  Codex  <-> Gemini    ${NONE} ${r.routes.codexGemini}`);
+}
+
+/** Privacy-friendly account label: BRIDGE_ACCOUNT_LABEL overrides; emails are masked by default. */
+function displayAccount(account) {
+  if (process.env.BRIDGE_ACCOUNT_LABEL) return process.env.BRIDGE_ACCOUNT_LABEL;
+  const at = String(account).indexOf("@");
+  if (at > 1) return account[0] + "…" + account.slice(at);
+  return account;
 }
 
 function row(ok, label, fixHint) {
