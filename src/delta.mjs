@@ -115,6 +115,42 @@ export function composeDelta({ fromAgent, conversation, decisions, work, next })
   return out;
 }
 
+/**
+ * Un-truncated companion to composeDelta: the SAME sections with nothing
+ * clipped — no message cap, no per-message one-lining, no byte cap. Written to
+ * a checkpoint file and referenced from the bounded delta, so long prose
+ * survives handoffs that the 8KB summary cannot carry.
+ */
+export function composeFullContext({ fromAgent, conversation, decisions, work, next }) {
+  const role = (m) => (m.role === "user" ? "User" : cap(fromAgent));
+  const conv = conversation.length
+    ? conversation.map((m) => `### ${role(m)}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`).join("\n\n")
+    : "_No conversation activity since last sync._";
+  const list = (items, empty) => (items.length ? items.map((i) => `- ${i}`).join("\n") : `- ${empty}`);
+  return [
+    `# Bridge full context — from ${cap(fromAgent)}`,
+    "",
+    "Un-truncated companion to the bounded bridge delta. Nothing here is clipped.",
+    "",
+    "## Conversation",
+    "",
+    conv,
+    "",
+    "## Decisions",
+    "",
+    list(decisions, "No explicit decisions were recorded."),
+    "",
+    "## Work",
+    "",
+    list(work, "No file or git changes detected."),
+    "",
+    "## Next",
+    "",
+    list(next, "Nothing was flagged as unresolved."),
+    "",
+  ].join("\n");
+}
+
 function cap(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }

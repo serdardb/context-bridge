@@ -14,7 +14,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 **Supported today: Claude Code ⇄ Codex** (Gemini planned, not implemented).
 
-> **Status: developer preview (0.2.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.3.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -71,6 +71,7 @@ shell
 
 - `/bridge codex` (a Claude plugin skill) has Claude write down its decisions and open questions, then runs `bridge handoff codex`. First time, the **official OpenAI transfer** seeds a Codex thread; afterwards, a bounded 4-section delta (Conversation / Decisions / Work / Next) is delivered as the resume prompt.
 - `$bridge claude` (a Codex skill) does the reverse: the delta is computed from Codex's own session file plus git, and injected into your original Claude session through a `SessionStart` hook — exactly once.
+- Every delta ships with a **full un-truncated context** companion in `.bridge/checkpoints/`, referenced from the delta itself. The bounded 8KB summary keeps handoffs fast; exact wording (long prose, drafts, specs that live only in conversation) survives on disk, and the receiving agent reads it whenever the clipped one-liners aren't enough.
 - The launcher watches the state file. When a handoff is ready **and the agent's turn has finished**, it terminates its own child process (SIGTERM, never by name, never SIGKILL) and starts the other agent. Terminal state stays healthy; Ctrl+C inside an agent behaves normally.
 - **Started without the bridge?** Sessions can be adopted mid-flight. `$bridge claude` inside a Codex session that was never linked adopts it automatically (Codex exposes the running thread via `CODEX_THREAD_ID`); if that variable is unavailable, the newest Codex session working in the project directory is offered as a candidate and linked only after you confirm (`--adopt`). Codex-first projects work too: with no Claude session to resume, the delta — plus a pointer to the full Codex transcript — seeds the first Claude session that starts in the project. The rule everywhere: **automatic when identity is deterministic, confirmed when heuristic.**
 

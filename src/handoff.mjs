@@ -12,6 +12,7 @@ import {
   gitDelta,
   currentGitSha,
   composeDelta,
+  composeFullContext,
 } from "./delta.mjs";
 import { nowIso, tryExec, fileExists, OK, WARN, BridgeError } from "./util.mjs";
 
@@ -74,15 +75,19 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
     // REPEAT switch: resume + delta. Never re-import.
     const msgs = claudeMessagesSince(s.agents.claude.transcriptPath, s.agents.codex.lastSyncAt);
     const git = gitDelta(projectDir, s.git.sha);
-    const delta = composeDelta({
+    const sections = {
       fromAgent: "claude",
       conversation: msgs,
       decisions: splitNotes(decisions),
       work: git.lines,
       next: splitNotes(next),
-    });
+    };
+    const delta = composeDelta(sections);
+    const fullRel = writeCheckpoint(projectDir, `${ts(now)}-claude-to-codex-full.md`, composeFullContext(sections));
     const deltaWithAck =
-      delta + "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
+      delta +
+      `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.` +
+      "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
     const rel = writeCheckpoint(projectDir, `${ts(now)}-claude-to-codex.md`, deltaWithAck);
     s.pendingInjection = { agent: "codex", threadId: s.agents.codex.threadId, deltaFile: rel, createdAt: now };
     s.agents.codex.lastSyncAt = now;
@@ -159,13 +164,16 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
     ...activity.patchedFiles.map((f) => `Modified via Codex patch: ${f}`),
     ...git.lines,
   ];
-  let delta = composeDelta({
+  const sections = {
     fromAgent: "codex",
     conversation: activity.messages,
     decisions: splitNotes(decisions),
     work,
     next: splitNotes(next),
-  });
+  };
+  let delta = composeDelta(sections);
+  const fullRel = writeCheckpoint(projectDir, `${ts(now)}-codex-to-claude-full.md`, composeFullContext(sections));
+  delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
   if (adopted && s.agents.codex.rolloutPath) {
     // The bounded delta cannot carry a whole adopted session — point Claude at
     // the native rollout so it can read the full history on demand.

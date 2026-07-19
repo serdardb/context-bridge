@@ -5,7 +5,7 @@ import { handoffCodex, handoffClaude } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 

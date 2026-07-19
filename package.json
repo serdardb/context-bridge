@@ -1,6 +1,6 @@
 {
   "name": "context-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
   "type": "module",
   "bin": {
