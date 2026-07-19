@@ -3,9 +3,10 @@ import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoffCodex, handoffClaude } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
+import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 
@@ -15,6 +16,9 @@ Usage:
   bridge codex           Start the loop with Codex
   bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps )
   bridge status          Show project bridge status
+  bridge clean           Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
+                         everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
+                         --days N, --all; a pending injection is never deleted)
 
 Inside the agents:
   Claude Code:  /bridge codex     hand off to Codex
@@ -85,6 +89,22 @@ export async function main(argv) {
       return;
     }
 
+    case "clean": {
+      const res = pruneCheckpoints(projectDir, {
+        keep: intFlag(argv, "--keep"),
+        days: intFlag(argv, "--days"),
+        all: flags.has("--all"),
+        dryRun: flags.has("--dry-run"),
+      });
+      const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
+      if (res.deletedGroups === 0) {
+        log(`${NONE} Nothing to prune (${res.groups} checkpoint groups, all recent or protected).`);
+      } else {
+        log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
+      }
+      return;
+    }
+
     case "internal-hook":
       process.exitCode = await runHook(args[1]);
       return;
@@ -93,6 +113,12 @@ export async function main(argv) {
       log(`Unknown command '${cmd}'.\n\n${HELP}`);
       process.exitCode = 1;
   }
+}
+
+function intFlag(argv, name) {
+  const v = valueOf(argv, name);
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 function valueOf(argv, name) {

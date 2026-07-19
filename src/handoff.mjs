@@ -14,7 +14,18 @@ import {
   composeDelta,
   composeFullContext,
 } from "./delta.mjs";
+import { pruneCheckpoints } from "./clean.mjs";
 import { nowIso, tryExec, fileExists, OK, WARN, BridgeError } from "./util.mjs";
+
+/** Auto-prune after a handoff writes its checkpoints. Never fails the handoff, never silent. */
+function autoPrune(projectDir, lines) {
+  try {
+    const res = pruneCheckpoints(projectDir);
+    if (res.deletedGroups > 0) {
+      lines.push(`${OK} Pruned ${res.deletedGroups} old checkpoint groups (older than 7 days, beyond the newest 20).`);
+    }
+  } catch {}
+}
 
 function splitNotes(s) {
   return String(s || "")
@@ -99,6 +110,7 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
   s.pendingHandoff = { target: "codex", ready: true, requestedAt: now };
   saveState(projectDir, s);
 
+  autoPrune(projectDir, lines);
   lines.push(`${OK} Handoff to Codex is ready. The bridge launcher will close Claude and open Codex automatically.`);
   lines.push("If you started Claude without the bridge launcher, exit Claude and run: bridge codex");
   return lines.join("\n");
@@ -207,6 +219,7 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
       ? `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and resume your original Claude session automatically.`
       : `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and start a fresh Claude session seeded with this context.`
   );
+  autoPrune(projectDir, lines);
   lines.push("If you started Codex without the bridge launcher, exit Codex and run: bridge claude");
   if (!decisions && !next) {
     lines.push(`${WARN} No --decisions/--next notes were provided; the delta contains conversation + git truth only.`);
