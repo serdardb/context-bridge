@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureState, saveState, writeCheckpoint } from "./state.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
-import { findRolloutPath } from "./discover.mjs";
+import { findRolloutPath, latestRolloutForProject, latestClaudeTranscript } from "./discover.mjs";
 import {
   claudeMessagesSince,
   codexActivitySince,
@@ -13,7 +13,7 @@ import {
   currentGitSha,
   composeDelta,
 } from "./delta.mjs";
-import { nowIso, tryExec, fileExists, OK, WARN } from "./util.mjs";
+import { nowIso, tryExec, fileExists, OK, WARN, BridgeError } from "./util.mjs";
 
 function splitNotes(s) {
   return String(s || "")
@@ -24,23 +24,40 @@ function splitNotes(s) {
 
 function preflightCodex() {
   if (!tryExec("codex", ["--version"])) {
-    throw new Error("Codex CLI is not installed. Install with: npm install -g @openai/codex  (then rerun /bridge codex)");
+    throw new BridgeError("Codex CLI is not installed. Install with: npm install -g @openai/codex  (then rerun /bridge codex)");
   }
   if (tryExec("codex", ["login", "status"]) === null) {
-    throw new Error("Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then rerun /bridge codex");
+    throw new BridgeError("Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then rerun /bridge codex");
   }
 }
 
 /** Claude -> Codex handoff. Returns a short user-facing report string. */
-export function handoffCodex(projectDir, { decisions = "", next = "" } = {}) {
+export function handoffCodex(projectDir, { decisions = "", next = "", adopt = false } = {}) {
   const s = ensureState(projectDir);
   const lines = [];
 
   if (!s.agents.claude.sessionId || !s.agents.claude.transcriptPath) {
-    throw new Error(
-      "No Claude session recorded for this project yet. The context-bridge plugin's SessionStart hook records it — " +
-        "make sure the plugin is installed (`bridge doctor`) and you are running /bridge codex inside a Claude session started in this project."
-    );
+    // Adopt path: the hook did not record this session (plugin installed
+    // mid-session, or state was created after startup). Transcript discovery is
+    // a HEURISTIC (newest mtime), so it requires explicit user confirmation.
+    const cand = latestClaudeTranscript(projectDir);
+    if (!cand) {
+      throw new BridgeError(
+        "No Claude session recorded for this project yet. The context-bridge plugin's SessionStart hook records it — " +
+          "make sure the plugin is installed (`bridge doctor`) and you are running /bridge codex inside a Claude session started in this project."
+      );
+    }
+    if (!adopt) {
+      throw new BridgeError(
+        "No Claude session recorded for this project, but a recent Claude transcript was found " +
+          `(last active ${new Date(cand.mtime).toISOString()}). ` +
+          "Confirm with the user that it belongs to THIS conversation, then rerun the same command with --adopt.",
+        { exitCode: 2, code: "adopt-confirmation-needed" }
+      );
+    }
+    s.agents.claude.sessionId = cand.sessionId;
+    s.agents.claude.transcriptPath = cand.p;
+    lines.push(`${OK} Adopted the most recent Claude session of this project (user-confirmed).`);
   }
   preflightCodex();
 
@@ -83,15 +100,51 @@ export function handoffCodex(projectDir, { decisions = "", next = "" } = {}) {
 }
 
 /** Codex -> Claude handoff. Returns a short user-facing report string. */
-export function handoffClaude(projectDir, { decisions = "", next = "" } = {}) {
+export function handoffClaude(projectDir, { decisions = "", next = "", adopt = false } = {}) {
   const s = ensureState(projectDir);
   const lines = [];
 
+  let adopted = false;
   if (!s.agents.codex.threadId) {
-    throw new Error("No linked Codex thread for this project. Start from Claude with /bridge codex first.");
-  }
-  if (!s.agents.claude.sessionId) {
-    throw new Error("No original Claude session recorded for this project — nothing to return to.");
+    // Adopt rule: automatic when identity is deterministic, confirmed when heuristic.
+    const envId = process.env.CODEX_THREAD_ID;
+    if (envId) {
+      // Codex CLI exposes the running session's thread id — zero ambiguity.
+      s.agents.codex.threadId = envId;
+      s.agents.codex.rolloutPath = findRolloutPath(envId);
+      if (s.agents.codex.rolloutPath) {
+        lines.push(`${OK} Adopted this Codex session (started outside the bridge) as the project's linked thread.`);
+      } else {
+        // Never silent: without the rollout the delta loses the conversation,
+        // keeping only git + decision truth — say so here AND inside the delta.
+        lines.push(
+          `${WARN} Adopted this Codex session, but its rollout file was not found under CODEX_HOME — ` +
+            "the delta will carry git and decision truth only, not the conversation."
+        );
+      }
+    } else {
+      const cand = latestRolloutForProject(projectDir);
+      if (!cand) {
+        throw new BridgeError(
+          "No linked Codex thread and no Codex session found for this project. " +
+            "Start from Claude with /bridge codex, or run $bridge claude inside a Codex session working in this project."
+        );
+      }
+      if (!adopt) {
+        throw new BridgeError(
+          "No linked Codex thread for this project, but an unlinked Codex session working in this directory was found " +
+            `(started ${cand.startedAt ?? "at an unknown time"}, last active ${new Date(cand.mtime).toISOString()}). ` +
+            "Confirm with the user that it is the right session, then rerun the same command with --adopt.",
+          { exitCode: 2, code: "adopt-confirmation-needed" }
+        );
+      }
+      s.agents.codex.threadId = cand.threadId;
+      s.agents.codex.rolloutPath = cand.rolloutPath;
+      lines.push(`${OK} Adopted the most recent Codex session of this project (user-confirmed).`);
+    }
+    // The adopted conversation was never synced: deliver it from the beginning.
+    s.agents.claude.lastSyncAt = null;
+    adopted = true;
   }
   if (!s.agents.codex.rolloutPath || !fileExists(s.agents.codex.rolloutPath)) {
     s.agents.codex.rolloutPath = findRolloutPath(s.agents.codex.threadId);
@@ -106,18 +159,32 @@ export function handoffClaude(projectDir, { decisions = "", next = "" } = {}) {
     ...activity.patchedFiles.map((f) => `Modified via Codex patch: ${f}`),
     ...git.lines,
   ];
-  const delta = composeDelta({
+  let delta = composeDelta({
     fromAgent: "codex",
     conversation: activity.messages,
     decisions: splitNotes(decisions),
     work,
     next: splitNotes(next),
   });
+  if (adopted && s.agents.codex.rolloutPath) {
+    // The bounded delta cannot carry a whole adopted session — point Claude at
+    // the native rollout so it can read the full history on demand.
+    delta +=
+      `\n\nFull transcript of the adopted Codex session (JSONL): ${s.agents.codex.rolloutPath}` +
+      "\nRead it if you need more detail than this bounded delta.";
+  } else if (adopted) {
+    delta +=
+      "\n\n[Bridge warning] The adopted Codex session's conversation history could not be read " +
+      "(rollout file not found) — this delta carries git and decision truth only. " +
+      "Ask the user to fill in anything that seems missing.";
+  }
   const rel = writeCheckpoint(projectDir, `${ts(now)}-codex-to-claude.md`, delta);
 
   s.pendingInjection = {
     agent: "claude",
-    sessionId: s.agents.claude.sessionId,
+    // null = Codex-first project: no session to resume — the delta seeds the
+    // first Claude session that starts in this project instead.
+    sessionId: s.agents.claude.sessionId ?? null,
     deltaFile: rel,
     createdAt: now,
   };
@@ -127,7 +194,11 @@ export function handoffClaude(projectDir, { decisions = "", next = "" } = {}) {
   saveState(projectDir, s);
 
   lines.push(`${OK} Prepared Codex→Claude context delta (${activity.messages.length} messages, ${work.length} work items).`);
-  lines.push(`${OK} Handoff to Claude is ready. The bridge launcher will close Codex and resume your original Claude session automatically.`);
+  lines.push(
+    s.agents.claude.sessionId
+      ? `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and resume your original Claude session automatically.`
+      : `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and start a fresh Claude session seeded with this context.`
+  );
   lines.push("If you started Codex without the bridge launcher, exit Codex and run: bridge claude");
   if (!decisions && !next) {
     lines.push(`${WARN} No --decisions/--next notes were provided; the delta contains conversation + git truth only.`);

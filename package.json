@@ -1,10 +1,24 @@
 {
   "name": "context-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
   "type": "module",
   "bin": {
     "bridge": "bin/bridge.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "plugin/",
+    "codex/",
+    ".claude-plugin/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;"
   },
   "engines": {
     "node": ">=18.18"

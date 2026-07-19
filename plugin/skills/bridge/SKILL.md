@@ -24,8 +24,13 @@ Follow these steps exactly:
 
    bridge handoff codex --decisions "<DECISIONS>" --next "<NEXT>"
 
-4. If the command fails, show the user its exact error output and stop. Do not
-   improvise a workaround.
+4. If the command fails AND its error output mentions `--adopt`, this session
+   was not recorded by the plugin hook and was discovered heuristically: relay
+   the error's timestamps to the user (never IDs), ask them to confirm the
+   found transcript belongs to this conversation, and ONLY after an explicit
+   yes rerun the exact same command with `--adopt` appended. For any other
+   failure, show the user the exact error output and stop. Do not improvise
+   other workarounds.
 
 5. If it succeeds, reply with exactly one short sentence like
    "Handing off to Codex — the bridge will switch automatically." and END YOUR

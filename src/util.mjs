@@ -24,6 +24,20 @@ export function log(msg = "") {
   console.log(msg);
 }
 
+/**
+ * Expected, user-facing CLI failure: printed without a stack trace.
+ * exitCode 2 = a confirmation is needed (e.g. heuristic adopt), not a hard error.
+ */
+export class BridgeError extends Error {
+  constructor(message, { exitCode = 1, code = null } = {}) {
+    super(message);
+    this.name = "BridgeError";
+    this.expected = true;
+    this.exitCode = exitCode;
+    this.code = code;
+  }
+}
+
 export function nowIso() {
   return new Date().toISOString();
 }
@@ -71,11 +85,41 @@ export function writeJsonAtomic(p, obj) {
   fs.renameSync(tmp, p);
 }
 
-/** Truncate a string in the middle, preserving head and tail. */
-export function truncateMiddle(s, max) {
-  if (s.length <= max) return s;
-  const half = Math.floor((max - 20) / 2);
-  return `${s.slice(0, half)}\n[… truncated …]\n${s.slice(-half)}`;
+/** Truncate a UTF-8 string in the middle, preserving head and tail. */
+export function truncateMiddle(s, maxBytes) {
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  const marker = "\n[… truncated …]\n";
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  const budget = Math.max(0, maxBytes - markerBytes);
+  const headBudget = Math.floor(budget / 2);
+  const tailBudget = budget - headBudget;
+  return `${sliceUtf8Start(s, headBudget)}${marker}${sliceUtf8End(s, tailBudget)}`;
+}
+
+function sliceUtf8Start(s, maxBytes) {
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > maxBytes) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+
+function sliceUtf8End(s, maxBytes) {
+  const chars = Array.from(s);
+  let out = "";
+  let used = 0;
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const ch = chars[i];
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > maxBytes) break;
+    out = ch + out;
+    used += n;
+  }
+  return out;
 }
 
 export function oneLine(s, max = 200) {

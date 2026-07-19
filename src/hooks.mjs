@@ -37,24 +37,26 @@ function hookSessionStart(projectDir, s, input) {
     }
   }
 
-  // Inject a pending Codex→Claude delta exactly once, on resume of the
-  // original session (proven in T1).
+  // Inject a pending Codex→Claude delta exactly once. Two delivery modes:
+  //  - sessionId set: on resume of that original session (proven in T1)
+  //  - sessionId null: Codex-first project — deliver to the first Claude
+  //    session that starts here, whatever its source.
   const inj = s.pendingInjection;
-  if (
-    input.source === "resume" &&
+  const injectHere =
     inj?.agent === "claude" &&
-    inj.sessionId === input.session_id
-  ) {
+    (inj.sessionId == null || (input.source === "resume" && inj.sessionId === input.session_id));
+  if (injectHere) {
     const deltaPath = path.join(projectDir, inj.deltaFile);
     let delta = null;
     try {
       delta = fs.readFileSync(deltaPath, "utf8");
     } catch {}
     if (delta) {
-      // consume exactly once BEFORE emitting (atomic rename, proven in T1)
       try {
         fs.renameSync(deltaPath, deltaPath + ".consumed");
-      } catch {}
+      } catch {
+        return 0;
+      }
       s.pendingInjection = null;
       saveState(projectDir, s);
       process.stdout.write(

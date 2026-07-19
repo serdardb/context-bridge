@@ -5,7 +5,7 @@ import { handoffCodex, handoffClaude } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 
@@ -72,13 +72,14 @@ export async function main(argv) {
       const opts = {
         decisions: valueOf(argv, "--decisions"),
         next: valueOf(argv, "--next"),
+        adopt: flags.has("--adopt"),
       };
       if (target === "codex") {
         log(handoffCodex(projectDir, opts));
       } else if (target === "claude") {
         log(handoffClaude(projectDir, opts));
       } else {
-        log(`Usage: bridge handoff <codex|claude> [--decisions "…"] [--next "…"]`);
+        log(`Usage: bridge handoff <codex|claude> [--decisions "…"] [--next "…"] [--adopt]`);
         process.exitCode = 1;
       }
       return;

@@ -105,11 +105,13 @@ function buildCommand(projectDir, s, agent) {
       const deltaPath = path.join(projectDir, inj.deltaFile);
       try {
         const delta = fs.readFileSync(deltaPath, "utf8");
-        args.push(delta);
-        // consume exactly once
         try {
           fs.renameSync(deltaPath, deltaPath + ".consumed");
-        } catch {}
+        } catch {
+          log(`${WARN} Pending Claude→Codex delta could not be consumed (${inj.deltaFile}); resuming Codex without it.`);
+          return { cmd: "codex", args, note: "Resuming your Codex thread…" };
+        }
+        args.push(delta);
         s.pendingInjection = null;
         saveState(projectDir, s);
       } catch {

@@ -1,0 +1,159 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { defaultState, saveState, loadState } from "../src/state.mjs";
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
+const THREAD_ID = "0198aaaa-bbbb-7ccc-8ddd-eeeeffff0001";
+
+test("handoff claude auto-adopts the running Codex session via CODEX_THREAD_ID", () => {
+  const { project, codexHome, rolloutPath } = makeCodexFixture();
+
+  const res = runBridge(["handoff", "claude", "--decisions", "d", "--next", "n"], project, {
+    CODEX_HOME: codexHome,
+    CODEX_THREAD_ID: THREAD_ID,
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /Adopted this Codex session/);
+  assert.match(res.stdout, /start a fresh Claude session/);
+
+  const s = loadState(project);
+  assert.equal(s.agents.codex.threadId, THREAD_ID);
+  assert.equal(s.agents.codex.rolloutPath, rolloutPath);
+  assert.equal(s.pendingInjection.agent, "claude");
+  assert.equal(s.pendingInjection.sessionId, null);
+  assert.equal(s.pendingHandoff.target, "claude");
+
+  const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  assert.match(delta, /fix the bug/);
+  assert.ok(delta.includes(rolloutPath), "delta should reference the full adopted rollout");
+});
+
+test("handoff claude falls back to cwd-matched discovery and requires --adopt", () => {
+  const { project, codexHome } = makeCodexFixture();
+
+  const denied = runBridge(["handoff", "claude"], project, { CODEX_HOME: codexHome });
+  assert.equal(denied.status, 2, "adopt-confirmation-needed is a structured exit code 2");
+  assert.match(denied.stderr, /--adopt/);
+  assert.doesNotMatch(denied.stderr, /at handoffClaude/, "expected errors print without a stack trace");
+  assert.equal(loadState(project).agents.codex.threadId, null);
+
+  const adopted = runBridge(["handoff", "claude", "--adopt"], project, { CODEX_HOME: codexHome });
+  assert.equal(adopted.status, 0, adopted.stderr);
+  assert.equal(loadState(project).agents.codex.threadId, THREAD_ID);
+});
+
+test("handoff claude env-adopt without a rollout warns loudly but still transfers decisions", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-norollout-")));
+  const codexHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codexhome-")));
+
+  const res = runBridge(
+    ["handoff", "claude", "--decisions", "ship it", "--next", "review"],
+    project,
+    { CODEX_HOME: codexHome, CODEX_THREAD_ID: THREAD_ID }
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /rollout file was not found/);
+
+  const s = loadState(project);
+  assert.equal(s.agents.codex.threadId, THREAD_ID);
+  const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  assert.match(delta, /\[Bridge warning\]/);
+  assert.match(delta, /ship it/);
+});
+
+test("a rollout belonging to a different project directory is never adopted", () => {
+  const { project, codexHome } = makeCodexFixture();
+  const otherProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-other-")));
+
+  const res = runBridge(["handoff", "claude", "--adopt"], otherProject, { CODEX_HOME: codexHome });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /no Codex session found/);
+  assert.ok(project); // fixture rollout exists but points at the other cwd
+});
+
+test("discovery falls back to the filename uuid when session_meta lacks an id", () => {
+  const { project, codexHome, rolloutPath } = makeCodexFixture();
+  const records = fs.readFileSync(rolloutPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  delete records[0].payload.id;
+  fs.writeFileSync(rolloutPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+  const res = runBridge(["handoff", "claude", "--adopt"], project, { CODEX_HOME: codexHome });
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(loadState(project).agents.codex.threadId, THREAD_ID);
+});
+
+test("handoff claude without any Codex session fails with guidance", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-adopt-"));
+  const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codexhome-"));
+  const res = runBridge(["handoff", "claude"], project, { CODEX_HOME: codexHome });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /no Codex session found/);
+});
+
+test("SessionStart hook delivers a sessionId=null delta to the first new Claude session", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-firstinj-"));
+  const checkpointDir = path.join(project, ".bridge", "checkpoints");
+  fs.mkdirSync(checkpointDir, { recursive: true });
+  fs.writeFileSync(path.join(checkpointDir, "delta.md"), "[Bridge Context Update]\nCodex-first seed.\n");
+
+  const state = defaultState(project);
+  state.pendingInjection = {
+    agent: "claude",
+    sessionId: null,
+    deltaFile: path.join(".bridge", "checkpoints", "delta.md"),
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  saveState(project, state);
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+    input: JSON.stringify({
+      cwd: project,
+      source: "startup",
+      session_id: "brand-new-session",
+      transcript_path: path.join(project, "claude.jsonl"),
+    }),
+    encoding: "utf8",
+  });
+  assert.equal(res.status, 0);
+  const payload = JSON.parse(res.stdout);
+  assert.match(payload.hookSpecificOutput.additionalContext, /Codex-first seed/);
+
+  const s = loadState(project);
+  assert.equal(s.agents.claude.sessionId, "brand-new-session");
+  assert.equal(s.pendingInjection, null);
+  assert.ok(fs.existsSync(path.join(checkpointDir, "delta.md.consumed")));
+});
+
+function makeCodexFixture() {
+  // realpath: on macOS os.tmpdir() is a symlink (/var → /private/var), but the
+  // child process's cwd resolves to the physical path — session_meta.cwd must match it.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-adopt-")));
+  const codexHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codexhome-")));
+  const day = path.join(codexHome, "sessions", "2026", "07", "20");
+  fs.mkdirSync(day, { recursive: true });
+  const rolloutPath = path.join(day, `rollout-2026-07-20T10-00-00-${THREAD_ID}.jsonl`);
+  fs.writeFileSync(
+    rolloutPath,
+    [
+      { timestamp: "2026-07-20T10:00:00.000Z", type: "session_meta", payload: { id: THREAD_ID, cwd: project } },
+      { timestamp: "2026-07-20T10:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "fix the bug" } },
+      { timestamp: "2026-07-20T10:00:02.000Z", type: "event_msg", payload: { type: "agent_message", message: "patched app.js" } },
+      { timestamp: "2026-07-20T10:00:03.000Z", type: "event_msg", payload: { type: "task_complete", last_agent_message: "patched app.js" } },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n"
+  );
+  return { project, codexHome, rolloutPath };
+}
+
+function runBridge(args, cwd, envOverrides) {
+  const env = { ...process.env, ...envOverrides };
+  if (!("CODEX_THREAD_ID" in envOverrides)) delete env.CODEX_THREAD_ID;
+  return spawnSync(process.execPath, [BRIDGE_BIN, ...args], { cwd, encoding: "utf8", env });
+}
