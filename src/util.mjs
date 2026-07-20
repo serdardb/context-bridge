@@ -11,9 +11,19 @@ export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".cla
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, ".codex");
 export const GROK_HOME = process.env.GROK_HOME || path.join(HOME, ".grok");
 
-/** Resolved per call, so tests (and a changed env) are honoured without a reload. */
+// Resolved per call, so tests (and a changed env) are honoured without a reload.
+// The module-level constants above are kept for callers that read them once at
+// startup; anything that can be re-pointed mid-process should use these.
 export function grokHome() {
   return process.env.GROK_HOME || path.join(HOME, ".grok");
+}
+
+export function codexHome() {
+  return process.env.CODEX_HOME || path.join(process.env.HOME || HOME, ".codex");
+}
+
+export function sharedSkillPath() {
+  return path.join(process.env.HOME || HOME, ".agents", "skills", "bridge", "SKILL.md");
 }
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;

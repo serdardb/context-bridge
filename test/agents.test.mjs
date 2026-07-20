@@ -344,3 +344,25 @@ test("closing words written after the handoff still reach the other agent", asyn
   // The mark moves with it, so the next handoff does not send it a second time.
   assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
 });
+
+test("doctor rows describe the state they are in, never just the happy one", async () => {
+  // Caught by a fresh-install run: the Codex rules row claimed the command was
+  // pre-allowed while the rule file did not exist.
+  const codex = adapterFor("codex");
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-labels-")));
+  const previous = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME };
+  process.env.HOME = home;
+  process.env.CODEX_HOME = path.join(home, ".codex");
+  try {
+    const missing = codex.health().extras.find((e) => e.label.includes("allow-rule") || e.label.includes("pre-allowed"));
+    assert.equal(missing.ok, false);
+    assert.match(missing.label, /No Codex allow-rule/, "a missing rule must not read as if it were installed");
+
+    fs.mkdirSync(path.join(home, ".codex", "rules"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex", "rules", "bridge.rules"), "x");
+    const present = codex.health().extras.find((e) => e.label.includes("pre-allowed"));
+    assert.equal(present.ok, true);
+  } finally {
+    Object.assign(process.env, previous);
+  }
+});

@@ -6,9 +6,9 @@ import {
   nowIso,
   fileExists,
   tryExec,
-  CODEX_HOME,
+  codexHome,
   REPO_ROOT,
-  SHARED_SKILL_PATH,
+  sharedSkillPath,
   installedCopyStatus,
 } from "../util.mjs";
 
@@ -83,8 +83,8 @@ export function startCommand(extraArgs = []) {
 export function health() {
   const version = tryExec("codex", ["--version"]);
   const detail = version ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
-  const skill = installedCopyStatus(SHARED_SKILL_PATH, path.join(REPO_ROOT, "codex", "SKILL.md"));
-  const rules = fileExists(path.join(CODEX_HOME, "rules", "bridge.rules"));
+  const skill = installedCopyStatus(sharedSkillPath(), path.join(REPO_ROOT, "codex", "SKILL.md"));
+  const rules = fileExists(path.join(codexHome(), "rules", "bridge.rules"));
   return {
     version,
     auth: { ok: detail !== null, via: "codex login", account: detail },
@@ -94,7 +94,16 @@ export function health() {
         label: skillLabel(skill),
         fix: "bridge doctor --fix",
       },
-      { ok: rules, label: "bridge command pre-allowed in Codex rules", fix: "bridge doctor --fix", info: true },
+      {
+        ok: rules,
+        // The label has to follow the state: a row that says "pre-allowed" while
+        // the rule is missing reads as reassurance and is simply untrue.
+        label: rules
+          ? "bridge command pre-allowed in Codex rules"
+          : "No Codex allow-rule for `bridge` — Codex will ask for approval once",
+        fix: "bridge doctor --fix",
+        info: true,
+      },
     ],
     ready: !!(version && detail !== null && skill !== "missing"),
     installHint: "npm install -g @openai/codex",

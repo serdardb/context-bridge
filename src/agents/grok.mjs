@@ -17,7 +17,7 @@ import {
   readJson,
   tryExec,
   REPO_ROOT,
-  SHARED_SKILL_PATH,
+  sharedSkillPath,
   installedCopyStatus,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
@@ -218,7 +218,7 @@ export function health() {
   const version = tryExec("grok", ["--version"]);
   // Existence only: the file holds credentials and is never read.
   const authed = fileExists(path.join(grokHome(), "auth.json"));
-  const skill = installedCopyStatus(SHARED_SKILL_PATH, path.join(REPO_ROOT, "codex", "SKILL.md"));
+  const skill = installedCopyStatus(sharedSkillPath(), path.join(REPO_ROOT, "codex", "SKILL.md"));
   return {
     version,
     auth: { ok: authed, via: "grok login", account: null },
