@@ -12,9 +12,9 @@ Developers increasingly use multiple coding agents — but switching between the
 - It does **not** proxy their APIs.
 - It requires **no API keys** — it drives the subscription-authenticated CLIs you already have.
 
-**Supported today: Claude Code ⇄ Codex** (Gemini planned, not implemented).
+**Supported today: Claude Code, Codex and Grok**, in any direction (Gemini evaluated and parked).
 
-> **Status: developer preview (0.6.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.7.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -73,6 +73,7 @@ shell
 - `$bridge claude` (a Codex skill) does the reverse: the delta is computed from Codex's own session file plus git, and injected into your original Claude session through a `SessionStart` hook — exactly once.
 - Every delta ships with a **full un-truncated context** companion in `.bridge/checkpoints/`, referenced from the delta itself. The bounded 8KB summary keeps handoffs fast; exact wording (long prose, drafts, specs that live only in conversation) survives on disk, and the receiving agent reads it whenever the clipped one-liners aren't enough.
 - **Agent flags pass straight through.** `bridge claude --dangerously-skip-permissions --model claude-fable-5` forwards everything after the agent name to that agent verbatim, so any flag it supports (now or later) just works. The set is remembered per agent for the launcher run and re-applied on every switch back, but never written to disk, so a permission-bypass flag cannot quietly return tomorrow. The only args the bridge holds back are the ones that would break its own session link (`-c`, `--resume`, `--fork-session`, `--no-session-persistence` on Claude; `--last`, `--cd`, `--remote` on Codex), each dropped with a printed reason. `--cb-*` is reserved for the bridge itself.
+- **A handoff carries what the target missed, from everyone.** The bridge remembers, per pair, how far into each agent's own stream it has packed material for each other agent. So Claude → Grok → Codex works: Codex receives Grok's work *and* the Claude context Grok was given, each block labelled with who said it, instead of losing a hop's worth of history at every switch. Nothing is sent to an agent twice.
 - Checkpoints are a **safety net, not a growing archive**. After each handoff the bridge prunes old checkpoint groups, conservatively: a group is deleted only when it is both older than 7 days and beyond the newest 20 handoffs, and a pending injection is never deleted. `bridge clean` (with `--dry-run`, `--keep N`, `--days N`, `--all`) does the same on demand.
 - The launcher watches the state file. When a handoff is ready **and the agent's turn has finished**, it terminates its own child process (SIGTERM, never by name, never SIGKILL) and starts the other agent. Terminal state stays healthy; Ctrl+C inside an agent behaves normally.
 - **Started without the bridge?** Sessions can be adopted mid-flight. `$bridge claude` inside a Codex session that was never linked adopts it automatically (Codex exposes the running thread via `CODEX_THREAD_ID`); if that variable is unavailable, the newest Codex session working in the project directory is offered as a candidate and linked only after you confirm (`--adopt`). Codex-first projects work too: with no Claude session to resume, the delta — plus a pointer to the full Codex transcript — seeds the first Claude session that starts in the project. The rule everywhere: **automatic when identity is deterministic, confirmed when heuristic.**
@@ -215,7 +216,7 @@ Verified against: **Claude Code 2.1.214** and **codex-cli 0.143.0** on macOS (No
 
 ## Development status
 
-0.6.0 — developer preview. The full Claude → Codex → original-Claude round-trip (repeatedly, without re-import) passes a real end-to-end test on macOS, and the bridge is developed with itself: Claude and Codex hand this repo's work back and forth through it daily.
+0.7.0 — developer preview. The full Claude → Codex → original-Claude round-trip (repeatedly, without re-import) passes a real end-to-end test on macOS, and the bridge is developed with itself: Claude and Codex hand this repo's work back and forth through it daily.
 
 Since the first release:
 

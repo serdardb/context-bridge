@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, saveState, writeCheckpoint, agentSlot } from "./state.mjs";
+import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
@@ -177,7 +177,12 @@ export function handoff(
     // unmarked would make the first return replay the entire imported history
     // back at Claude.
     targetSlot.set({ mark: targetRef ? targetAdapter.currentMark(targetRef) : now });
-    sourceSlot.set({ mark: sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot)) });
+    const sourceMark = sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot));
+    sourceSlot.set({ mark: sourceMark });
+    // The import carried Claude's conversation into the thread, so Codex has
+    // seen it; without this seed the first return would hand it all back.
+    s.knownBy ??= {};
+    (s.knownBy[target] ??= {})[sourceId] = sourceMark;
     s.git = { sha: currentGitSha(projectDir), recordedAt: now };
     sourceSlot.set({ idle: false });
     s.pendingHandoff = { target, ready: true, requestedAt: now };
@@ -187,16 +192,40 @@ export function handoff(
     return lines.join("\n");
   }
 
+  // Gather from EVERY agent the target has not caught up with, not only from the
+  // one handing off. Without this a chain loses history at each hop: what Claude
+  // told Grok never reaches Codex, because Grok's own stream is all that travels.
+  const packed = {};
+  const streams = [];
+  const work = [];
+  let messageCount = 0;
+  for (const otherId of AGENT_IDS) {
+    if (otherId === target) continue;
+    const slot = agentSlot(s, otherId);
+    if (!slot.id) continue;
+    const adapter = adapterFor(otherId);
+    const ref = adapter.hydrate(projectDir, slot);
+    if (!ref) continue;
+    // An adopted source is new to everyone, so it starts from the beginning.
+    const since = otherId === sourceId && adopted ? null : knownMark(s, target, otherId);
+    let activity;
+    try {
+      activity = adapter.activitySince(ref, since);
+    } catch {
+      continue;
+    }
+    packed[otherId] = adapter.currentMark(ref);
+    if (!activity.messages.length && !activity.patchedFiles.length) continue;
+    streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
+    messageCount += activity.messages.length;
+    work.push(...activity.patchedFiles.map((f) => `Modified via ${adapter.displayName}: ${f}`));
+  }
   const sourceRef = sourceAdapter.hydrate(projectDir, sourceSlot);
-  const activity = sourceRef
-    ? sourceAdapter.activitySince(sourceRef, adopted ? null : sourceSlot.mark)
-    : { messages: [], patchedFiles: [], turnsCompleted: 0 };
   const git = gitDelta(projectDir, s.git.sha);
   const sections = {
-    fromAgent: sourceId,
-    conversation: activity.messages,
+    sources: streams.length ? streams : [{ id: sourceId, label: sourceAdapter.displayName, messages: [] }],
     decisions: splitNotes(decisions),
-    work: [...activity.patchedFiles.map((f) => `Modified via ${sourceAdapter.displayName}: ${f}`), ...git.lines],
+    work: [...work, ...git.lines],
     next: splitNotes(nextNotes),
   };
 
@@ -239,15 +268,22 @@ export function handoff(
     id: targetSlot.id ?? null,
     deltaFile: deltaRel,
     createdAt: now,
+    // What this delta carries, per source. Committed to knownBy only once the
+    // delta is final, which is after the launcher has added any closing words:
+    // committing here would mark the departing agent's last answer as delivered
+    // before it was even written.
+    sources: packed,
   };
   sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
   s.git = { sha: currentGitSha(projectDir), recordedAt: now };
   s.pendingHandoff = { target, ready: true, requestedAt: now };
   saveState(projectDir, s);
 
+  const others = streams.filter((st) => st.id !== sourceId).map((st) => st.label);
   lines.push(
     `${OK} Prepared ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta ` +
-      `(${activity.messages.length} messages, ${sections.work.length} work items).`
+      `(${messageCount} messages, ${sections.work.length} work items` +
+      `${others.length ? `, including catch-up from ${others.join(" and ")}` : ""}).`
   );
   autoPrune(projectDir, lines);
   lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter));

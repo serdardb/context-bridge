@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { ensureState, loadState, saveState, agentSlot } from "./state.mjs";
+import { ensureState, loadState, saveState, agentSlot, commitKnown } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { log, dim, bold, OK, WARN, BAD, oneLine } from "./util.mjs";
@@ -163,6 +163,9 @@ function consumeDelta(projectDir, s, inj, agent) {
     log(`${WARN} Pending delta could not be consumed (${inj.deltaFile}); starting ${agent} without it.`);
     return null;
   }
+  // The delta reached its target: record what it carried, so the next handoff
+  // to this agent starts from here instead of resending it.
+  commitKnown(s, inj);
   s.pendingInjection = null;
   saveState(projectDir, s);
   return delta;
@@ -208,7 +211,12 @@ export function appendFinalWords(projectDir, s, agent) {
   } catch {
     // The delta already carries them; the companion missing out is not fatal.
   }
-  slot.set({ mark: adapter.currentMark(ref) });
+  // The closing words are now part of the delta destined for the other agent,
+  // so the packed mark has to move with them: committing the pre-handoff mark
+  // would either resend them later or, worse, skip them entirely.
+  const finalMark = adapter.currentMark(ref);
+  slot.set({ mark: finalMark });
+  if (inj.sources) inj.sources[agent] = finalMark;
   saveState(projectDir, s);
   log(dim(`→ Added ${tail.messages.length} closing message(s) from ${agent} to the handoff.`));
 }

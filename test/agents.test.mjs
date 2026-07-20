@@ -202,7 +202,7 @@ test("a v1 state file is migrated in place, with a backup kept", async () => {
   fs.writeFileSync(statePath(project), JSON.stringify(v1));
 
   const s = loadState(project);
-  assert.equal(s.version, 3);
+  assert.equal(s.version, 4);
   // v3 swaps the pair's marks: each agent now marks its OWN stream, and v1 stored
   // claude's mark as a position in codex's stream.
   assert.deepEqual(s.agents.claude, {
@@ -219,9 +219,10 @@ test("a v1 state file is migrated in place, with a backup kept", async () => {
   assert.equal(s.pendingInjection.id, null);
   assert.equal(s.pendingInjection.deltaFile, ".bridge/checkpoints/d.md");
 
+  assert.deepEqual(s.knownBy, {}, "the matrix starts empty: a one-time full resync beats a false claim");
   assert.ok(fs.existsSync(statePath(project) + ".v1.backup"), "the original file is kept");
-  assert.equal(JSON.parse(fs.readFileSync(statePath(project), "utf8")).version, 3, "migration is written back");
-  assert.equal(loadState(project).version, 3, "second load is a no-op");
+  assert.equal(JSON.parse(fs.readFileSync(statePath(project), "utf8")).version, 4, "migration is written back");
+  assert.equal(loadState(project).version, 4, "second load is a no-op");
 });
 
 test("a state file from a newer bridge is refused, not guessed at", async () => {

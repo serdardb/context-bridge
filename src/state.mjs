@@ -6,7 +6,7 @@ import path from "node:path";
 import { writeJsonAtomic, readJson, nowIso, fileExists } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 
 export function bridgeDir(projectDir) {
   return path.join(projectDir, ".bridge");
@@ -46,8 +46,15 @@ export function defaultState(projectDir) {
     agents: Object.fromEntries(AGENT_IDS.map((agentId) => [agentId, emptyAgent()])),
     // {"target":<agent>,"ready":true,"requestedAt":iso}
     pendingHandoff: null,
-    // {"agent":<agent>,"id":<session id|null>,"deltaFile":relpath,"createdAt":iso}
+    // {"agent":<agent>,"id":<session id|null>,"deltaFile":relpath,"createdAt":iso,
+    //  "sources":{<source>:<mark>}}  — what went into the delta, committed to
+    //  knownBy once that delta is finalised.
     pendingInjection: null,
+    // knownBy[target][source] = how far into SOURCE's own stream the bridge has
+    // packed material for TARGET. This is what makes a chain work: a handoff to
+    // an agent carries everything it has not seen, from every agent, not just
+    // from whoever is handing off.
+    knownBy: {},
     // git checkpoint recorded at each handoff, used for "commits since"
     git: { sha: null, recordedAt: null },
     updatedAt: null,
@@ -127,7 +134,18 @@ function migrateV2ToV3(s) {
   return next;
 }
 
-const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3 };
+/**
+ * v3 knew how far each agent's own stream had been shared, but not with whom,
+ * which is exactly what a third agent needs. v4 adds the matrix, and starts it
+ * EMPTY on purpose: seeding it from the v3 marks would claim agents had seen
+ * material that was never sent to them, freezing the transitive loss in place.
+ * The cost is one full resync on the next handoff, paid once.
+ */
+function migrateV3ToV4(s) {
+  return { ...s, version: 4, knownBy: {} };
+}
+
+const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4 };
 
 /**
  * Load state; returns null when no .bridge/state.json exists.
@@ -216,4 +234,27 @@ export function writeCheckpoint(projectDir, name, content) {
   const file = path.join(dir, name);
   fs.writeFileSync(file, content);
   return path.relative(projectDir, file);
+}
+
+/** How far SOURCE's stream has been packed for TARGET, or null if never. */
+export function knownMark(s, target, source) {
+  return s.knownBy?.[target]?.[source] ?? null;
+}
+
+/**
+ * Commit what a finalised delta contained into the matrix. Called wherever a
+ * delta becomes final — after closing words are appended, or when it is
+ * consumed — and idempotent, so calling it twice is harmless.
+ */
+export function commitKnown(s, injection) {
+  if (!injection?.agent || !injection.sources) return false;
+  if (!s.knownBy) s.knownBy = {};
+  const target = (s.knownBy[injection.agent] ??= {});
+  let changed = false;
+  for (const [source, mark] of Object.entries(injection.sources)) {
+    if (JSON.stringify(target[source]) === JSON.stringify(mark)) continue;
+    target[source] = mark;
+    changed = true;
+  }
+  return changed;
 }

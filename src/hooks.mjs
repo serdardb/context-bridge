@@ -3,7 +3,7 @@
 // have no .bridge/ state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, saveState } from "./state.mjs";
+import { loadState, saveState, commitKnown } from "./state.mjs";
 
 export async function runHook(event) {
   const input = await readStdinJson();
@@ -57,6 +57,7 @@ function hookSessionStart(projectDir, s, input) {
       } catch {
         return 0;
       }
+      commitKnown(s, inj);
       s.pendingInjection = null;
       saveState(projectDir, s);
       process.stdout.write(

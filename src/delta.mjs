@@ -92,16 +92,32 @@ export function currentGitSha(projectDir) {
  * Compose the bounded 4-section bridge delta.
  * sections: {fromAgent, conversation: [{role,text}], decisions: [], work: [], next: []}
  */
-export function composeDelta({ fromAgent, conversation, decisions, work, next }) {
-  const conv = conversation.slice(-MAX_MESSAGES).map((m) => `- ${m.role === "user" ? "User" : cap(fromAgent)}: ${oneLine(m.text, 220)}`);
+export function composeDelta({ fromAgent, conversation, sources, decisions, work, next }) {
+  const streams = normaliseSources({ fromAgent, conversation, sources });
   const sec = (title, items, empty) =>
     `${title}\n${items.length ? items.map((i) => (i.startsWith("-") ? i : `- ${i}`)).join("\n") : `- ${empty}`}`;
+
+  // One source needs no attribution; several do, or a chain arrives as an
+  // unattributed pile and the reader cannot tell who decided what.
+  const blocks = streams.filter((st) => st.messages.length);
+  const conversationBlock =
+    streams.length > 1
+      ? blocks.length
+        ? blocks
+            .map((st) => `From ${st.label}\n${st.messages.slice(-MAX_MESSAGES).map((m) => line(m, st.label)).join("\n")}`)
+            .join("\n\n")
+        : "- No conversation activity since last sync."
+      : streams[0].messages.length
+        ? streams[0].messages.slice(-MAX_MESSAGES).map((m) => line(m, streams[0].label)).join("\n")
+        : "- No conversation activity since last sync.";
+
+  const who = streams.map((st) => st.label).join(", ");
   let out = [
     "[Bridge Context Update]",
     "",
-    `While you were away, work continued in ${cap(fromAgent)}.`,
+    `While you were away, work continued in ${who}.`,
     "",
-    sec("Conversation", conv, "No conversation activity since last sync."),
+    `Conversation\n${conversationBlock}`,
     "",
     sec("Decisions", decisions, "No explicit decisions were recorded."),
     "",
@@ -115,26 +131,38 @@ export function composeDelta({ fromAgent, conversation, decisions, work, next })
   return out;
 }
 
-/**
- * Un-truncated companion to composeDelta: the SAME sections with nothing
- * clipped — no message cap, no per-message one-lining, no byte cap. Written to
- * a checkpoint file and referenced from the bounded delta, so long prose
- * survives handoffs that the 8KB summary cannot carry.
- */
-export function composeFullContext({ fromAgent, conversation, decisions, work, next }) {
-  const role = (m) => (m.role === "user" ? "User" : cap(fromAgent));
-  const conv = conversation.length
-    ? conversation.map((m) => `### ${role(m)}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`).join("\n\n")
-    : "_No conversation activity since last sync._";
+function line(m, label) {
+  return `- ${m.role === "user" ? "User" : label}: ${oneLine(m.text, 220)}`;
+}
+
+/** Accepts either the single-source shape or a labelled multi-source list. */
+function normaliseSources({ fromAgent, conversation, sources }) {
+  if (Array.isArray(sources) && sources.length) {
+    return sources.map((st) => ({ label: st.label ?? cap(st.id ?? "agent"), messages: st.messages ?? [] }));
+  }
+  return [{ label: cap(fromAgent ?? "agent"), messages: conversation ?? [] }];
+}
+
+export function composeFullContext({ fromAgent, conversation, sources, decisions, work, next }) {
+  const streams = normaliseSources({ fromAgent, conversation, sources });
   const list = (items, empty) => (items.length ? items.map((i) => `- ${i}`).join("\n") : `- ${empty}`);
+  const blocks = streams
+    .filter((st) => st.messages.length)
+    .map((st) => {
+      const body = st.messages
+        .map((m) => `### ${m.role === "user" ? "User" : st.label}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`)
+        .join("\n\n");
+      return streams.length > 1 ? `## From ${st.label}\n\n${body}` : body;
+    });
+  const who = streams.map((st) => st.label).join(", ");
   return [
-    `# Bridge full context — from ${cap(fromAgent)}`,
+    `# Bridge full context — from ${who}`,
     "",
     "Un-truncated companion to the bounded bridge delta. Nothing here is clipped.",
     "",
     "## Conversation",
     "",
-    conv,
+    blocks.length ? blocks.join("\n\n") : "_No conversation activity since last sync._",
     "",
     "## Decisions",
     "",
