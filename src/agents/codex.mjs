@@ -1,7 +1,7 @@
 // Codex adapter. Thin wrapper over the existing rollout discovery and parsing.
 import { findRolloutPath, latestRolloutForProject } from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
-import { nowIso } from "../util.mjs";
+import { nowIso, fileExists } from "../util.mjs";
 
 export const id = "codex";
 export const displayName = "Codex";
@@ -28,6 +28,15 @@ export function discover(projectDir) {
   return found
     ? { id: found.threadId, transcriptPath: found.rolloutPath, updatedAt: found.mtime, deterministic: false }
     : null;
+}
+
+/** Rehydrate from state, re-finding the rollout if the stored path went stale. */
+export function hydrate(_projectDir, slot) {
+  if (!slot?.id) return null;
+  const transcriptPath = slot.transcriptPath && fileExists(slot.transcriptPath)
+    ? slot.transcriptPath
+    : findRolloutPath(slot.id);
+  return { id: slot.id, transcriptPath };
 }
 
 export function refById(_projectDir, threadId) {

@@ -55,6 +55,54 @@ export function defaultState(projectDir) {
   };
 }
 
+/**
+ * Uniform per-agent view over a state file that is not uniform on disk.
+ *
+ * Claude and Codex were written before adapters existed and store the same
+ * concept under different names (`sessionId`/`transcriptPath` versus
+ * `threadId`/`rolloutPath`). Rewriting that shape would mean bumping
+ * STATE_VERSION, and `loadState` throws on a version it does not know — every
+ * existing .bridge/state.json in the wild would break. So instead of migrating,
+ * this accessor translates. New agents get the uniform shape from the start.
+ *
+ * Returns a live view: `set()` writes back to the underlying slot.
+ */
+export function agentSlot(s, agentId) {
+  if (!s.agents[agentId]) s.agents[agentId] = { id: null, transcriptPath: null, lastSyncAt: null, idle: false };
+  const slot = s.agents[agentId];
+  const legacy =
+    agentId === "claude"
+      ? { id: "sessionId", path: "transcriptPath" }
+      : agentId === "codex"
+        ? { id: "threadId", path: "rolloutPath" }
+        : null;
+  return {
+    get id() {
+      return legacy ? (slot[legacy.id] ?? null) : (slot.id ?? null);
+    },
+    get transcriptPath() {
+      return legacy ? (slot[legacy.path] ?? null) : (slot.transcriptPath ?? null);
+    },
+    get mark() {
+      // Legacy agents kept an ISO instant under lastSyncAt; adapters treat the
+      // watermark as opaque, so it is read and written through one name.
+      return slot.lastSyncAt ?? null;
+    },
+    get idle() {
+      return slot.idle === true;
+    },
+    set(values) {
+      for (const [key, value] of Object.entries(values)) {
+        if (key === "id") slot[legacy ? legacy.id : "id"] = value;
+        else if (key === "transcriptPath") slot[legacy ? legacy.path : "transcriptPath"] = value;
+        else if (key === "mark") slot.lastSyncAt = value;
+        else slot[key] = value;
+      }
+      return slot;
+    },
+  };
+}
+
 /** Load state; returns null when no .bridge/state.json exists. */
 export function loadState(projectDir) {
   const s = readJson(statePath(projectDir));

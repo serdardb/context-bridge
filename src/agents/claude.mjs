@@ -41,6 +41,10 @@ export function activitySince(ref, sinceIso) {
   return { messages, patchedFiles: [], turnsCompleted: 0 };
 }
 
+export function hydrate(_projectDir, slot) {
+  return slot?.id ? { id: slot.id, transcriptPath: slot.transcriptPath } : null;
+}
+
 /** Claude reports idleness through the Stop hook, not through its transcript. */
 export function idleAfter() {
   return null;

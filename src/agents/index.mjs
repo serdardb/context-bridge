@@ -17,6 +17,7 @@
 //   injection      "prompt" = delivered as an auto-submitted resume prompt
 //                  "hook"   = delivered through the agent's own session hook
 //   discover(projectDir)          -> SessionRef | null   (deterministic, no guessing)
+//   hydrate(projectDir, slot)     -> SessionRef | null   (rebuild from stored state)
 //   resumeCommand(ref, extraArgs) -> {cmd, args}
 //   currentMark(ref)              -> sync watermark to persist (vendor-defined)
 //   activitySince(ref, mark)      -> {messages, patchedFiles, turnsCompleted}

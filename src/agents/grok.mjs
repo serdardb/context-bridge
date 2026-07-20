@@ -60,6 +60,11 @@ export function discover(projectDir) {
   return found[0];
 }
 
+/** Rebuild the full ref (both streams) from a stored session id. */
+export function hydrate(projectDir, slot) {
+  return slot?.id ? refById(projectDir, slot.id) : null;
+}
+
 /** Rebuild a ref from a known session id without scanning. */
 export function refById(projectDir, sessionId) {
   const dir = path.join(sessionsRoot(projectDir), sessionId);

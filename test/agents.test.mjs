@@ -149,3 +149,61 @@ async function withGrokFixture() {
 function writeJsonl(file, rows) {
   fs.writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 }
+
+test("the launcher builds commands through adapters, including for grok", async () => {
+  const { project } = await withGrokFixture();
+  const { buildCommand } = await import("../src/launcher.mjs");
+  const { defaultState } = await import("../src/state.mjs");
+  const grok = adapterFor("grok");
+  const ref = grok.discover(project);
+
+  const s = defaultState(project);
+  // A brand new agent slot: no legacy field names, written by the uniform accessor.
+  s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, lastSyncAt: null, idle: false };
+
+  const built = buildCommand(project, s, "grok", ["--permission-mode", "auto"]);
+  assert.equal(built.cmd, "grok");
+  assert.deepEqual(built.args, ["--resume", SESSION_ID, "--permission-mode", "auto"]);
+  assert.match(built.note, /Resuming your Grok session/);
+});
+
+test("an unlinked prompt-injecting agent refuses to start, a hook-injecting one starts fresh", async () => {
+  const { buildCommand } = await import("../src/launcher.mjs");
+  const { defaultState } = await import("../src/state.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlinked-")));
+  const s = defaultState(project);
+
+  const grok = buildCommand(project, s, "grok");
+  assert.equal(grok.cmd, null, "no session to resume and no official import path");
+  assert.match(grok.note, /No linked Grok session yet/);
+
+  const claude = buildCommand(project, s, "claude");
+  assert.equal(claude.cmd, "claude");
+  assert.deepEqual(claude.args, [], "a fresh Claude session needs no resume flag");
+});
+
+test("legacy state field names still read through the uniform accessor", async () => {
+  const { defaultState, agentSlot } = await import("../src/state.mjs");
+  const s = defaultState("/tmp/x");
+  s.agents.claude.sessionId = "claude-1";
+  s.agents.codex.threadId = "codex-1";
+  s.agents.codex.rolloutPath = "/tmp/rollout.jsonl";
+
+  assert.equal(agentSlot(s, "claude").id, "claude-1");
+  assert.equal(agentSlot(s, "codex").id, "codex-1");
+  assert.equal(agentSlot(s, "codex").transcriptPath, "/tmp/rollout.jsonl");
+
+  // Writes land back on the legacy names, so old bridges keep reading the file.
+  agentSlot(s, "claude").set({ id: "claude-2", mark: "2026-07-20T00:00:00Z" });
+  assert.equal(s.agents.claude.sessionId, "claude-2");
+  assert.equal(s.agents.claude.lastSyncAt, "2026-07-20T00:00:00Z");
+
+  // A new agent gets the uniform shape instead.
+  agentSlot(s, "grok").set({ id: "grok-1", transcriptPath: "/tmp/chat.jsonl" });
+  assert.deepEqual(s.agents.grok, {
+    id: "grok-1",
+    transcriptPath: "/tmp/chat.jsonl",
+    lastSyncAt: null,
+    idle: false,
+  });
+});

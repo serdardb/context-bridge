@@ -1,5 +1,5 @@
 // The bridge launcher loop. Process shape (proven in T4):
-//   shell └── bridge └── exactly one active agent child (claude | codex)
+//   shell └── bridge └── exactly one active agent child
 // Auto-exit safety (spec §11): SIGTERM is sent ONLY to the exact child PID we
 // spawned, ONLY when a persisted handoff is ready AND the agent is idle.
 // Never SIGKILL. Never process-name matching. If idle is uncertain: tell the
@@ -7,9 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { ensureState, loadState, saveState } from "./state.mjs";
-import { rolloutIdleAfter } from "./delta.mjs";
-import { findRolloutPath } from "./discover.mjs";
+import { ensureState, loadState, saveState, agentSlot } from "./state.mjs";
+import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso } from "./util.mjs";
 
@@ -24,7 +23,7 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
   // Forwarded args belong to the agent named on the command line (or, when none
   // was named, to the one this loop starts with). They are never carried across
   // a switch: a Claude flag is meaningless or harmful to Codex.
-  const agentArgs = { claude: [], codex: [] };
+  const agentArgs = Object.fromEntries(AGENT_IDS.map((id) => [id, []]));
   if (forwardArgs.length) {
     const { kept, dropped } = filterAgentArgs(agent, forwardArgs);
     agentArgs[agent] = kept;
@@ -54,7 +53,7 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     // This launch consumes any pending handoff towards `agent`.
     if (s.pendingHandoff?.target === agent) s.pendingHandoff = null;
     s.activeAgent = agent;
-    s.agents[agent].idle = false;
+    agentSlot(s, agent).set({ idle: false });
     saveState(projectDir, s);
 
     if (note) log(dim(`→ ${note}`));
@@ -100,48 +99,52 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
 }
 
 export function buildCommand(projectDir, s, agent, extra = []) {
-  if (agent === "claude") {
-    const sid = s.agents.claude.sessionId;
-    // Our --resume goes last so the bridge's session control wins any tie.
-    return sid
-      ? { cmd: "claude", args: [...extra, "--resume", sid], note: "Resuming your Claude session…" }
-      : { cmd: "claude", args: [...extra], note: "Starting a new Claude session for this project…" };
-  }
-  if (agent === "codex") {
-    const tid = s.agents.codex.threadId;
-    if (!tid) {
-      return {
-        cmd: null,
-        args: [],
-        note: "No linked Codex thread yet. Start inside Claude and run /bridge codex for the first switch.",
-      };
+  const adapter = adapterFor(agent);
+  if (!adapter) return { cmd: null, args: [], note: `Unknown agent '${agent}'.` };
+
+  const slot = agentSlot(s, agent);
+  if (!slot.id) {
+    // Claude can always start fresh; the others must be linked by a handoff first,
+    // because there is no session to resume and no official import for them.
+    if (adapter.injection === "hook") {
+      const { cmd, args } = adapter.resumeCommand({ id: null }, extra);
+      return { cmd, args, note: `Starting a new ${adapter.displayName} session for this project…` };
     }
-    const args = ["resume", tid, ...extra];
-    // Deliver a pending Claude→Codex delta as the auto-submitted resume prompt (proven in T2).
-    const inj = s.pendingInjection;
-    if (inj?.agent === "codex" && inj.threadId === tid) {
-      const deltaPath = path.join(projectDir, inj.deltaFile);
+    return {
+      cmd: null,
+      args: [],
+      note: `No linked ${adapter.displayName} session yet. Start inside Claude and run /bridge ${agent} for the first switch.`,
+    };
+  }
+
+  const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
+  const { cmd, args } = adapter.resumeCommand(ref, extra);
+  const note = `Resuming your ${adapter.displayName} session…`;
+
+  // Prompt-injecting agents receive a pending delta as the auto-submitted resume
+  // prompt (proven in T2 for Codex). Hook-injecting agents get it from their own
+  // session hook instead, so nothing is appended here.
+  const inj = s.pendingInjection;
+  const targeted = inj?.agent === agent && (inj.threadId ?? inj.sessionId ?? slot.id) === slot.id;
+  if (adapter.injection === "prompt" && targeted) {
+    const deltaPath = path.join(projectDir, inj.deltaFile);
+    try {
+      const delta = fs.readFileSync(deltaPath, "utf8");
       try {
-        const delta = fs.readFileSync(deltaPath, "utf8");
-        try {
-          fs.renameSync(deltaPath, deltaPath + ".consumed");
-        } catch {
-          log(`${WARN} Pending Claude→Codex delta could not be consumed (${inj.deltaFile}); resuming Codex without it.`);
-          return { cmd: "codex", args, note: "Resuming your Codex thread…" };
-        }
-        // `--` first: without it a trailing variadic user flag (-i/--image …)
-        // would swallow the delta as one of its values.
-        args.push("--", delta);
-        s.pendingInjection = null;
-        saveState(projectDir, s);
+        fs.renameSync(deltaPath, deltaPath + ".consumed");
       } catch {
-        // If unreadable, do not pretend: leave marker, tell the user.
-        log(`${WARN} Pending Claude→Codex delta could not be read (${inj.deltaFile}); resuming Codex without it.`);
+        log(`${WARN} Pending delta could not be consumed (${inj.deltaFile}); resuming ${agent} without it.`);
+        return { cmd, args, note };
       }
+      args.push(...adapter.promptArgs(delta));
+      s.pendingInjection = null;
+      saveState(projectDir, s);
+    } catch {
+      // If unreadable, do not pretend: leave marker, tell the user.
+      log(`${WARN} Pending delta could not be read (${inj.deltaFile}); resuming ${agent} without it.`);
     }
-    return { cmd: "codex", args, note: "Resuming your Codex thread…" };
   }
-  return { cmd: null, args: [], note: `Unknown agent '${agent}'.` };
+  return { cmd, args, note };
 }
 
 /**
@@ -168,14 +171,16 @@ function watchForHandoff(projectDir, agent, child) {
       return;
     }
 
-    // Idle checks (spec §11): claude via Stop-hook marker; codex via
-    // task_complete appearing in the rollout after the handoff request.
+    // Idle checks (spec §11). Each adapter answers from its own session files;
+    // an adapter returning null reports idleness out of band instead (Claude does
+    // this through its Stop hook, which writes the marker in state).
+    const adapter = adapterFor(agent);
+    const slot = agentSlot(s, agent);
     let idle = false;
-    if (agent === "claude") {
-      idle = s.agents.claude.idle === true;
-    } else if (agent === "codex") {
-      const rollout = s.agents.codex.rolloutPath || findRolloutPath(s.agents.codex.threadId || "");
-      idle = rollout ? rolloutIdleAfter(rollout, pending.requestedAt) : false;
+    if (adapter) {
+      const ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
+      const fromFiles = ref ? adapter.idleAfter(ref, pending.requestedAt) : null;
+      idle = fromFiles === null ? slot.idle : fromFiles === true;
     }
 
     if (!idle) {
