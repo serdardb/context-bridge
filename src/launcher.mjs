@@ -230,13 +230,25 @@ function watchForHandoff(projectDir, agent, child) {
   let terminated = false;
   let idleSince = null;
   let warnedManual = false;
+  let warnedUnreadable = false;
 
   const timer = setInterval(() => {
     if (stopped || terminated) return;
     let s;
     try {
       s = loadState(projectDir);
-    } catch {
+    } catch (e) {
+      // Almost always: this launcher started before a state upgrade and can no
+      // longer read the file. Silence here looks exactly like "no handoff is
+      // pending", so the user sits waiting for a switch that can never come.
+      if (!warnedUnreadable) {
+        warnedUnreadable = true;
+        process.stderr.write(
+          `\n${WARN} bridge: cannot read .bridge/state.json — ${e.message}\n` +
+            `   This launcher is running older code than the state file. Exit ${agent} and run 'bridge' again;\n` +
+            "   the pending handoff is saved and will be applied by the new launcher.\n"
+        );
+      }
       return;
     }
     const pending = s?.pendingHandoff;

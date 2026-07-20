@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { handoff } from "../src/handoff.mjs";
 import { appendFinalWords } from "../src/launcher.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { defaultState, saveState, loadState, knownMark, commitKnown } from "../src/state.mjs";
+
+const BRIDGE_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
 const GROK_ID = "019f8000-aaaa-7bbb-8ccc-ddddeeee0001";
 
@@ -137,3 +141,16 @@ function fixture() {
   saveState(project, s);
   return { project, grokChat, claudeTranscript };
 }
+
+test("a launcher that cannot read the state file says so instead of waiting forever", async () => {
+  // Real incident: a launcher started before STATE_VERSION 4 kept polling a v4
+  // file, loadState threw on every tick, the catch swallowed it, and a pending
+  // handoff simply never fired. Silence was indistinguishable from "nothing to do".
+  const { statePath } = await import("../src/state.mjs");
+  const { project } = fixture();
+  fs.writeFileSync(statePath(project), JSON.stringify({ version: 99, agents: {} }));
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "status"], { cwd: project, encoding: "utf8" });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /newer than this bridge understands/);
+});
