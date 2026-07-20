@@ -99,6 +99,45 @@ export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 }
   return out;
 }
 
+/**
+ * Can the head-record parser still read rollouts at all?
+ *
+ * This asks a different question from every other check: not "is this project
+ * linked" but "does our reader still understand the format on disk". It exists
+ * because that reader died silently once already — a 16KB buffer against a 22KB
+ * record — and the symptom of this class of bug is not an error, it is an empty
+ * result, which looks exactly like having nothing to find.
+ *
+ * Deliberately ignores which project a rollout belongs to: a project with no
+ * Codex session would otherwise look broken. Examines only the newest few.
+ */
+export function rolloutHeadHealth({ sample = 5 } = {}) {
+  const root = path.join(CODEX_HOME, "sessions");
+  if (!fileExists(root)) return { examined: 0, recognised: 0 };
+  const found = [];
+  for (const y of safeList(root).sort().reverse()) {
+    for (const m of safeList(path.join(root, y)).sort().reverse()) {
+      for (const d of safeList(path.join(root, y, m)).sort().reverse()) {
+        for (const f of safeList(path.join(root, y, m, d))) {
+          if (!f.startsWith("rollout-") || !f.endsWith(".jsonl")) continue;
+          found.push(path.join(root, y, m, d, f));
+          if (found.length >= sample) return score(found);
+        }
+      }
+    }
+  }
+  return score(found);
+}
+
+function score(paths) {
+  let recognised = 0;
+  for (const p of paths) {
+    const meta = rolloutMeta(p);
+    if (meta?.cwd) recognised++;
+  }
+  return { examined: paths.length, recognised };
+}
+
 /** Claude transcripts for a project last written at or after `sinceMs`. */
 export function claudeTranscriptsSince(projectDir, sinceMs) {
   const dir = claudeProjectDir(projectDir);

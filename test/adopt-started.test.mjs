@@ -147,3 +147,43 @@ test("a rollout head record larger than one buffer is still parsed", () => {
   });
   assert.deepEqual(JSON.parse(out), [id], "a 22KB head record must not read as a foreign project");
 });
+
+// The discovery canary. The 16KB bug proved that a reader can die without a
+// single error: discovery simply returned nothing, which is indistinguishable
+// from having nothing to return. So the reader is measured against the disk.
+test("every registered agent can report whether its discovery reader still works", () => {
+  for (const id of AGENT_IDS) {
+    assert.equal(typeof adapterFor(id).discoveryProbe, "function", `${id} must report discovery health`);
+  }
+});
+
+test("stored sessions that yield no id at all are reported blind, not empty", () => {
+  const home = fakeGrokHome();
+  const project = "/tmp/project-blind";
+  // A storage format we no longer understand: the folders are there, the shape
+  // inside them moved. Before this check, discovery returned null and doctor
+  // called the project fresh.
+  const dir = path.join(home, "sessions", encodeURIComponent(project), "019f-unknown");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "summary.json"), JSON.stringify({ meta: { uuid: "019f-unknown" } }));
+
+  const res = withGrokHome(home, () => adapterFor("grok").discoveryProbe(project));
+  assert.equal(res.status, "blind");
+  assert.equal(res.examined, 1);
+  assert.equal(res.recognised, 0);
+});
+
+test("a project with no stored sessions is neutral, never blind", () => {
+  const home = fakeGrokHome();
+  const res = withGrokHome(home, () => adapterFor("grok").discoveryProbe("/tmp/project-never-used"));
+  assert.equal(res.status, "none", "a fresh project must not be reported as a broken reader");
+});
+
+test("readable storage stays readable", () => {
+  const home = fakeGrokHome();
+  const project = "/tmp/project-fine";
+  writeGrokSession(home, project, "ok1", "2026-07-21T00:00:00Z");
+  const res = withGrokHome(home, () => adapterFor("grok").discoveryProbe(project));
+  assert.equal(res.status, "readable");
+  assert.equal(res.recognised, 1);
+});

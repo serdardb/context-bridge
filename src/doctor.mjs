@@ -51,7 +51,9 @@ const SESSION_BROKEN = new Set(["missing", "mismatch"]);
  * and a green tick beside it would be the original bug wearing a new word.
  */
 function anyRouteReady(r) {
-  const drifted = AGENT_IDS.some((id) => SESSION_BROKEN.has(r.agents[id].session.status));
+  const drifted = AGENT_IDS.some(
+    (id) => SESSION_BROKEN.has(r.agents[id].session.status) || r.agents[id].discovery?.status === "blind"
+  );
   return !drifted && Object.values(r.routes).some((route) => route.ready);
 }
 
@@ -88,6 +90,13 @@ export function collect(projectDir) {
   // doctor never guesses the way adopt is allowed to.
   for (const agentId of AGENT_IDS) agents[agentId].session = probeSession(projectDir, agentId, state);
 
+  // The canary above watches the parser that reads a LINKED session. Discovery
+  // uses a different reader, and that one died silently once: a 16KB buffer
+  // against a 22KB rollout head record meant no session was ever found and
+  // nothing said so, because an empty result is what "nothing to find" looks
+  // like too. So the reader is checked against what is actually on disk.
+  for (const agentId of AGENT_IDS) agents[agentId].discovery = probeDiscovery(projectDir, agentId);
+
   // A route is ready when both ends are. Claude to Codex additionally has the
   // official import for its first switch; every other first switch opens a new
   // session seeded with the delta, which is weaker and says so.
@@ -103,7 +112,9 @@ export function collect(projectDir) {
       // and the footer promising that CONFIGURED covers readability would have
       // been the one telling it. `none` is not broken: a fresh project has no
       // session yet and must never go red.
-      const broken = [from, to].filter((a) => SESSION_BROKEN.has(agents[a].session.status));
+      const broken = [from, to].filter(
+        (a) => SESSION_BROKEN.has(agents[a].session.status) || agents[a].discovery.status === "blind"
+      );
       const configured = installed && broken.length === 0;
       routes[`${from}->${to}`] = {
         ready: configured,
@@ -164,6 +175,17 @@ function probeSession(projectDir, agentId, state) {
   }
 }
 
+/** Ask the adapter whether its own discovery reader still understands the disk. */
+function probeDiscovery(projectDir, agentId) {
+  const adapter = adapterFor(agentId);
+  if (!adapter?.discoveryProbe) return { status: "none", examined: 0, recognised: 0 };
+  try {
+    return adapter.discoveryProbe(projectDir);
+  } catch (err) {
+    return { status: "blind", examined: 0, recognised: 0, detail: err.message };
+  }
+}
+
 /** One line per agent, worded so nobody reads a fresh project as a broken one. */
 function sessionLine(session) {
   const n = session.messages;
@@ -218,6 +240,16 @@ function render(r) {
             ? "Official transfer machinery available (vendor)"
             : "Official OpenAI Codex plugin missing",
         "claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex"
+      );
+    }
+    if (a.discovery?.status === "blind") {
+      // Deliberately silent when healthy: doctor is already long, and a check
+      // that only speaks when something is wrong is a check people still read.
+      row(
+        false,
+        `Session DISCOVERY is blind: ${a.discovery.examined} stored session(s), none recognisable` +
+          `${a.discovery.detail ? ` (${a.discovery.detail})` : ""} — the bridge can no longer find sessions it was not already told about`,
+        "this usually means the agent changed its storage format; please open an issue"
       );
     }
     const sl = sessionLine(a.session);

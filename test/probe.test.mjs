@@ -85,7 +85,7 @@ test("doctor on a fresh project reports no session, never a failure", () => {
 test("route lines say CONFIGURED, because shallow checks cannot prove an agent works", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-labels-"));
   for (const route of Object.values(collect(project).routes)) {
-    assert.match(route.status, /^(CONFIGURED|NOT CONFIGURED)$/);
+    assert.match(route.status, /^(CONFIGURED|NOT CONFIGURED|SESSION UNREADABLE)$/);
     assert.doesNotMatch(route.status, /READY/, "READY overclaimed: it read as proof the switch works");
   }
 });
@@ -142,7 +142,10 @@ test("an unreadable linked session takes its routes off green and the exit code 
   for (const [name, route] of Object.entries(r.routes)) {
     if (!name.includes("claude")) continue;
     assert.equal(route.configured, false, `${name} must not stay green over an unreadable session`);
-    assert.equal(route.status, "SESSION UNREADABLE");
+    // The wording depends on whether the agents are installed at all, which is
+    // false on CI and true on a developer machine. What must hold everywhere is
+    // that the route is not green and carries the reason.
+    assert.match(route.status, /^(SESSION UNREADABLE|NOT CONFIGURED)$/);
     assert.match(route.sessionWarning ?? "", /claude/);
   }
 });

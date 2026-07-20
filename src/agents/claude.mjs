@@ -33,6 +33,17 @@ export function discover(projectDir) {
 }
 
 /**
+ * Claude names each transcript after its session id, so discovery is readable
+ * whenever the project directory holds transcripts we can name.
+ */
+export function discoveryProbe(projectDir) {
+  const found = claudeTranscriptsSince(projectDir, 0);
+  if (!found.length) return { status: "none", examined: 0, recognised: 0 };
+  const recognised = found.filter((c) => c.sessionId).length;
+  return { status: recognised > 0 ? "readable" : "blind", examined: found.length, recognised };
+}
+
+/**
  * Claude normally links itself through the SessionStart hook, so this is the
  * fallback for a session running without the plugin installed. Transcripts carry
  * no pid, so the only evidence is the project directory and the time window.

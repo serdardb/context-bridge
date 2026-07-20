@@ -1,5 +1,10 @@
 // Codex adapter. Thin wrapper over the existing rollout discovery and parsing.
-import { findRolloutPath, latestRolloutForProject, rolloutsForProjectSince } from "../discover.mjs";
+import {
+  findRolloutPath,
+  latestRolloutForProject,
+  rolloutsForProjectSince,
+  rolloutHeadHealth,
+} from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import path from "node:path";
@@ -38,6 +43,18 @@ export function discover(projectDir) {
   return found
     ? { id: found.threadId, transcriptPath: found.rolloutPath, updatedAt: found.mtime, deterministic: false }
     : null;
+}
+
+/**
+ * Is discovery itself still working? Codex sessions are stored by date, not by
+ * project, so this asks whether the head-record reader can read rollouts at all
+ * rather than whether one belongs here. A project with no Codex session must not
+ * look broken; a machine full of rollouts that we can no longer parse must.
+ */
+export function discoveryProbe() {
+  const { examined, recognised } = rolloutHeadHealth();
+  if (examined === 0) return { status: "none", examined, recognised };
+  return { status: recognised > 0 ? "readable" : "blind", examined, recognised };
 }
 
 /**

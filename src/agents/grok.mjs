@@ -153,6 +153,26 @@ export function activitySince(ref, mark) {
 }
 
 /**
+ * Grok stores sessions under a per-project directory, so discovery health is
+ * answerable directly: session folders exist, and each should yield an id from
+ * its summary. Folders we cannot read a single id from mean the format moved.
+ */
+export function discoveryProbe(projectDir) {
+  let entries;
+  try {
+    entries = fs.readdirSync(sessionsRoot(projectDir), { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch {
+    return { status: "none", examined: 0, recognised: 0 };
+  }
+  if (!entries.length) return { status: "none", examined: 0, recognised: 0 };
+  let recognised = 0;
+  for (const e of entries) {
+    if (readJson(path.join(sessionsRoot(projectDir), e.name, "summary.json"))?.info?.id) recognised++;
+  }
+  return { status: recognised > 0 ? "readable" : "blind", examined: entries.length, recognised };
+}
+
+/**
  * Grok publishes a live registry of open sessions, which makes this the one
  * agent besides Codex where "the session we just started" is a fact rather than
  * a guess: ~/.grok/active_sessions.json holds {session_id, pid, cwd, opened_at}
