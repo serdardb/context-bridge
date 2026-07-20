@@ -54,3 +54,8 @@ export function idleAfter() {
 export function currentMark() {
   return nowIso();
 }
+
+/** A brand new session. Claude receives context through its hook, not a prompt. */
+export function startCommand(extraArgs = []) {
+  return { cmd: "claude", args: [...extraArgs] };
+}

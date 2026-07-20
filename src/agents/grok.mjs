@@ -57,7 +57,9 @@ export function discover(projectDir) {
   }
   if (!found.length) return null;
   found.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
-  return found[0];
+  // The cwd match is exact, so a single candidate is a certainty; several mean the
+  // newest is only a guess and the caller must confirm.
+  return { ...found[0], deterministic: found.length === 1 };
 }
 
 /** Rebuild the full ref (both streams) from a stored session id. */
@@ -196,4 +198,9 @@ function filesFromToolEvent(e) {
   }
   if (Array.isArray(e.paths)) out.push(...e.paths.filter((p) => typeof p === "string"));
   return out;
+}
+
+/** A brand new session seeded by an initial prompt: `grok [OPTIONS] [PROMPT]`. */
+export function startCommand(extraArgs = []) {
+  return { cmd: "grok", args: [...extraArgs] };
 }

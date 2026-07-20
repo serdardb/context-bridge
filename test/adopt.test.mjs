@@ -20,7 +20,7 @@ test("handoff claude auto-adopts the running Codex session via CODEX_THREAD_ID",
   });
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /Adopted this Codex session/);
-  assert.match(res.stdout, /start a fresh Claude session/);
+  assert.match(res.stdout, /start a fresh Claude/);
   assert.doesNotMatch(res.stderr, /fatal:/, "git probes in a non-repo must not leak stderr");
   assert.match(res.stdout, /not running under the bridge launcher/);
   assert.doesNotMatch(res.stdout, /launcher will close/, "must not promise an automatic switch without a launcher");
@@ -61,7 +61,7 @@ test("handoff claude env-adopt without a rollout warns loudly but still transfer
     { CODEX_HOME: codexHome, CODEX_THREAD_ID: THREAD_ID }
   );
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /rollout file was not found/);
+  assert.match(res.stdout, /transcript file was not found/);
 
   const s = loadState(project);
   assert.equal(s.agents.codex.id, THREAD_ID);
@@ -76,7 +76,7 @@ test("a rollout belonging to a different project directory is never adopted", ()
 
   const res = runBridge(["handoff", "claude", "--adopt"], otherProject, { CODEX_HOME: codexHome });
   assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /no Codex session found/);
+  assert.match(res.stderr, /no linked or discoverable codex or grok session/);
   assert.ok(project); // fixture rollout exists but points at the other cwd
 });
 
@@ -108,7 +108,8 @@ test("handoff claude without any Codex session fails with guidance", () => {
   const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codexhome-"));
   const res = runBridge(["handoff", "claude"], project, { CODEX_HOME: codexHome });
   assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /no Codex session found/);
+  // With three agents the bridge cannot assume Codex; it says what it looked for.
+  assert.match(res.stderr, /no linked or discoverable codex or grok session/);
 });
 
 test("SessionStart hook delivers a sessionId=null delta to the first new Claude session", () => {

@@ -202,13 +202,16 @@ test("a v1 state file is migrated in place, with a backup kept", async () => {
   fs.writeFileSync(statePath(project), JSON.stringify(v1));
 
   const s = loadState(project);
-  assert.equal(s.version, 2);
+  assert.equal(s.version, 3);
+  // v3 swaps the pair's marks: each agent now marks its OWN stream, and v1 stored
+  // claude's mark as a position in codex's stream.
   assert.deepEqual(s.agents.claude, {
     id: "claude-1",
     transcriptPath: "/tmp/claude.jsonl",
-    mark: "2026-07-20T00:00:00Z",
+    mark: null,
     idle: true,
   });
+  assert.equal(s.agents.codex.mark, "2026-07-20T00:00:00Z");
   assert.equal(s.agents.codex.id, "codex-1");
   assert.equal(s.agents.codex.transcriptPath, "/tmp/rollout.jsonl");
   assert.ok(s.agents.grok, "a new agent slot appears without any migration of its own");
@@ -217,8 +220,8 @@ test("a v1 state file is migrated in place, with a backup kept", async () => {
   assert.equal(s.pendingInjection.deltaFile, ".bridge/checkpoints/d.md");
 
   assert.ok(fs.existsSync(statePath(project) + ".v1.backup"), "the original file is kept");
-  assert.equal(JSON.parse(fs.readFileSync(statePath(project), "utf8")).version, 2, "migration is written back");
-  assert.equal(loadState(project).version, 2, "second load is a no-op");
+  assert.equal(JSON.parse(fs.readFileSync(statePath(project), "utf8")).version, 3, "migration is written back");
+  assert.equal(loadState(project).version, 3, "second load is a no-op");
 });
 
 test("a state file from a newer bridge is refused, not guessed at", async () => {
@@ -229,3 +232,44 @@ test("a state file from a newer bridge is refused, not guessed at", async () => 
   assert.throws(() => loadState(project), /newer than this bridge understands/);
 });
 
+
+test("the official first import marks the new thread, so the return does not replay it", async () => {
+  // Regression: a v3 mark means "my own stream is shared up to here". The import
+  // writes the whole Claude conversation into the fresh Codex thread, so leaving
+  // that thread unmarked made the first Codex→Claude delta echo it all back.
+  const { handoff } = await import("../src/handoff.mjs");
+  const { loadState } = await import("../src/state.mjs");
+
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-import-")));
+  const codexHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-import-home-")));
+  const threadId = "0198dddd-eeee-7fff-8aaa-bbbbcccc0001";
+  const day = path.join(codexHome, "sessions", "2026", "07", "20");
+  fs.mkdirSync(day, { recursive: true });
+  // What the official transfer produces: the imported conversation, already in
+  // the new thread before the bridge has recorded anything.
+  writeJsonl(path.join(day, `rollout-2026-07-20T10-00-00-${threadId}.jsonl`), [
+    { timestamp: "2026-07-20T10:00:00.000Z", type: "session_meta", payload: { id: threadId, cwd: project } },
+    { timestamp: "2026-07-20T10:00:01.000Z", type: "event_msg", payload: { type: "user_message", message: "imported history" } },
+    { timestamp: "2026-07-20T10:00:02.000Z", type: "event_msg", payload: { type: "agent_message", message: "imported reply" } },
+  ]);
+
+  const claudeTranscript = path.join(project, "claude.jsonl");
+  fs.writeFileSync(claudeTranscript, "");
+  process.env.CODEX_HOME = codexHome;
+
+  const state = (await import("../src/state.mjs")).defaultState(project);
+  state.agents.claude = { id: "claude-1", transcriptPath: claudeTranscript, mark: null, idle: false };
+  (await import("../src/state.mjs")).saveState(project, state);
+
+  // The real transfer shells out to the OpenAI plugin; only its result matters here.
+  handoff(project, "codex", {
+    from: "claude",
+    decisions: "d",
+    transfer: () => ({ threadId }),
+    checkTarget: () => {}, // the fixture CODEX_HOME has no credentials, and auth is not what this test is about
+  });
+
+  const s = loadState(project);
+  assert.equal(s.agents.codex.id, threadId);
+  assert.ok(s.agents.codex.mark, "the imported thread must be marked as already shared");
+});

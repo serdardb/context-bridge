@@ -103,18 +103,26 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   if (!adapter) return { cmd: null, args: [], note: `Unknown agent '${agent}'.` };
 
   const slot = agentSlot(s, agent);
-  if (!slot.id) {
-    // Claude can always start fresh; the others must be linked by a handoff first,
-    // because there is no session to resume and no official import for them.
-    if (adapter.injection === "hook") {
-      const { cmd, args } = adapter.resumeCommand({ id: null }, extra);
-      return { cmd, args, note: `Starting a new ${adapter.displayName} session for this project…` };
-    }
+  const inj = s.pendingInjection;
+  const seeding = !slot.id && inj?.agent === agent && inj.id == null;
+  if (!slot.id && !seeding && adapter.injection === "prompt") {
+    // Nothing to resume and no context waiting: starting blind would silently
+    // drop the user into an empty session that the bridge does not track.
     return {
       cmd: null,
       args: [],
-      note: `No linked ${adapter.displayName} session yet. Start inside Claude and run /bridge ${agent} for the first switch.`,
+      note: `No linked ${adapter.displayName} session yet. Hand off to it from another agent first.`,
     };
+  }
+  if (!slot.id) {
+    // A fresh session. Prompt-injecting agents get the delta as their opening
+    // message; hook-injecting ones receive it through their own session hook.
+    const { cmd, args } = adapter.startCommand(extra);
+    const note = `Starting a new ${adapter.displayName} session for this project…`;
+    if (!seeding || adapter.injection !== "prompt") return { cmd, args, note };
+    const seeded = consumeDelta(projectDir, s, inj, agent);
+    if (seeded) args.push(...adapter.promptArgs(seeded));
+    return { cmd, args, note };
   }
 
   const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
@@ -124,27 +132,36 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   // Prompt-injecting agents receive a pending delta as the auto-submitted resume
   // prompt (proven in T2 for Codex). Hook-injecting agents get it from their own
   // session hook instead, so nothing is appended here.
-  const inj = s.pendingInjection;
-  const targeted = inj?.agent === agent && (inj.threadId ?? inj.sessionId ?? slot.id) === slot.id;
-  if (adapter.injection === "prompt" && targeted) {
-    const deltaPath = path.join(projectDir, inj.deltaFile);
-    try {
-      const delta = fs.readFileSync(deltaPath, "utf8");
-      try {
-        fs.renameSync(deltaPath, deltaPath + ".consumed");
-      } catch {
-        log(`${WARN} Pending delta could not be consumed (${inj.deltaFile}); resuming ${agent} without it.`);
-        return { cmd, args, note };
-      }
-      args.push(...adapter.promptArgs(delta));
-      s.pendingInjection = null;
-      saveState(projectDir, s);
-    } catch {
-      // If unreadable, do not pretend: leave marker, tell the user.
-      log(`${WARN} Pending delta could not be read (${inj.deltaFile}); resuming ${agent} without it.`);
-    }
+  if (adapter.injection === "prompt" && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
+    const delta = consumeDelta(projectDir, s, inj, agent);
+    if (delta) args.push(...adapter.promptArgs(delta));
   }
   return { cmd, args, note };
+}
+
+/**
+ * Read a pending delta and mark it consumed, exactly once. Returns null when it
+ * could not be read or claimed — and says so, because a silently dropped delta is
+ * indistinguishable from having no context at all.
+ */
+function consumeDelta(projectDir, s, inj, agent) {
+  const deltaPath = path.join(projectDir, inj.deltaFile);
+  let delta;
+  try {
+    delta = fs.readFileSync(deltaPath, "utf8");
+  } catch {
+    log(`${WARN} Pending delta could not be read (${inj.deltaFile}); starting ${agent} without it.`);
+    return null;
+  }
+  try {
+    fs.renameSync(deltaPath, deltaPath + ".consumed");
+  } catch {
+    log(`${WARN} Pending delta could not be consumed (${inj.deltaFile}); starting ${agent} without it.`);
+    return null;
+  }
+  s.pendingInjection = null;
+  saveState(projectDir, s);
+  return delta;
 }
 
 /**

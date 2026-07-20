@@ -1,11 +1,11 @@
 import { runLoop } from "./launcher.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
-import { handoffCodex, handoffClaude } from "./handoff.mjs";
+import { handoff } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
-import { AGENT_IDS } from "./agents/index.mjs";
+import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
 const VERSION = "0.6.0";
@@ -14,8 +14,7 @@ const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not contex
 
 Usage:
   bridge                 Start the bridged session loop (resumes where you left off)
-  bridge claude [flags]  Start the loop with Claude ( flags go to Claude as-is )
-  bridge codex  [flags]  Start the loop with Codex  ( flags go to Codex as-is )
+${AGENT_IDS.map((a) => `  bridge ${(a + " [flags]").padEnd(16)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
   bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps )
   bridge status          Show project bridge status
   bridge clean           Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
@@ -29,12 +28,12 @@ Agent flags:
   disk: the next 'bridge' starts from the agent's own defaults again.
 
 Inside the agents:
-  Claude Code:  /bridge codex     hand off to Codex
-  Codex:        $bridge claude    hand off back to Claude
+  Claude Code:  /bridge <agent>   hand off to another agent
+  Codex, Grok:  $bridge <agent>   hand off to another agent
 `;
 
-const COMMANDS = ["claude", "codex", "doctor", "status", "clean", "handoff", "internal-hook", "help", "version"];
-const LAUNCHER_COMMANDS = ["claude", "codex"];
+const LAUNCHER_COMMANDS = AGENT_IDS;
+const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "handoff", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -55,12 +54,15 @@ export async function main(argv) {
     }
   }
 
+  if (AGENT_IDS.includes(cmd)) {
+    process.exitCode = await runLoop(projectDir, cmd, splitLauncherArgs(tailAfter(argv, cmd)));
+    return;
+  }
+
   switch (cmd) {
     case undefined:
-    case "claude":
-    case "codex":
       // Anything after the agent name is the agent's own flag, forwarded as-is.
-      process.exitCode = await runLoop(projectDir, cmd ?? null, splitLauncherArgs(tailAfter(argv, cmd)));
+      process.exitCode = await runLoop(projectDir, null, splitLauncherArgs(tailAfter(argv, cmd)));
       return;
 
     case "doctor":
@@ -97,12 +99,10 @@ export async function main(argv) {
         next: valueOf(argv, "--next"),
         adopt: flags.has("--adopt"),
       };
-      if (target === "codex") {
-        log(handoffCodex(projectDir, opts));
-      } else if (target === "claude") {
-        log(handoffClaude(projectDir, opts));
+      if (AGENT_IDS.includes(target)) {
+        log(handoff(projectDir, target, opts));
       } else {
-        log(`Usage: bridge handoff <codex|claude> [--decisions "…"] [--next "…"] [--adopt]`);
+        log(`Usage: bridge handoff <${AGENT_IDS.join("|")}> [--decisions "…"] [--next "…"] [--adopt]`);
         process.exitCode = 1;
       }
       return;

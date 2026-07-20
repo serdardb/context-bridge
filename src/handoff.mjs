@@ -1,21 +1,16 @@
-// `bridge handoff codex` — runs inside Claude (via the /bridge slash command).
-// `bridge handoff claude` — runs inside Codex (via the $bridge skill).
-// Both persist state + pending markers; the launcher does the actual switching.
-import fs from "node:fs";
+// `bridge handoff <target>` — runs inside the agent you are leaving.
+// It persists state and a pending marker; the launcher does the actual switching.
+//
+// One function serves every direction. The source agent is whoever is running,
+// the target is whoever was asked for, and each side's behaviour comes from its
+// adapter rather than from its name.
 import path from "node:path";
-import { ensureState, saveState, writeCheckpoint } from "./state.mjs";
+import { ensureState, saveState, writeCheckpoint, agentSlot } from "./state.mjs";
+import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
-import { findRolloutPath, latestRolloutForProject, latestClaudeTranscript } from "./discover.mjs";
-import {
-  claudeMessagesSince,
-  codexActivitySince,
-  gitDelta,
-  currentGitSha,
-  composeDelta,
-  composeFullContext,
-} from "./delta.mjs";
+import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
 import { pruneCheckpoints } from "./clean.mjs";
-import { nowIso, tryExec, fileExists, OK, WARN, BridgeError } from "./util.mjs";
+import { nowIso, tryExec, OK, WARN, BridgeError } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
 function underLauncher() {
@@ -39,210 +34,221 @@ function splitNotes(s) {
     .filter(Boolean);
 }
 
-function preflightCodex() {
-  if (!tryExec("codex", ["--version"])) {
-    throw new BridgeError("Codex CLI is not installed. Install with: npm install -g @openai/codex  (then rerun /bridge codex)");
-  }
-  if (tryExec("codex", ["login", "status"]) === null) {
-    throw new BridgeError("Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then rerun /bridge codex");
-  }
-}
+/**
+ * Which agent is running this command. The env markers are exact when present;
+ * otherwise the launcher's own record of the active agent is authoritative.
+ */
+function detectSource(s, target) {
+  const fromEnv = process.env.CODEX_THREAD_ID ? "codex" : process.env.CLAUDECODE ? "claude" : null;
+  const candidate = fromEnv ?? s.activeAgent ?? null;
+  if (candidate && candidate !== target) return candidate;
 
-/** Claude -> Codex handoff. Returns a short user-facing report string. */
-export function handoffCodex(projectDir, { decisions = "", next = "", adopt = false } = {}) {
-  const s = ensureState(projectDir);
-  const lines = [];
-
-  if (!s.agents.claude.id || !s.agents.claude.transcriptPath) {
-    // Adopt path: the hook did not record this session (plugin installed
-    // mid-session, or state was created after startup). Transcript discovery is
-    // a HEURISTIC (newest mtime), so it requires explicit user confirmation.
-    const cand = latestClaudeTranscript(projectDir);
-    if (!cand) {
-      throw new BridgeError(
-        "No Claude session recorded for this project yet. The context-bridge plugin's SessionStart hook records it — " +
-          "make sure the plugin is installed (`bridge doctor`) and you are running /bridge codex inside a Claude session started in this project."
-      );
-    }
-    if (!adopt) {
-      throw new BridgeError(
-        "No Claude session recorded for this project, but a recent Claude transcript was found " +
-          `(last active ${new Date(cand.mtime).toISOString()}). ` +
-          "Confirm with the user that it belongs to THIS conversation, then rerun the same command with --adopt.",
-        { exitCode: 2, code: "adopt-confirmation-needed" }
-      );
-    }
-    s.agents.claude.id = cand.sessionId;
-    s.agents.claude.transcriptPath = cand.p;
-    lines.push(`${OK} Adopted the most recent Claude session of this project (user-confirmed).`);
-  }
-  preflightCodex();
-
-  const now = nowIso();
-  if (!s.agents.codex.id) {
-    // FIRST switch: official import (full context seed). Never repeated afterwards.
-    const res = transferClaudeSession(s.agents.claude.transcriptPath);
-    s.agents.codex.id = res.threadId;
-    s.agents.codex.transcriptPath = findRolloutPath(res.threadId);
-    s.agents.codex.mark = now; // codex now knows claude-context up to now
-    s.agents.claude.mark = now; // nothing codex-side yet for claude to learn
-    lines.push(`${OK} First switch: Claude session imported into Codex via the official OpenAI transfer.`);
-  } else {
-    // REPEAT switch: resume + delta. Never re-import.
-    const msgs = claudeMessagesSince(s.agents.claude.transcriptPath, s.agents.codex.mark);
-    const git = gitDelta(projectDir, s.git.sha);
-    const sections = {
-      fromAgent: "claude",
-      conversation: msgs,
-      decisions: splitNotes(decisions),
-      work: git.lines,
-      next: splitNotes(next),
-    };
-    const delta = composeDelta(sections);
-    const fullRel = writeCheckpoint(projectDir, `${ts(now)}-claude-to-codex-full.md`, composeFullContext(sections));
-    const deltaWithAck =
-      delta +
-      `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.` +
-      "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
-    const rel = writeCheckpoint(projectDir, `${ts(now)}-claude-to-codex.md`, deltaWithAck);
-    s.pendingInjection = { agent: "codex", id: s.agents.codex.id, deltaFile: rel, createdAt: now };
-    s.agents.codex.mark = now;
-    lines.push(`${OK} Prepared Claude→Codex context delta (${msgs.length} messages, ${git.lines.length} work items).`);
-  }
-
-  s.git = { sha: currentGitSha(projectDir), recordedAt: now };
-  s.agents.claude.idle = false; // Stop hook will flip this when the turn completes
-  s.pendingHandoff = { target: "codex", ready: true, requestedAt: now };
-  saveState(projectDir, s);
-
-  autoPrune(projectDir, lines);
-  if (underLauncher()) {
-    lines.push(`${OK} Handoff to Codex is ready. The bridge launcher will close Claude and open Codex automatically.`);
-  } else {
-    lines.push(`${OK} Handoff to Codex is ready.`);
-    lines.push(
-      `${WARN} This session is not running under the bridge launcher, so nothing switches automatically: ` +
-        "exit Claude and run 'bridge codex' to continue. Nothing is lost: this Claude session is saved and resumes on the way back."
+  const others = AGENT_IDS.filter((agentId) => agentId !== target);
+  // Only one other agent is linked: it must be the one handing off.
+  const linked = others.filter((agentId) => agentSlot(s, agentId).id);
+  if (linked.length === 1) return linked[0];
+  if (linked.length > 1) {
+    throw new BridgeError(
+      `Cannot tell which agent is handing off to ${target}: ${linked.join(" and ")} are both linked. ` +
+        "Run this from inside an agent started by the bridge."
     );
   }
-  return lines.join("\n");
+  // Nothing linked yet: only one agent has a session in this project, so a
+  // first handoff from a bare session still works (adoption rules still apply).
+  const discovered = others.filter((agentId) => adapterFor(agentId).discover(projectDirOf(s)));
+  if (discovered.length === 1) return discovered[0];
+  throw new BridgeError(
+    `Cannot tell which agent is handing off to ${target}: no linked or discoverable ` +
+      `${others.join(" or ")} session in this project. ` +
+      "Run this from inside an agent started in this directory."
+  );
 }
 
-/** Codex -> Claude handoff. Returns a short user-facing report string. */
-export function handoffClaude(projectDir, { decisions = "", next = "", adopt = false } = {}) {
+function projectDirOf(s) {
+  return s.project;
+}
+
+function preflight(agentId) {
+  const cmd = { claude: "claude", codex: "codex", grok: "grok" }[agentId];
+  if (!tryExec(cmd, ["--version"])) {
+    throw new BridgeError(`${cmd} is not installed or not on PATH. Run: bridge doctor`);
+  }
+  if (agentId === "codex" && tryExec("codex", ["login", "status"]) === null) {
+    throw new BridgeError(
+      "Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then try again"
+    );
+  }
+}
+
+/**
+ * Make sure the source agent is linked, adopting its running session when needed.
+ * Deterministic identity adopts silently; a heuristic match needs --adopt.
+ */
+function ensureSourceLinked(projectDir, s, sourceId, adopt, lines) {
+  const slot = agentSlot(s, sourceId);
+  if (slot.id) return false;
+
+  const adapter = adapterFor(sourceId);
+  const found = adapter.discover(projectDir);
+  if (!found) {
+    throw new BridgeError(
+      `No ${adapter.displayName} session found for this project, and none is linked. ` +
+        `Start ${adapter.displayName} in this directory, or hand off from an agent that is linked.`
+    );
+  }
+  if (found.deterministic !== true && !adopt) {
+    throw new BridgeError(
+      `No ${adapter.displayName} session is linked for this project, but an unlinked one working in this directory was found. ` +
+        "Confirm with the user that it is the right session, then rerun the same command with --adopt.",
+      { exitCode: 2, code: "adopt-confirmation-needed" }
+    );
+  }
+  slot.set({ id: found.id, transcriptPath: found.transcriptPath ?? null, mark: null });
+  lines.push(
+    found.deterministic === true
+      ? `${OK} Adopted this ${adapter.displayName} session (started outside the bridge) as the project's linked one.`
+      : `${OK} Adopted the most recent ${adapter.displayName} session of this project (user-confirmed).`
+  );
+  if (!found.transcriptPath) {
+    // Never silent: without the transcript the delta loses the conversation and
+    // carries only git and decision truth.
+    lines.push(
+      `${WARN} Its transcript file was not found, so the delta will carry git and decision truth only, ` +
+        "not the conversation."
+    );
+  }
+  return true; // adopted: the whole session is new to the other side
+}
+
+/** Hand the current session off to `target`. Returns a short user-facing report. */
+export function handoff(
+  projectDir,
+  target,
+  // `transfer` and `checkTarget` are injectable so the official-import path can be
+  // exercised without shelling out to the OpenAI plugin or a real login.
+  {
+    decisions = "",
+    next: nextNotes = "",
+    adopt = false,
+    from = null,
+    transfer = transferClaudeSession,
+    checkTarget = preflight,
+  } = {}
+) {
+  const targetAdapter = adapterFor(target);
+  if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
+
   const s = ensureState(projectDir);
   const lines = [];
+  const sourceId = from ?? detectSource(s, target);
+  if (sourceId === target) throw new BridgeError(`Already in ${targetAdapter.displayName}; nothing to hand off.`);
+  const sourceAdapter = adapterFor(sourceId);
+  checkTarget(target);
 
-  let adopted = false;
-  if (!s.agents.codex.id) {
-    // Adopt rule: automatic when identity is deterministic, confirmed when heuristic.
-    const envId = process.env.CODEX_THREAD_ID;
-    if (envId) {
-      // Codex CLI exposes the running session's thread id — zero ambiguity.
-      s.agents.codex.id = envId;
-      s.agents.codex.transcriptPath = findRolloutPath(envId);
-      if (s.agents.codex.transcriptPath) {
-        lines.push(`${OK} Adopted this Codex session (started outside the bridge) as the project's linked thread.`);
-      } else {
-        // Never silent: without the rollout the delta loses the conversation,
-        // keeping only git + decision truth — say so here AND inside the delta.
-        lines.push(
-          `${WARN} Adopted this Codex session, but its rollout file was not found under CODEX_HOME — ` +
-            "the delta will carry git and decision truth only, not the conversation."
-        );
-      }
-    } else {
-      const cand = latestRolloutForProject(projectDir);
-      if (!cand) {
-        throw new BridgeError(
-          "No linked Codex thread and no Codex session found for this project. " +
-            "Start from Claude with /bridge codex, or run $bridge claude inside a Codex session working in this project."
-        );
-      }
-      if (!adopt) {
-        throw new BridgeError(
-          "No linked Codex thread for this project, but an unlinked Codex session working in this directory was found " +
-            `(started ${cand.startedAt ?? "at an unknown time"}, last active ${new Date(cand.mtime).toISOString()}). ` +
-            "Confirm with the user that it is the right session, then rerun the same command with --adopt.",
-          { exitCode: 2, code: "adopt-confirmation-needed" }
-        );
-      }
-      s.agents.codex.id = cand.threadId;
-      s.agents.codex.transcriptPath = cand.rolloutPath;
-      lines.push(`${OK} Adopted the most recent Codex session of this project (user-confirmed).`);
-    }
-    // The adopted conversation was never synced: deliver it from the beginning.
-    s.agents.claude.mark = null;
-    adopted = true;
-  }
-  if (!s.agents.codex.transcriptPath || !fileExists(s.agents.codex.transcriptPath)) {
-    s.agents.codex.transcriptPath = findRolloutPath(s.agents.codex.id);
-  }
-
+  const adopted = ensureSourceLinked(projectDir, s, sourceId, adopt, lines);
+  const sourceSlot = agentSlot(s, sourceId);
+  const targetSlot = agentSlot(s, target);
   const now = nowIso();
-  const activity = s.agents.codex.transcriptPath
-    ? codexActivitySince(s.agents.codex.transcriptPath, s.agents.claude.mark)
+
+  // FIRST switch, Claude to Codex only: the official OpenAI transfer seeds a full
+  // thread. No other pair has an equivalent, so those first switches carry the
+  // bounded delta plus its full-context companion instead.
+  if (!targetSlot.id && sourceId === "claude" && target === "codex") {
+    const res = transfer(sourceSlot.transcriptPath);
+    const targetRef = targetAdapter.hydrate(projectDir, { id: res.threadId });
+    targetSlot.set({ id: res.threadId, transcriptPath: targetRef?.transcriptPath ?? null });
+    // The import copies the whole Claude conversation into the new thread, and a
+    // v3 mark means "my own stream is shared up to here". Leaving the target
+    // unmarked would make the first return replay the entire imported history
+    // back at Claude.
+    targetSlot.set({ mark: targetRef ? targetAdapter.currentMark(targetRef) : now });
+    sourceSlot.set({ mark: sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot)) });
+    s.git = { sha: currentGitSha(projectDir), recordedAt: now };
+    sourceSlot.set({ idle: false });
+    s.pendingHandoff = { target, ready: true, requestedAt: now };
+    saveState(projectDir, s);
+    lines.push(`${OK} First switch: Claude session imported into Codex via the official OpenAI transfer.`);
+    lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter));
+    return lines.join("\n");
+  }
+
+  const sourceRef = sourceAdapter.hydrate(projectDir, sourceSlot);
+  const activity = sourceRef
+    ? sourceAdapter.activitySince(sourceRef, adopted ? null : sourceSlot.mark)
     : { messages: [], patchedFiles: [], turnsCompleted: 0 };
   const git = gitDelta(projectDir, s.git.sha);
-  const work = [
-    ...activity.patchedFiles.map((f) => `Modified via Codex patch: ${f}`),
-    ...git.lines,
-  ];
   const sections = {
-    fromAgent: "codex",
+    fromAgent: sourceId,
     conversation: activity.messages,
     decisions: splitNotes(decisions),
-    work,
-    next: splitNotes(next),
+    work: [...activity.patchedFiles.map((f) => `Modified via ${sourceAdapter.displayName}: ${f}`), ...git.lines],
+    next: splitNotes(nextNotes),
   };
+
+  const stem = `${ts(now)}-${sourceId}-to-${target}`;
+  const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, composeFullContext(sections));
   let delta = composeDelta(sections);
-  const fullRel = writeCheckpoint(projectDir, `${ts(now)}-codex-to-claude-full.md`, composeFullContext(sections));
   delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
-  if (adopted && s.agents.codex.transcriptPath) {
-    // The bounded delta cannot carry a whole adopted session — point Claude at
-    // the native rollout so it can read the full history on demand.
-    delta +=
-      `\n\nFull transcript of the adopted Codex session (JSONL): ${s.agents.codex.transcriptPath}` +
-      "\nRead it if you need more detail than this bounded delta.";
-  } else if (adopted) {
-    delta +=
-      "\n\n[Bridge warning] The adopted Codex session's conversation history could not be read " +
-      "(rollout file not found) — this delta carries git and decision truth only. " +
-      "Ask the user to fill in anything that seems missing.";
+  if (adopted) {
+    delta += sourceRef?.transcriptPath
+      ? `\n\nFull transcript of the adopted ${sourceAdapter.displayName} session: ${sourceRef.transcriptPath}` +
+        "\nRead it if you need more detail than this bounded delta."
+      : `\n\n[Bridge warning] The adopted ${sourceAdapter.displayName} session's history could not be read, ` +
+        "so this delta carries git and decision truth only. Ask the user to fill in anything that seems missing.";
   }
-  const rel = writeCheckpoint(projectDir, `${ts(now)}-codex-to-claude.md`, delta);
+  if (targetAdapter.injection === "prompt") {
+    delta += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
+  }
+  const deltaRel = writeCheckpoint(projectDir, `${stem}.md`, delta);
 
   s.pendingInjection = {
-    agent: "claude",
-    // null = Codex-first project: no session to resume — the delta seeds the
-    // first Claude session that starts in this project instead.
-    id: s.agents.claude.id ?? null,
-    deltaFile: rel,
+    agent: target,
+    // null = nothing to resume on that side: the delta seeds the first session
+    // the target opens in this project.
+    id: targetSlot.id ?? null,
+    deltaFile: deltaRel,
     createdAt: now,
   };
-  s.agents.claude.mark = now;
+  sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
   s.git = { sha: currentGitSha(projectDir), recordedAt: now };
-  s.pendingHandoff = { target: "claude", ready: true, requestedAt: now };
+  s.pendingHandoff = { target, ready: true, requestedAt: now };
   saveState(projectDir, s);
 
-  lines.push(`${OK} Prepared Codex→Claude context delta (${activity.messages.length} messages, ${work.length} work items).`);
-  const claudeTarget = s.agents.claude.id
-    ? "resume your original Claude session"
-    : "start a fresh Claude session seeded with this context";
+  lines.push(
+    `${OK} Prepared ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta ` +
+      `(${activity.messages.length} messages, ${sections.work.length} work items).`
+  );
   autoPrune(projectDir, lines);
-  if (underLauncher()) {
-    lines.push(`${OK} Handoff to Claude is ready. The bridge launcher will close Codex and ${claudeTarget} automatically.`);
-  } else {
-    lines.push(`${OK} Handoff to Claude is ready.`);
-    lines.push(
-      `${WARN} This session is not running under the bridge launcher, so nothing switches automatically: ` +
-        `exit Codex and run 'bridge claude' to ${claudeTarget}. Nothing is lost: this Codex thread stays linked and resumes next time.`
-    );
-  }
-  if (!decisions && !next) {
+  lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter));
+  if (!decisions && !nextNotes) {
     lines.push(`${WARN} No --decisions/--next notes were provided; the delta contains conversation + git truth only.`);
   }
   return lines.join("\n");
+}
+
+/** The one honest sentence about what happens next, launcher or not. */
+function switchNote(targetAdapter, targetSlot, sourceAdapter) {
+  const what = targetSlot.id
+    ? `resume your ${targetAdapter.displayName} session`
+    : `start a fresh ${targetAdapter.displayName} session seeded with this context`;
+  if (underLauncher()) {
+    return [`${OK} Handoff is ready. The bridge launcher will close ${sourceAdapter.displayName} and ${what} automatically.`];
+  }
+  return [
+    `${OK} Handoff is ready.`,
+    `${WARN} This session is not running under the bridge launcher, so nothing switches automatically: ` +
+      `exit ${sourceAdapter.displayName} and run 'bridge ${targetAdapter.id}' to ${what}. ` +
+      `Nothing is lost: this ${sourceAdapter.displayName} session stays linked and resumes next time.`,
+  ];
+}
+
+/** Kept for the existing skills and CLI wiring. */
+export function handoffCodex(projectDir, opts = {}) {
+  return handoff(projectDir, "codex", { ...opts, from: opts.from ?? "claude" });
+}
+
+export function handoffClaude(projectDir, opts = {}) {
+  return handoff(projectDir, "claude", opts);
 }
 
 function ts(iso) {

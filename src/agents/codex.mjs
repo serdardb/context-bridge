@@ -65,3 +65,8 @@ export function idleAfter(ref, sinceIso) {
 export function currentMark() {
   return nowIso();
 }
+
+/** A brand new thread seeded by an initial prompt: `codex [OPTIONS] [PROMPT]`. */
+export function startCommand(extraArgs = []) {
+  return { cmd: "codex", args: [...extraArgs] };
+}

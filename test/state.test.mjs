@@ -19,5 +19,5 @@ test("ensureState creates bridge layout and appends .bridge/ to gitignore once",
   ensureState(project);
   const gitignore = fs.readFileSync(path.join(project, ".gitignore"), "utf8");
   assert.equal(gitignore.match(/^\.bridge\/$/gm)?.length, 1);
-  assert.equal(loadState(project).version, 2);
+  assert.equal(loadState(project).version, 3);
 });

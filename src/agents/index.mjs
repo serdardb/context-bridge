@@ -19,6 +19,8 @@
 //   discover(projectDir)          -> SessionRef | null   (deterministic, no guessing)
 //   hydrate(projectDir, slot)     -> SessionRef | null   (rebuild from stored state)
 //   resumeCommand(ref, extraArgs) -> {cmd, args}
+//   startCommand(extraArgs)       -> {cmd, args}   (fresh session, no id yet)
+//   promptArgs(delta)             -> string[]      (prompt-injecting agents only)
 //   currentMark(ref)              -> sync watermark to persist (vendor-defined)
 //   activitySince(ref, mark)      -> {messages, patchedFiles, turnsCompleted}
 //   idleAfter(ref, sinceIso)      -> boolean | null   (null = reported out of band)

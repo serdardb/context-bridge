@@ -6,7 +6,7 @@ import path from "node:path";
 import { writeJsonAtomic, readJson, nowIso, fileExists } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 export function bridgeDir(projectDir) {
   return path.join(projectDir, ".bridge");
@@ -110,7 +110,24 @@ function migrateV1ToV2(s) {
   return next;
 }
 
-const MIGRATIONS = { 1: migrateV1ToV2 };
+/**
+ * v2 stored each agent's mark as a position in the OTHER agent's stream, which
+ * only works for exactly two agents. v3 stores it as a position in the agent's
+ * OWN stream, so any number of agents can hand off in any direction. For the old
+ * pair that is precisely a swap.
+ */
+function migrateV2ToV3(s) {
+  const next = { ...s, version: 3, agents: { ...s.agents } };
+  const claude = s.agents?.claude;
+  const codex = s.agents?.codex;
+  if (claude && codex) {
+    next.agents.claude = { ...claude, mark: codex.mark ?? null };
+    next.agents.codex = { ...codex, mark: claude.mark ?? null };
+  }
+  return next;
+}
+
+const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3 };
 
 /**
  * Load state; returns null when no .bridge/state.json exists.
