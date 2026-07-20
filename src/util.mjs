@@ -172,3 +172,13 @@ export function installedCopyStatus(installedPath, sourcePath) {
     return "current"; // no source to compare against: not the user's problem
   }
 }
+
+/** Does this pid exist? Signal 0 tests without touching the process. */
+export function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM"; // alive, just owned by someone else
+  }
+}

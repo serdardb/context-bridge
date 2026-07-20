@@ -67,22 +67,92 @@ export function latestRolloutForProject(projectDir, { maxFiles = 300 } = {}) {
   return null;
 }
 
-/** Parse the session_meta head record of a rollout without reading the whole file. */
+/**
+ * Every rollout for this project whose session_meta timestamp is at or after
+ * `sinceIso`. Used to identify the session a launcher just started: unlike
+ * `latestRolloutForProject` this never picks a winner, because "newest" is a
+ * guess and the caller refuses to adopt when more than one candidate exists.
+ */
+export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 } = {}) {
+  const root = path.join(CODEX_HOME, "sessions");
+  if (!fileExists(root)) return [];
+  const want = path.resolve(projectDir);
+  const out = [];
+  let examined = 0;
+  for (const y of safeList(root).sort().reverse()) {
+    for (const m of safeList(path.join(root, y)).sort().reverse()) {
+      for (const d of safeList(path.join(root, y, m)).sort().reverse()) {
+        const dir = path.join(root, y, m, d);
+        for (const f of safeList(dir)) {
+          if (!f.startsWith("rollout-") || !f.endsWith(".jsonl")) continue;
+          if (++examined > maxFiles) return out;
+          const p = path.join(dir, f);
+          const meta = rolloutMeta(p);
+          if (!meta?.cwd || path.resolve(meta.cwd) !== want) continue;
+          if (sinceIso && (!meta.timestamp || meta.timestamp < sinceIso)) continue;
+          const threadId = meta.id || threadIdFromFilename(f);
+          if (threadId) out.push({ threadId, rolloutPath: p, startedAt: meta.timestamp });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/** Claude transcripts for a project last written at or after `sinceMs`. */
+export function claudeTranscriptsSince(projectDir, sinceMs) {
+  const dir = claudeProjectDir(projectDir);
+  if (!fileExists(dir)) return [];
+  return safeList(dir)
+    .filter((f) => f.endsWith(".jsonl"))
+    .map((f) => {
+      const p = path.join(dir, f);
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(p).mtimeMs;
+      } catch {}
+      return { p, mtime, sessionId: f.replace(/\.jsonl$/, "") };
+    })
+    .filter((c) => c.mtime >= sinceMs);
+}
+
+/**
+ * Parse the session_meta head record of a rollout without reading the whole file.
+ *
+ * The head record is not small: codex-cli embeds the full base instructions in it,
+ * which on 0.144.6 makes that single line 22KB. A fixed 16KB buffer therefore cut
+ * every record in half, JSON.parse failed silently, and no rollout ever matched a
+ * project — Codex discovery and adoption were dead on this machine and said
+ * nothing, because a failed parse is indistinguishable from "not this project".
+ * So read forward until the first record actually ends, with a ceiling.
+ */
 function rolloutMeta(p) {
+  const CHUNK = 64 * 1024;
+  const CEILING = 4 * 1024 * 1024; // a head record larger than this is not one
   let fd;
   try {
     fd = fs.openSync(p, "r");
-    const buf = Buffer.alloc(16384);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    for (const line of buf.toString("utf8", 0, n).split("\n").slice(0, 5)) {
-      if (!line.trim()) continue;
-      try {
-        const r = JSON.parse(line);
-        if (r.type === "session_meta") {
-          const pl = r.payload || {};
-          return { id: pl.id || null, cwd: pl.cwd || null, timestamp: r.timestamp || null };
-        }
-      } catch {}
+    let text = "";
+    const buf = Buffer.alloc(CHUNK);
+    for (let offset = 0; offset < CEILING; offset += CHUNK) {
+      const n = fs.readSync(fd, buf, 0, CHUNK, offset);
+      if (n <= 0) break;
+      text += buf.toString("utf8", 0, n);
+      const lines = text.split("\n");
+      // Only complete lines can be parsed; the last fragment waits for more.
+      for (const line of lines.slice(0, -1)) {
+        if (!line.trim()) continue;
+        try {
+          const r = JSON.parse(line);
+          if (r.type === "session_meta") {
+            const pl = r.payload || {};
+            return { id: pl.id || null, cwd: pl.cwd || null, timestamp: r.timestamp || null };
+          }
+        } catch {}
+      }
+      // The head record is the first line; if we have it and it was not
+      // session_meta, nothing later in the file will be either.
+      if (lines.length > 5) break;
     }
   } catch {
   } finally {

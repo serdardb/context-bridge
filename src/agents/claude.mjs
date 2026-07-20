@@ -4,8 +4,9 @@
 // through the official SessionStart hook instead.
 import fs from "node:fs";
 import path from "node:path";
-import { latestClaudeTranscript } from "../discover.mjs";
+import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
 import { claudeMessagesSince } from "../delta.mjs";
+import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { nowIso, tryExec, fileExists, readJson, HOME, CLAUDE_DIR } from "../util.mjs";
 
 export const id = "claude";
@@ -31,6 +32,19 @@ export function discover(projectDir) {
   return found ? { id: found.sessionId, transcriptPath: found.p, updatedAt: found.mtime } : null;
 }
 
+/**
+ * Claude normally links itself through the SessionStart hook, so this is the
+ * fallback for a session running without the plugin installed. Transcripts carry
+ * no pid, so the only evidence is the project directory and the time window.
+ */
+export function adoptStartedSession(projectDir, { startedAt } = {}) {
+  const since = startedAt ? Date.parse(startedAt) : 0;
+  return claudeTranscriptsSince(projectDir, Number.isFinite(since) ? since : 0).map((c) => ({
+    id: c.sessionId,
+    transcriptPath: c.p,
+  }));
+}
+
 export function resumeCommand(ref, extraArgs = []) {
   // Our --resume goes last so the bridge's session control wins any tie.
   return ref?.id
@@ -41,6 +55,15 @@ export function resumeCommand(ref, extraArgs = []) {
 export function activitySince(ref, sinceIso) {
   const messages = claudeMessagesSince(ref.transcriptPath, sinceIso);
   return { messages, patchedFiles: [], turnsCompleted: 0 };
+}
+
+/**
+ * Claude rows are typed and timestamped; a transcript with no `user`/`assistant`
+ * row carrying a timestamp is one we can no longer read, whatever else is in it.
+ */
+export function parseProbe(ref) {
+  const shape = probeJsonl(ref?.transcriptPath, (r) => (r.type === "user" || r.type === "assistant") && !!r.timestamp);
+  return probeWithActivity({ activitySince }, ref, shape);
 }
 
 export function hydrate(_projectDir, slot) {

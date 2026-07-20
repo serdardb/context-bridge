@@ -10,7 +10,9 @@ import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
-import { nowIso, tryExec, OK, WARN, BridgeError } from "./util.mjs";
+import { nowIso, tryExec, OK, WARN, BridgeError,
+  processAlive,
+} from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
 function underLauncher() {
@@ -130,14 +132,6 @@ function launcherIsStale(s, lines) {
   return true;
 }
 
-function processAlive(pid) {
-  try {
-    process.kill(pid, 0); // signal 0 tests for existence without touching it
-    return true;
-  } catch (e) {
-    return e.code === "EPERM"; // alive but owned by someone else
-  }
-}
 
 /**
  * Make sure the source agent is linked, adopting its running session when needed.

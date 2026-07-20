@@ -1,6 +1,7 @@
 // Codex adapter. Thin wrapper over the existing rollout discovery and parsing.
-import { findRolloutPath, latestRolloutForProject } from "../discover.mjs";
+import { findRolloutPath, latestRolloutForProject, rolloutsForProjectSince } from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
+import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import path from "node:path";
 import {
   nowIso,
@@ -39,6 +40,17 @@ export function discover(projectDir) {
     : null;
 }
 
+/**
+ * Rollouts record their own cwd and start time in the head record, so a session
+ * started after the launcher spawned, in this project, is identifiable without
+ * guessing. Codex writes no pid we can match, hence the time window instead.
+ */
+export function adoptStartedSession(projectDir, { startedAt } = {}) {
+  return rolloutsForProjectSince(projectDir, startedAt)
+    .map((r) => ({ id: r.threadId, transcriptPath: r.rolloutPath }))
+    .filter((r) => r.id && r.transcriptPath);
+}
+
 /** Rehydrate from state, re-finding the rollout if the stored path went stale. */
 export function hydrate(_projectDir, slot) {
   if (!slot?.id) return null;
@@ -64,6 +76,19 @@ export function promptArgs(delta) {
 
 export function activitySince(ref, sinceIso) {
   return codexActivitySince(ref.transcriptPath, sinceIso);
+}
+
+/**
+ * Codex wraps everything in {type, payload, timestamp}. We read `event_msg` and
+ * `response_item` rows; if a rollout contains neither, the envelope has changed
+ * under us and every delta from this agent would come back empty.
+ */
+export function parseProbe(ref) {
+  const shape = probeJsonl(
+    ref?.transcriptPath,
+    (r) => (r.type === "event_msg" || r.type === "response_item") && !!r.timestamp && !!r.payload
+  );
+  return probeWithActivity({ activitySince }, ref, shape);
 }
 
 export function idleAfter(ref, sinceIso) {

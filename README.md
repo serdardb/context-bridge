@@ -123,32 +123,41 @@ Claude Code
   ✓ Authenticated (you@example.com)
   ✓ context-bridge plugin installed (provides /bridge and the session hooks)
   ✓ Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)
+  ✓ Session readable by this version of the bridge (507 messages)
 
 Codex
   ✓ Installed: codex-cli 0.144.6
   ✓ Authenticated (Logged in using ChatGPT)
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
   ✓ bridge command pre-allowed in Codex rules
+  ✓ Session readable by this version of the bridge (291 messages)
 
 Grok
   ✓ Installed: grok 0.2.106
   ✓ Authenticated
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
+  ✓ Session readable by this version of the bridge (54 messages)
 
 Bridge
   ✓ bridge on PATH (hooks can reach it)
   ✓ Project state: linked claude, codex, grok
 
 Available routes
-  claude->codex      ✓ READY  first switch: official import
-  claude->grok       ✓ READY  first switch: delta-seeded
-  codex->claude      ✓ READY  first switch: delta-seeded
-  codex->grok        ✓ READY  first switch: delta-seeded
-  grok->claude       ✓ READY  first switch: delta-seeded
-  grok->codex        ✓ READY  first switch: delta-seeded
+  claude->codex      ✓ CONFIGURED  first switch: official import
+  claude->grok       ✓ CONFIGURED  first switch: delta-seeded
+  codex->claude      ✓ CONFIGURED  first switch: delta-seeded
+  codex->grok        ✓ CONFIGURED  first switch: delta-seeded
+  grok->claude       ✓ CONFIGURED  first switch: delta-seeded
+  grok->codex        ✓ CONFIGURED  first switch: delta-seeded
+
+CONFIGURED means installed, configured, and its session still parses. It does not mean the agent answers: run `bridge doctor --deep` to ask each one a real question.
 ```
 
-On a fresh machine the plugin/skill rows start as `✗` with the exact official command next to each; `--fix` offers to run them for you. `--deep` goes further and asks each agent a real one-line question, because installed and authenticated is not the same as working: vendors change headless flags between releases.
+On a fresh machine the plugin/skill rows start as `✗` with the exact official command next to each; `--fix` offers to run them for you.
+
+The wording is deliberate. `CONFIGURED` means installed, logged in, and *its session files still parse with this version of the bridge*. That last check runs by default and costs about 100ms, because it is the failure nobody would otherwise notice: session formats are internal to each vendor, so a renamed field ships in a point release and every handoff quietly returns an empty delta while the binary is still installed and still logged in. If that happens the row reads `Session UNREADABLE` and every route through that agent carries the reason.
+
+What `CONFIGURED` still cannot promise is that the agent answers. `bridge doctor --deep` asks each one a real one-line question and reports `LIVE` or `BROKEN`; it is not the default because it is slow and depends on the network.
 
 ## First run
 

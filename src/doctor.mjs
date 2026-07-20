@@ -30,6 +30,7 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   const r = collect(projectDir);
   // Installed and authenticated is not the same as working: --deep asks each
   // agent a harmless one-line question and reports what actually came back.
+  r.deep = deep;
   if (deep) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   if (json) {
     log(JSON.stringify(r, null, 2));
@@ -40,8 +41,18 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   return anyRouteReady(r) ? 0 : 1;
 }
 
+/** The two verdicts that mean a handoff through this agent would fail today. */
+const SESSION_BROKEN = new Set(["missing", "mismatch"]);
+
+/**
+ * Exit code. Zero means a switch could happen AND nothing we rely on has drifted
+ * under us. An unreadable linked session fails the whole command even when other
+ * routes are fine, because in CI that drift is the only warning anyone will get
+ * and a green tick beside it would be the original bug wearing a new word.
+ */
 function anyRouteReady(r) {
-  return Object.values(r.routes).some((route) => route.ready);
+  const drifted = AGENT_IDS.some((id) => SESSION_BROKEN.has(r.agents[id].session.status));
+  return !drifted && Object.values(r.routes).some((route) => route.ready);
 }
 
 function smoke(agentId, health) {
@@ -71,6 +82,12 @@ export function collect(projectDir) {
   }
   const linked = state ? AGENT_IDS.filter((agentId) => agentSlot(state, agentId).id) : [];
 
+  // The parser canary. Being installed proves nothing about whether we can still
+  // read the agent's own session files, and that is the failure that hurts most:
+  // it is silent. Linked session first; otherwise one deterministic discover, so
+  // doctor never guesses the way adopt is allowed to.
+  for (const agentId of AGENT_IDS) agents[agentId].session = probeSession(projectDir, agentId, state);
+
   // A route is ready when both ends are. Claude to Codex additionally has the
   // official import for its first switch; every other first switch opens a new
   // session seeded with the delta, which is weaker and says so.
@@ -78,12 +95,22 @@ export function collect(projectDir) {
   for (const from of AGENT_IDS) {
     for (const to of AGENT_IDS) {
       if (from === to) continue;
-      const ready = agents[from].ready && agents[to].ready;
+      const installed = agents[from].ready && agents[to].ready;
       const official = from === "claude" && to === "codex";
+      // An end whose session we can no longer read cannot carry a handoff, so it
+      // does not get to stay green. Renaming READY to CONFIGURED while leaving
+      // the verdict on install alone would have been the same lie in a new word,
+      // and the footer promising that CONFIGURED covers readability would have
+      // been the one telling it. `none` is not broken: a fresh project has no
+      // session yet and must never go red.
+      const broken = [from, to].filter((a) => SESSION_BROKEN.has(agents[a].session.status));
+      const configured = installed && broken.length === 0;
       routes[`${from}->${to}`] = {
-        ready,
+        ready: configured,
+        configured,
         firstSwitch: official ? (companion ? "official import" : "official import unavailable") : "delta-seeded",
-        status: ready ? "READY" : "NOT READY",
+        status: configured ? "CONFIGURED" : broken.length && installed ? "SESSION UNREADABLE" : "NOT CONFIGURED",
+        sessionWarning: broken.length ? `cannot read the linked session for ${broken.join(", ")}` : null,
       };
     }
   }
@@ -100,6 +127,70 @@ export function collect(projectDir) {
 
 
 
+
+/**
+ * Probe one agent's session parsing. Returns a status the render layer can print
+ * without further judgement:
+ *   none      nothing linked and nothing discoverable — a fresh project, not a fault
+ *   readable  the parser understands this file (message count is information only)
+ *   partial   understood, but some lines were not JSON and were read past
+ *   missing   we hold a session reference whose transcript is gone
+ *   mismatch  the file is there and we no longer recognise a single row in it
+ */
+function probeSession(projectDir, agentId, state) {
+  const adapter = adapterFor(agentId);
+  if (!adapter.parseProbe) return { status: "none", detail: "no probe for this agent" };
+  let ref = null;
+  let linked = false;
+  try {
+    const slot = state ? agentSlot(state, agentId) : null;
+    if (slot?.id) {
+      linked = true;
+      ref = adapter.hydrate(projectDir, slot);
+    } else {
+      ref = adapter.discover(projectDir);
+    }
+  } catch {
+    ref = null;
+  }
+  // Being linked to a session we can no longer resolve is the opposite of a
+  // fresh project, and reporting it as one hid a real fault behind the very
+  // wording chosen to keep fresh projects calm.
+  if (!ref?.transcriptPath) return linked ? { status: "missing", linked, detail: "the linked session is gone" } : { status: "none", linked: false };
+  try {
+    return { ...adapter.parseProbe(ref), linked };
+  } catch (err) {
+    return { status: "mismatch", linked, detail: err.message };
+  }
+}
+
+/** One line per agent, worded so nobody reads a fresh project as a broken one. */
+function sessionLine(session) {
+  const n = session.messages;
+  switch (session.status) {
+    case "none":
+      return { level: "info", text: "Session: none linked yet (nothing to check on a fresh project)" };
+    case "readable":
+      return {
+        level: "ok",
+        text: `Session readable by this version of the bridge${n == null ? "" : ` (${n} messages)`}`,
+      };
+    case "partial":
+      return { level: "warn", text: `Session readable, ${session.malformed} malformed line(s) skipped` };
+    case "missing":
+      // Naming the file matters: Grok keeps two, and "transcript" sent people
+      // looking at the wrong one.
+      return {
+        level: "bad",
+        text: `Session file is missing: ${session.detail ?? "the transcript this project is linked to is gone"}`,
+      };
+    default:
+      return {
+        level: "bad",
+        text: `Session UNREADABLE: no known record shape in ${session.rows} rows${session.detail ? ` (${session.detail})` : ""} — the agent likely changed its session format`,
+      };
+  }
+}
 
 function render(r) {
   log(bold("Context Bridge Doctor"));
@@ -129,7 +220,11 @@ function render(r) {
         "claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex"
       );
     }
-    if (a.smoke) rowInfo(a.smoke.ok, a.smoke.ok ? "Headless mode answers" : `Headless mode failed: ${a.smoke.detail}`);
+    const sl = sessionLine(a.session);
+    if (sl.level === "bad") row(false, sl.text, "run a handoff to relink, or open an issue if the agent just updated");
+    else if (sl.level === "info") log(`  ${dim("·")} ${dim(sl.text)}`);
+    else rowInfo(sl.level === "ok", sl.text);
+    if (a.smoke) rowInfo(a.smoke.ok, a.smoke.ok ? "LIVE: answered a real headless question" : `BROKEN: ${a.smoke.detail}`);
   }
 
   log("");
@@ -149,9 +244,18 @@ function render(r) {
   log(bold("Available routes"));
   for (const [route, info] of Object.entries(r.routes)) {
     const label = route.padEnd(18);
-    const note = info.ready ? dim(`  first switch: ${info.firstSwitch}`) : "";
-    log(`  ${label} ${info.ready ? OK + " READY" : NONE + " " + info.status}${note}`);
+    const note = info.configured ? dim(`  first switch: ${info.firstSwitch}`) : "";
+    const warn = info.sessionWarning ? dim(`  ${info.sessionWarning}`) : "";
+    log(`  ${label} ${info.configured ? OK + " CONFIGURED" : NONE + " " + info.status}${note}${warn}`);
   }
+  log("");
+  log(
+    dim(
+      r.deep
+        ? "CONFIGURED means installed, configured and readable. LIVE above means the agent answered a real question just now."
+        : "CONFIGURED means installed, configured, and its session still parses. It does not mean the agent answers: run `bridge doctor --deep` to ask each one a real question."
+    )
+  );
 }
 
 function authLabel(auth) {

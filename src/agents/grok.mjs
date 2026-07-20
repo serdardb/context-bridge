@@ -11,6 +11,7 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
+import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import {
   grokHome,
   fileExists,
@@ -150,6 +151,88 @@ export function activitySince(ref, mark) {
   }
   return { messages, patchedFiles: [...patchedFiles], turnsCompleted };
 }
+
+/**
+ * Grok publishes a live registry of open sessions, which makes this the one
+ * agent besides Codex where "the session we just started" is a fact rather than
+ * a guess: ~/.grok/active_sessions.json holds {session_id, pid, cwd, opened_at}
+ * per running session. Matching our own child's pid identifies it exactly.
+ *
+ * Returns every plausible candidate and picks no winner. Choosing between two is
+ * the caller's refusal to make, because a user with a second Grok open in another
+ * terminal must never have that session stolen into this project's state.
+ */
+export function adoptStartedSession(projectDir, { startedAt, childPid } = {}) {
+  const want = path.resolve(projectDir);
+  let entries = [];
+  try {
+    entries = JSON.parse(fs.readFileSync(path.join(grokHome(), "active_sessions.json"), "utf8"));
+  } catch {
+    entries = [];
+  }
+  const inProject = (Array.isArray(entries) ? entries : []).filter(
+    (e) => e?.session_id && e.cwd && path.resolve(e.cwd) === want && (!startedAt || !e.opened_at || e.opened_at >= startedAt)
+  );
+  // Our own child is unambiguous; fall back to project+time only when the pid
+  // does not appear (a Grok that re-execs, or an older CLI with no registry).
+  const mine = childPid ? inProject.filter((e) => e.pid === childPid) : [];
+  const pool = mine.length ? mine : inProject;
+  if (pool.length) return pool.map((e) => refById(projectDir, e.session_id)).filter(Boolean);
+
+  // The registry is LIVE: a session's entry disappears the moment it closes. So
+  // it identifies our child perfectly while it runs and tells us nothing once it
+  // has exited, which is exactly why linking happens in both phases. After exit
+  // the evidence left on disk is the session directory's own start time.
+  return sessionsStartedSince(projectDir, startedAt);
+}
+
+/** Session directories for this project whose recorded start is at or after `startedAt`. */
+function sessionsStartedSince(projectDir, startedAt) {
+  const root = sessionsRoot(projectDir);
+  let entries;
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const dir = path.join(root, e.name);
+    const summary = readJson(path.join(dir, "summary.json"));
+    if (!summary?.info?.id) continue;
+    if (summary.info.cwd && path.resolve(summary.info.cwd) !== path.resolve(projectDir)) continue;
+    const started = summary.created_at ?? summary.info?.created_at ?? null;
+    if (startedAt && started && started < startedAt) continue;
+    if (startedAt && !started) {
+      // No recorded start: fall back to when the directory itself appeared.
+      let birth = 0;
+      try {
+        const st = fs.statSync(dir);
+        birth = (st.birthtimeMs || st.ctimeMs) ?? 0;
+      } catch {}
+      if (birth && birth < Date.parse(startedAt)) continue;
+    }
+    out.push(refFor(dir, summary.info.id));
+  }
+  return out;
+}
+
+/**
+ * Grok is the one agent with two files, and they fail independently: chat rows
+ * carry the conversation, events carry the turn boundaries the mark rides on.
+ * A readable history with an unreadable event stream still breaks idle detection,
+ * so both are probed and the worse of the two is reported.
+ */
+export function parseProbe(ref) {
+  const chat = { ...probeJsonl(ref?.transcriptPath, (r) => typeof r.type === "string" && "content" in r), detail: "chat_history.jsonl" };
+  const events = { ...probeJsonl(ref?.eventsPath, (r) => typeof r.type === "string"), detail: "events.jsonl" };
+  const worse = rank(events.status) > rank(chat.status) ? events : chat;
+  return probeWithActivity({ activitySince }, ref, worse);
+}
+
+const SEVERITY = { readable: 0, partial: 1, missing: 2, mismatch: 3 };
+const rank = (status) => SEVERITY[status] ?? 0;
 
 /** A turn_ended event after the handoff request means the agent is idle. */
 export function idleAfter(ref, sinceIso) {

@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
-import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso, processAlive } from "./util.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -38,6 +38,7 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
   process.on("SIGINT", () => {});
 
   log(bold("context-bridge") + dim(" · Switch agents. Not context."));
+  warnAboutOtherLauncher(s);
 
   for (;;) {
     s = ensureState(projectDir);
@@ -58,7 +59,14 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     saveState(projectDir, s);
 
     if (note) log(dim(`→ ${note}`));
+    // A session we are about to create belongs to this project, and until it is
+    // written into state it cannot be resumed: `bridge <agent>` would refuse and
+    // the next handoff would mint yet another session. Claude records itself via
+    // its SessionStart hook; every other agent needs the launcher to do it.
+    const startedAt = nowIso();
+    const needsLink = !agentSlot(s, agent).id;
     const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv() });
+    const linker = needsLink ? watchForNewSession(projectDir, agent, startedAt, child.pid) : null;
 
     const termHandler = () => {
       try {
@@ -70,6 +78,12 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     const watcher = watchForHandoff(projectDir, agent, child);
     const exit = await waitForExit(child);
     watcher.stop();
+    linker?.stop();
+    // Linking runs while the child is alive so status, doctor and the next
+    // handoff tell the truth DURING the session, and once more after it exits
+    // because a killed terminal, a sleeping machine or a SIGKILL would
+    // otherwise leave the session stranded exactly as before.
+    if (needsLink) linkStartedSession(projectDir, agent, startedAt, child.pid);
     process.removeListener("SIGTERM", termHandler);
 
     if (exit.error) {
@@ -101,6 +115,66 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     log(`${OK} Bridge session ended. Run 'bridge' anytime to continue where you left off.`);
     return 0;
   }
+}
+
+/**
+ * Write the session this launcher started into state, if and only if exactly one
+ * candidate matches. Several candidates means the user legitimately has another
+ * session of the same agent open, and stealing one into this project's state
+ * would be worse than leaving it unlinked: the existing `--adopt` confirmation
+ * path still handles that case, with a human answering.
+ */
+function linkStartedSession(projectDir, agent, startedAt, childPid) {
+  const adapter = adapterFor(agent);
+  if (!adapter?.adoptStartedSession) return false;
+  const s = loadState(projectDir);
+  if (!s || agentSlot(s, agent).id) return false; // already linked, nothing to do
+
+  let candidates = [];
+  try {
+    candidates = adapter.adoptStartedSession(projectDir, { startedAt, childPid }) ?? [];
+  } catch {
+    return false;
+  }
+  if (candidates.length !== 1) {
+    if (candidates.length > 1) {
+      log(
+        `${WARN} Found ${candidates.length} new ${adapter.displayName} sessions for this project; ` +
+          "not linking any of them. Hand off from inside the one you want."
+      );
+    }
+    return false;
+  }
+  const ref = candidates[0];
+  // The mark stays null on purpose: this session has said nothing the bridge has
+  // packed yet, so its first handoff must carry the conversation from its start.
+  agentSlot(s, agent).set({ id: ref.id, transcriptPath: ref.transcriptPath ?? null });
+  saveState(projectDir, s);
+  log(dim(`→ Linked this ${adapter.displayName} session to the project.`));
+  return true;
+}
+
+/** Poll for the started session while the child runs, then stop at the first link. */
+function watchForNewSession(projectDir, agent, startedAt, childPid) {
+  const timer = setInterval(() => {
+    if (linkStartedSession(projectDir, agent, startedAt, childPid)) stop();
+  }, POLL_MS * 4);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  return { stop };
+}
+
+/**
+ * Another launcher already running for this project is usually a forgotten tab,
+ * and forgotten tabs accumulate: three were found alive on the author's machine,
+ * two of them orphaned. It is only ever a warning. `state.launcher.pid` records
+ * the last writer, not an owner, so a stale entry must not scare anyone either.
+ */
+function warnAboutOtherLauncher(s) {
+  const pid = s?.launcher?.pid;
+  if (!pid || pid === process.pid || !processAlive(pid)) return;
+  log(`${WARN} Another bridge launcher (pid ${pid}) is already running for this project.`);
+  log(dim("  Both will keep working, but they do not share one session. Close the one you are done with."));
 }
 
 export function buildCommand(projectDir, s, agent, extra = []) {
