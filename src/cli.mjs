@@ -4,26 +4,36 @@ import { runHook } from "./hooks.mjs";
 import { handoffCodex, handoffClaude } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
+import { splitLauncherArgs } from "./agentargs.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.4.1";
+const VERSION = "0.5.0";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 
 Usage:
   bridge                 Start the bridged session loop (resumes where you left off)
-  bridge claude          Start the loop with Claude
-  bridge codex           Start the loop with Codex
+  bridge claude [flags]  Start the loop with Claude ( flags go to Claude as-is )
+  bridge codex  [flags]  Start the loop with Codex  ( flags go to Codex as-is )
   bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps )
   bridge status          Show project bridge status
   bridge clean           Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
                          everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
                          --days N, --all; a pending injection is never deleted)
 
+Agent flags:
+  bridge claude --dangerously-skip-permissions --model claude-fable-5
+  Put the agent name first, then its flags. They are forwarded untouched and reused
+  every time the bridge reopens it in this launcher run. Nothing is written to
+  disk: the next 'bridge' starts from the agent's own defaults again.
+
 Inside the agents:
   Claude Code:  /bridge codex     hand off to Codex
   Codex:        $bridge claude    hand off back to Claude
 `;
+
+const COMMANDS = ["claude", "codex", "doctor", "status", "clean", "handoff", "internal-hook", "help", "version"];
+const LAUNCHER_COMMANDS = ["claude", "codex"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -31,20 +41,25 @@ export async function main(argv) {
   const cmd = args[0];
   const projectDir = process.cwd();
 
-  if (flags.has("--version") || cmd === "version") {
-    log(VERSION);
-    return;
-  }
-  if (flags.has("--help") || cmd === "help") {
-    log(HELP);
-    return;
+  // --help and --version belong to the bridge only until an agent is named.
+  // After `bridge claude` they are Claude's own flags, like every other flag.
+  if (!LAUNCHER_COMMANDS.includes(cmd)) {
+    if (flags.has("--version") || cmd === "version") {
+      log(VERSION);
+      return;
+    }
+    if (flags.has("--help") || cmd === "help") {
+      log(HELP);
+      return;
+    }
   }
 
   switch (cmd) {
     case undefined:
     case "claude":
     case "codex":
-      process.exitCode = await runLoop(projectDir, cmd ?? null);
+      // Anything after the agent name is the agent's own flag, forwarded as-is.
+      process.exitCode = await runLoop(projectDir, cmd ?? null, splitLauncherArgs(tailAfter(argv, cmd)));
       return;
 
     case "doctor":
@@ -110,9 +125,28 @@ export async function main(argv) {
       return;
 
     default:
-      log(`Unknown command '${cmd}'.\n\n${HELP}`);
+      // A flag's value lands here when no agent was named: `bridge --model opus`
+      // makes 'opus' look like a command. Say so instead of just "unknown".
+      if (flags.size) {
+        log(
+          `Unknown command '${cmd}'. If it was a value for an agent flag, name the agent first:\n` +
+            `  bridge claude ${argv.join(" ")}\n\n${HELP}`
+        );
+      } else {
+        log(`Unknown command '${cmd}'.\n\n${HELP}`);
+      }
       process.exitCode = 1;
   }
+}
+
+/**
+ * Everything except the agent name belongs to the agent — including flags typed
+ * before it, so `bridge --model opus claude` cannot drop them silently.
+ */
+function tailAfter(argv, cmd) {
+  if (!cmd) return [...argv];
+  const i = argv.indexOf(cmd);
+  return i === -1 ? [...argv] : [...argv.slice(0, i), ...argv.slice(i + 1)];
 }
 
 function intFlag(argv, name) {

@@ -10,15 +10,29 @@ import { spawn } from "node:child_process";
 import { ensureState, loadState, saveState } from "./state.mjs";
 import { rolloutIdleAfter } from "./delta.mjs";
 import { findRolloutPath } from "./discover.mjs";
+import { filterAgentArgs } from "./agentargs.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso } from "./util.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
 const TERM_GRACE_MS = 10000;
 
-export async function runLoop(projectDir, startAgent = null) {
+export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
   let s = ensureState(projectDir);
   let agent = startAgent || s.activeAgent || "claude";
+
+  // Forwarded args belong to the agent named on the command line (or, when none
+  // was named, to the one this loop starts with). They are never carried across
+  // a switch: a Claude flag is meaningless or harmful to Codex.
+  const agentArgs = { claude: [], codex: [] };
+  if (forwardArgs.length) {
+    const { kept, dropped } = filterAgentArgs(agent, forwardArgs);
+    agentArgs[agent] = kept;
+    for (const d of dropped) {
+      if (d.isValue) continue;
+      log(`${WARN} Ignoring ${d.arg}: ${d.why}.`);
+    }
+  }
 
   // Ctrl+C typed inside the child goes to the whole foreground process group —
   // the child handles it; the launcher must survive (proven in T4).
@@ -28,7 +42,10 @@ export async function runLoop(projectDir, startAgent = null) {
 
   for (;;) {
     s = ensureState(projectDir);
-    const { cmd, args, note } = buildCommand(projectDir, s, agent);
+    const { cmd, args, note } = buildCommand(projectDir, s, agent, agentArgs[agent]);
+    if (agentArgs[agent]?.length) {
+      log(dim(`→ Forwarding to ${agent}: ${agentArgs[agent].join(" ")}`));
+    }
     if (!cmd) {
       log(`${BAD} ${note}`);
       return 1;
@@ -82,12 +99,13 @@ export async function runLoop(projectDir, startAgent = null) {
   }
 }
 
-function buildCommand(projectDir, s, agent) {
+export function buildCommand(projectDir, s, agent, extra = []) {
   if (agent === "claude") {
     const sid = s.agents.claude.sessionId;
+    // Our --resume goes last so the bridge's session control wins any tie.
     return sid
-      ? { cmd: "claude", args: ["--resume", sid], note: "Resuming your Claude session…" }
-      : { cmd: "claude", args: [], note: "Starting a new Claude session for this project…" };
+      ? { cmd: "claude", args: [...extra, "--resume", sid], note: "Resuming your Claude session…" }
+      : { cmd: "claude", args: [...extra], note: "Starting a new Claude session for this project…" };
   }
   if (agent === "codex") {
     const tid = s.agents.codex.threadId;
@@ -98,7 +116,7 @@ function buildCommand(projectDir, s, agent) {
         note: "No linked Codex thread yet. Start inside Claude and run /bridge codex for the first switch.",
       };
     }
-    const args = ["resume", tid];
+    const args = ["resume", tid, ...extra];
     // Deliver a pending Claude→Codex delta as the auto-submitted resume prompt (proven in T2).
     const inj = s.pendingInjection;
     if (inj?.agent === "codex" && inj.threadId === tid) {
@@ -111,7 +129,9 @@ function buildCommand(projectDir, s, agent) {
           log(`${WARN} Pending Claude→Codex delta could not be consumed (${inj.deltaFile}); resuming Codex without it.`);
           return { cmd: "codex", args, note: "Resuming your Codex thread…" };
         }
-        args.push(delta);
+        // `--` first: without it a trailing variadic user flag (-i/--image …)
+        // would swallow the delta as one of its values.
+        args.push("--", delta);
         s.pendingInjection = null;
         saveState(projectDir, s);
       } catch {
