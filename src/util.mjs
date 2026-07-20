@@ -6,6 +6,12 @@ import { execFileSync } from "node:child_process";
 export const HOME = os.homedir();
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, ".codex");
+export const GROK_HOME = process.env.GROK_HOME || path.join(HOME, ".grok");
+
+/** Resolved per call, so tests (and a changed env) are honoured without a reload. */
+export function grokHome() {
+  return process.env.GROK_HOME || path.join(HOME, ".grok");
+}
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (code) => (s) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
