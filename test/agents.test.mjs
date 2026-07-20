@@ -307,3 +307,39 @@ test("an installed skill that drifted behind the repo is reported as stale, not 
   fs.copyFileSync(source, installed);
   assert.equal(installedCopyStatus(installed, source), "current");
 });
+
+test("closing words written after the handoff still reach the other agent", async () => {
+  // The handoff runs mid-turn, so the agent's real answer lands on disk only
+  // after it exits. Without this the substantive message is dropped in silence:
+  // exactly what happened to Grok's assessment in the first three-agent chain.
+  const { appendFinalWords } = await import("../src/launcher.mjs");
+  const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
+  const { project, sessionDir } = await withGrokFixture();
+  const grok = adapterFor("grok");
+  const ref = grok.discover(project);
+
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const deltaRel = path.join(".bridge", "checkpoints", "d.md");
+  const fullRel = path.join(".bridge", "checkpoints", "d-full.md");
+  fs.writeFileSync(path.join(project, deltaRel), "[Bridge Context Update]\nbounded\n");
+  fs.writeFileSync(path.join(project, fullRel), "# Bridge full context\n");
+
+  const s = defaultState(project);
+  s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, mark: grok.currentMark(ref), idle: false };
+  s.pendingInjection = { agent: "claude", id: null, deltaFile: deltaRel, createdAt: "2026-01-01T00:00:00.000Z" };
+  saveState(project, s);
+
+  // The turn ends: the closing answer appears in the transcript afterwards.
+  fs.appendFileSync(
+    path.join(sessionDir, "chat_history.jsonl"),
+    JSON.stringify({ type: "assistant", content: "the assessment nobody would have seen" }) + "\n"
+  );
+
+  appendFinalWords(project, loadState(project), "grok");
+
+  assert.match(fs.readFileSync(path.join(project, deltaRel), "utf8"), /Closing words from Grok/);
+  assert.match(fs.readFileSync(path.join(project, deltaRel), "utf8"), /the assessment nobody would have seen/);
+  assert.match(fs.readFileSync(path.join(project, fullRel), "utf8"), /the assessment nobody would have seen/);
+  // The mark moves with it, so the next handoff does not send it a second time.
+  assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
+});

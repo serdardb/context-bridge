@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { ensureState, loadState, saveState, agentSlot } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
-import { log, dim, bold, OK, WARN, BAD, nowIso } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, oneLine } from "./util.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -81,6 +81,10 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     }
 
     s = loadState(projectDir);
+    // The agent's closing message is written after the handoff command runs, so
+    // it is never in the delta the handoff produced. Now that the process has
+    // exited it IS on disk: fold it in before the other agent reads anything.
+    if (s) appendFinalWords(projectDir, s, agent);
     const pending = s?.pendingHandoff;
     if (pending?.target && pending.target !== agent) {
       log("");
@@ -162,6 +166,51 @@ function consumeDelta(projectDir, s, inj, agent) {
   s.pendingInjection = null;
   saveState(projectDir, s);
   return delta;
+}
+
+/**
+ * Append whatever the departing agent said after it ran the handoff. Without
+ * this its final answer, usually the substantive one, is silently dropped: the
+ * handoff runs mid-turn, and the message is only persisted when the turn ends.
+ */
+export function appendFinalWords(projectDir, s, agent) {
+  const inj = s.pendingInjection;
+  if (!inj || inj.agent === agent) return;
+  const adapter = adapterFor(agent);
+  const slot = agentSlot(s, agent);
+  if (!adapter || !slot.id) return;
+
+  const ref = adapter.hydrate(projectDir, slot);
+  if (!ref) return;
+  let tail;
+  try {
+    tail = adapter.activitySince(ref, slot.mark);
+  } catch {
+    return;
+  }
+  if (!tail.messages.length) return;
+
+  const deltaPath = path.join(projectDir, inj.deltaFile);
+  const oneLiners = tail.messages.map((m) => `- ${m.role === "user" ? "User" : adapter.displayName}: ${oneLine(m.text, 220)}`);
+  try {
+    fs.appendFileSync(deltaPath, `\n\nClosing words from ${adapter.displayName}\n${oneLiners.join("\n")}\n`);
+  } catch {
+    return; // already consumed or unwritable: the switch still stands
+  }
+  // The companion promises exact wording, so it gets the closing words in full.
+  // Skipping it would quietly make the file a worse record than the summary.
+  const fullPath = deltaPath.replace(/\.md$/, "-full.md");
+  const verbatim = tail.messages
+    .map((m) => `### ${m.role === "user" ? "User" : adapter.displayName}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`)
+    .join("\n\n");
+  try {
+    fs.appendFileSync(fullPath, `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
+  } catch {
+    // The delta already carries them; the companion missing out is not fatal.
+  }
+  slot.set({ mark: adapter.currentMark(ref) });
+  saveState(projectDir, s);
+  log(dim(`→ Added ${tail.messages.length} closing message(s) from ${agent} to the handoff.`));
 }
 
 /**

@@ -201,9 +201,25 @@ export function handoff(
   };
 
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
-  const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, composeFullContext(sections));
-  let delta = composeDelta(sections);
-  delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
+  const full = composeFullContext(sections);
+  const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, full);
+
+  // The 8KB delta exists because the other side already knows the earlier
+  // conversation. On a FIRST switch it knows nothing, so clipping would hand it
+  // a worse start than the official Claude→Codex import gives — which is exactly
+  // the second-class treatment Grok objected to. Send everything instead: the
+  // limit was never the channel, only the assumption of shared history.
+  const firstSwitch = !targetSlot.id;
+  let delta;
+  if (firstSwitch) {
+    delta =
+      full +
+      `\nThis is the first switch to ${targetAdapter.displayName} in this project, so the whole conversation is above, ` +
+      "un-clipped. Later handoffs carry only what is new.";
+  } else {
+    delta = composeDelta(sections);
+    delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
+  }
   if (adopted) {
     delta += sourceRef?.transcriptPath
       ? `\n\nFull transcript of the adopted ${sourceAdapter.displayName} session: ${sourceRef.transcriptPath}` +
