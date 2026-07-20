@@ -68,12 +68,26 @@ function projectDirOf(s) {
   return s.project;
 }
 
-function preflight(agentId) {
-  const cmd = { claude: "claude", codex: "codex", grok: "grok" }[agentId];
-  if (!tryExec(cmd, ["--version"])) {
-    throw new BridgeError(`${cmd} is not installed or not on PATH. Run: bridge doctor`);
+/**
+ * A handoff only records state; the launcher is what starts the target later.
+ * So a missing target binary is a warning, not a failure — the work is still
+ * saved, and the launcher reports the missing command clearly when it tries.
+ */
+function preflight(agentId, lines = []) {
+  if (!tryExec(agentId, ["--version"])) {
+    lines.push(`${WARN} ${agentId} is not installed or not on PATH, so the switch will fail until it is. Run: bridge doctor`);
   }
-  if (agentId === "codex" && tryExec("codex", ["login", "status"]) === null) {
+}
+
+/**
+ * The official import is different: it runs right now, inside this command, and
+ * it cannot work without a usable Codex. Failing early beats failing halfway.
+ */
+function preflightOfficialImport() {
+  if (!tryExec("codex", ["--version"])) {
+    throw new BridgeError("Codex CLI is not installed. Install with: npm install -g @openai/codex, then try again");
+  }
+  if (tryExec("codex", ["login", "status"]) === null) {
     throw new BridgeError(
       "Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then try again"
     );
@@ -143,8 +157,8 @@ export function handoff(
   const sourceId = from ?? detectSource(s, target);
   if (sourceId === target) throw new BridgeError(`Already in ${targetAdapter.displayName}; nothing to hand off.`);
   const sourceAdapter = adapterFor(sourceId);
-  checkTarget(target);
 
+  checkTarget(target, lines);
   const adopted = ensureSourceLinked(projectDir, s, sourceId, adopt, lines);
   const sourceSlot = agentSlot(s, sourceId);
   const targetSlot = agentSlot(s, target);
@@ -154,6 +168,7 @@ export function handoff(
   // thread. No other pair has an equivalent, so those first switches carry the
   // bounded delta plus its full-context companion instead.
   if (!targetSlot.id && sourceId === "claude" && target === "codex") {
+    if (transfer === transferClaudeSession) preflightOfficialImport();
     const res = transfer(sourceSlot.transcriptPath);
     const targetRef = targetAdapter.hydrate(projectDir, { id: res.threadId });
     targetSlot.set({ id: res.threadId, transcriptPath: targetRef?.transcriptPath ?? null });
