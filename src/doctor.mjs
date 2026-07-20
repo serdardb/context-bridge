@@ -20,40 +20,47 @@ import {
   log,
 } from "./util.mjs";
 import { findCompanionScript } from "./transfer.mjs";
-import { loadState } from "./state.mjs";
+import { loadState, agentSlot } from "./state.mjs";
+import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CODEX_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
 
-export async function runDoctor(projectDir, { fix = false, json = false } = {}) {
+export async function runDoctor(projectDir, { fix = false, json = false, deep = false } = {}) {
   const r = collect(projectDir);
+  // Installed and authenticated is not the same as working: --deep asks each
+  // agent a harmless one-line question and reports what actually came back.
+  if (deep) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   if (json) {
     log(JSON.stringify(r, null, 2));
-    return r.routes.claudeCodex === "READY" ? 0 : 1;
+    return anyRouteReady(r) ? 0 : 1;
   }
   render(r);
   if (fix) await applyFixes(projectDir, r);
-  return r.routes.claudeCodex === "READY" ? 0 : 1;
+  return anyRouteReady(r) ? 0 : 1;
+}
+
+function anyRouteReady(r) {
+  return Object.values(r.routes).some((route) => route.ready);
+}
+
+function smoke(agentId, health) {
+  if (!health.version) return { ok: false, detail: "not installed" };
+  const { cmd, args } = adapterFor(agentId).smokeCommand();
+  const out = tryExec(cmd, args, { timeout: 60000 });
+  if (out === null) return { ok: false, detail: "no answer (auth, network or a changed headless flag)" };
+  return { ok: out.includes("bridge-ok"), detail: out.slice(0, 120) };
 }
 
 export function collect(projectDir) {
-  // --- Claude Code ---
-  const claudeVersion = tryExec("claude", ["--version"]);
-  const claudeAuth = detectClaudeAuth();
-  const plugins = readJson(path.join(CLAUDE_DIR, "plugins", "installed_plugins.json"))?.plugins || {};
-  const ourPlugin = !!plugins["bridge@context-bridge"];
-  const officialPlugin = !!plugins["codex@openai-codex"];
+  // Every agent answers for itself; this file only knows how to arrange answers.
+  const agents = {};
+  for (const agentId of AGENT_IDS) agents[agentId] = adapterFor(agentId).health(projectDir);
+
   const companion = findCompanionScript();
+  const plugins = readJson(path.join(CLAUDE_DIR, "plugins", "installed_plugins.json"))?.plugins || {};
+  const officialPlugin = !!plugins["codex@openai-codex"];
 
-  // --- Codex ---
-  const codexVersion = tryExec("codex", ["--version"]);
-  const codexAuthOut = codexVersion ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
-  const codexAuth = codexAuthOut !== null;
-  const codexSkill = fileExists(CODEX_SKILL_PATH);
-  const codexTrusted = detectCodexTrust(projectDir);
-  const codexRules = fileExists(path.join(CODEX_HOME, "rules", "bridge.rules"));
-
-  // --- Bridge itself ---
   const bridgeOnPath = tryExec("bridge", ["--version"]) !== null;
   let state = null;
   let stateError = null;
@@ -62,91 +69,94 @@ export function collect(projectDir) {
   } catch (e) {
     stateError = e.message;
   }
-  const linked = !!(state?.agents?.claude?.id && state?.agents?.codex?.id);
+  const linked = state ? AGENT_IDS.filter((agentId) => agentSlot(state, agentId).id) : [];
 
-  const claudeReady = !!(claudeVersion && claudeAuth.ok && ourPlugin);
-  const codexReady = !!(codexVersion && codexAuth && codexSkill);
-  const importReady = linked || !!companion;
-  const routes = {
-    claudeCodex: claudeReady && codexReady && importReady ? "READY" : "NOT READY",
-    claudeGemini: "UNAVAILABLE (planned)",
-    codexGemini: "UNAVAILABLE (planned)",
-  };
+  // A route is ready when both ends are. Claude to Codex additionally has the
+  // official import for its first switch; every other first switch opens a new
+  // session seeded with the delta, which is weaker and says so.
+  const routes = {};
+  for (const from of AGENT_IDS) {
+    for (const to of AGENT_IDS) {
+      if (from === to) continue;
+      const ready = agents[from].ready && agents[to].ready;
+      const official = from === "claude" && to === "codex";
+      routes[`${from}->${to}`] = {
+        ready,
+        firstSwitch: official ? (companion ? "official import" : "official import unavailable") : "delta-seeded",
+        status: ready ? "READY" : "NOT READY",
+      };
+    }
+  }
 
   return {
     project: projectDir,
-    claude: {
-      version: claudeVersion,
-      auth: claudeAuth,
-      bridgePlugin: ourPlugin,
-      officialCodexPlugin: officialPlugin,
-      companionScript: companion,
-    },
-    codex: {
-      version: codexVersion,
-      auth: codexAuth,
-      authDetail: codexAuthOut,
-      skill: codexSkill,
-      projectTrusted: codexTrusted,
-      rules: codexRules,
-    },
+    agents,
+    claude: { ...agents.claude, officialCodexPlugin: officialPlugin, companionScript: companion },
+    codex: agents.codex,
     bridge: { onPath: bridgeOnPath, state: !!state, stateError, linked },
     routes,
   };
 }
 
-function detectClaudeAuth() {
-  // macOS keychain (existence only — never read the secret), Linux fallback file.
-  if (process.platform === "darwin") {
-    const kc = tryExec("security", ["find-generic-password", "-s", "Claude Code-credentials"]);
-    if (kc !== null) return { ok: true, via: "keychain", account: claudeAccount() };
-  }
-  if (fileExists(path.join(CLAUDE_DIR, ".credentials.json"))) {
-    return { ok: true, via: "credentials-file", account: claudeAccount() };
-  }
-  // OAuth account record alone is a decent signal too
-  const account = claudeAccount();
-  return account ? { ok: true, via: "oauth-account", account } : { ok: false, via: null, account: null };
-}
 
-function claudeAccount() {
-  return readJson(path.join(HOME, ".claude.json"))?.oauthAccount?.emailAddress ?? null;
-}
 
-function detectCodexTrust(projectDir) {
-  try {
-    const toml = fs.readFileSync(path.join(CODEX_HOME, "config.toml"), "utf8");
-    return toml.includes(`"${projectDir}"`);
-  } catch {
-    return false;
-  }
-}
 
 function render(r) {
   log(bold("Context Bridge Doctor"));
-  log("");
-  log(bold("Claude Code"));
-  row(!!r.claude.version, `Installed: ${r.claude.version ?? "not found"}`, "curl -fsSL https://claude.ai/install.sh | bash");
-  row(r.claude.auth.ok, r.claude.auth.ok ? `Authenticated${r.claude.auth.account ? ` (${displayAccount(r.claude.auth.account)})` : ""}` : "Not authenticated", "run `claude` and use /login (subscription, no API key)");
-  row(r.claude.bridgePlugin, "context-bridge plugin installed", "bridge doctor --fix");
-  row(!!r.claude.companionScript, r.claude.officialCodexPlugin ? "Official OpenAI Codex plugin installed" : r.claude.companionScript ? "Official transfer machinery available (vendor)" : "Official OpenAI Codex plugin missing", "claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex");
-  log("");
-  log(bold("Codex"));
-  row(!!r.codex.version, `Installed: ${r.codex.version ?? "not found"}`, "npm install -g @openai/codex");
-  row(r.codex.auth, r.codex.auth ? `Authenticated (${r.codex.authDetail})` : "Not authenticated", "codex login  (your ChatGPT subscription can be used)");
-  row(r.codex.skill, "$bridge skill installed (~/.agents/skills/bridge)", "bridge doctor --fix");
-  rowInfo(r.codex.projectTrusted, r.codex.projectTrusted ? "Project trusted by Codex" : "Project not yet trusted — Codex will show a one-time trust prompt");
-  rowInfo(r.codex.rules, r.codex.rules ? "bridge command pre-allowed in Codex rules" : "No Codex allow-rule for `bridge` — Codex may ask approval once");
+  for (const agentId of AGENT_IDS) {
+    const a = r.agents[agentId];
+    const adapter = adapterFor(agentId);
+    log("");
+    log(bold(adapter.displayName));
+    row(!!a.version, `Installed: ${a.version ?? "not found"}`, a.installHint);
+    row(
+      a.auth.ok,
+      a.auth.ok ? `Authenticated${authLabel(a.auth)}` : "Not authenticated",
+      `sign in to ${adapter.displayName} (subscription, no API key)`
+    );
+    for (const extra of a.extras ?? []) {
+      if (extra.info) rowInfo(extra.ok, extra.label);
+      else row(extra.ok, extra.label, extra.fix);
+    }
+    if (agentId === "claude") {
+      row(
+        !!r.claude.companionScript,
+        r.claude.officialCodexPlugin
+          ? "Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)"
+          : r.claude.companionScript
+            ? "Official transfer machinery available (vendor)"
+            : "Official OpenAI Codex plugin missing",
+        "claude plugin marketplace add openai/codex-plugin-cc && claude plugin install codex@openai-codex"
+      );
+    }
+    if (a.smoke) rowInfo(a.smoke.ok, a.smoke.ok ? "Headless mode answers" : `Headless mode failed: ${a.smoke.detail}`);
+  }
+
   log("");
   log(bold("Bridge"));
   row(r.bridge.onPath, r.bridge.onPath ? "bridge on PATH (hooks can reach it)" : "bridge not on PATH", "run `npm link` in the context-bridge repo");
-  rowInfo(r.bridge.state, r.bridge.state ? (r.bridge.linked ? "Project state: linked Claude ↔ Codex pair" : "Project state present (not linked yet)") : "No project state yet (created on first use)");
+  rowInfo(
+    r.bridge.state,
+    r.bridge.state
+      ? r.bridge.linked.length
+        ? `Project state: linked ${r.bridge.linked.join(", ")}`
+        : "Project state present (nothing linked yet)"
+      : "No project state yet (created on first use)"
+  );
   if (r.bridge.stateError) row(false, `State error: ${r.bridge.stateError}`, "inspect .bridge/state.json");
+
   log("");
   log(bold("Available routes"));
-  log(`  Claude <-> Codex     ${r.routes.claudeCodex === "READY" ? OK + " READY" : BAD + " NOT READY"}`);
-  log(`  Claude <-> Gemini    ${NONE} ${r.routes.claudeGemini}`);
-  log(`  Codex  <-> Gemini    ${NONE} ${r.routes.codexGemini}`);
+  for (const [route, info] of Object.entries(r.routes)) {
+    const label = route.padEnd(18);
+    const note = info.ready ? dim(`  first switch: ${info.firstSwitch}`) : "";
+    log(`  ${label} ${info.ready ? OK + " READY" : NONE + " " + info.status}${note}`);
+  }
+}
+
+function authLabel(auth) {
+  if (!auth.account) return "";
+  return ` (${displayAccount(auth.account)})`;
 }
 
 /** Privacy-friendly account label: BRIDGE_ACCOUNT_LABEL overrides; emails are masked by default. */

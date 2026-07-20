@@ -25,6 +25,8 @@
 //   activitySince(ref, mark)      -> {messages, patchedFiles, turnsCompleted}
 //   idleAfter(ref, sinceIso)      -> boolean | null   (null = reported out of band)
 //   conflictFlags                 -> flags that break the bridge's session link
+//   health()                      -> {version, auth, extras, ready, installHint}
+//   smokeCommand()                -> {cmd, args}   (harmless headless probe)
 //
 // `messages` is always [{role: "user"|"assistant", text, at}] regardless of vendor.
 //

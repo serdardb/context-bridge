@@ -11,7 +11,7 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
-import { grokHome, fileExists, readJson } from "../util.mjs";
+import { grokHome, fileExists, readJson, tryExec, HOME } from "../util.mjs";
 
 export const id = "grok";
 export const displayName = "Grok";
@@ -203,4 +203,22 @@ function filesFromToolEvent(e) {
 /** A brand new session seeded by an initial prompt: `grok [OPTIONS] [PROMPT]`. */
 export function startCommand(extraArgs = []) {
   return { cmd: "grok", args: [...extraArgs] };
+}
+
+export function health() {
+  const version = tryExec("grok", ["--version"]);
+  // Existence only: the file holds credentials and is never read.
+  const authed = fileExists(path.join(grokHome(), "auth.json"));
+  const skill = fileExists(path.join(HOME, ".agents", "skills", "bridge", "SKILL.md"));
+  return {
+    version,
+    auth: { ok: authed, via: "grok login", account: null },
+    extras: [{ ok: skill, label: "$bridge skill installed (~/.agents/skills/bridge)", fix: "bridge doctor --fix" }],
+    ready: !!(version && authed && skill),
+    installHint: "see https://grok.com for the Grok CLI installer",
+  };
+}
+
+export function smokeCommand() {
+  return { cmd: "grok", args: ["-p", "Reply with exactly: bridge-ok"] };
 }

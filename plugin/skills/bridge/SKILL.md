@@ -1,7 +1,7 @@
 ---
 name: bridge
 description: Hand this session off to another coding agent (context-bridge)
-argument-hint: codex
+argument-hint: codex | grok
 allowed-tools: Bash(bridge handoff:*), Bash(bridge doctor:*), Bash(bridge status:*)
 disable-model-invocation: true
 ---
@@ -11,7 +11,8 @@ Target agent: $ARGUMENTS
 
 Follow these steps exactly:
 
-1. If the target is not `codex`, tell the user that today the bridge only supports `/bridge codex` from Claude, and stop.
+1. If no target was given, ask which agent to hand off to and stop until they
+   answer. Otherwise take the target as written.
 
 2. Compose two concise notes from THIS conversation (only what happened since the
    last bridge sync, if any):
@@ -20,9 +21,13 @@ Follow these steps exactly:
    - NEXT: the current objective and any unresolved questions
      (semicolon-separated, max ~2 items).
 
-3. Run this command with the Bash tool (single call):
+3. Run this command with the Bash tool (single call), with the requested agent as
+   the target:
 
-   bridge handoff codex --decisions "<DECISIONS>" --next "<NEXT>"
+   bridge handoff <target> --decisions "<DECISIONS>" --next "<NEXT>"
+
+   The bridge itself validates the target and decides how the context travels.
+   Do not add flags of your own.
 
 4. If the command fails AND its error output mentions `--adopt`, this session
    was not recorded by the plugin hook and was discovered heuristically: relay

@@ -15,7 +15,8 @@ const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not contex
 Usage:
   bridge                 Start the bridged session loop (resumes where you left off)
 ${AGENT_IDS.map((a) => `  bridge ${(a + " [flags]").padEnd(16)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
-  bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps )
+  bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps,
+                         --deep asks each agent a real one-line question )
   bridge status          Show project bridge status
   bridge clean           Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
                          everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
@@ -69,6 +70,7 @@ export async function main(argv) {
       process.exitCode = await runDoctor(projectDir, {
         fix: flags.has("--fix"),
         json: flags.has("--json"),
+        deep: flags.has("--deep"),
       });
       return;
 

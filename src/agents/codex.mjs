@@ -1,7 +1,8 @@
 // Codex adapter. Thin wrapper over the existing rollout discovery and parsing.
 import { findRolloutPath, latestRolloutForProject } from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
-import { nowIso, fileExists } from "../util.mjs";
+import path from "node:path";
+import { nowIso, fileExists, tryExec, HOME, CODEX_HOME } from "../util.mjs";
 
 export const id = "codex";
 export const displayName = "Codex";
@@ -69,4 +70,25 @@ export function currentMark() {
 /** A brand new thread seeded by an initial prompt: `codex [OPTIONS] [PROMPT]`. */
 export function startCommand(extraArgs = []) {
   return { cmd: "codex", args: [...extraArgs] };
+}
+
+export function health() {
+  const version = tryExec("codex", ["--version"]);
+  const detail = version ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
+  const skill = fileExists(path.join(HOME, ".agents", "skills", "bridge", "SKILL.md"));
+  const rules = fileExists(path.join(CODEX_HOME, "rules", "bridge.rules"));
+  return {
+    version,
+    auth: { ok: detail !== null, via: "codex login", account: detail },
+    extras: [
+      { ok: skill, label: "$bridge skill installed (~/.agents/skills/bridge)", fix: "bridge doctor --fix" },
+      { ok: rules, label: "bridge command pre-allowed in Codex rules", fix: "bridge doctor --fix", info: true },
+    ],
+    ready: !!(version && detail !== null && skill),
+    installHint: "npm install -g @openai/codex",
+  };
+}
+
+export function smokeCommand() {
+  return { cmd: "codex", args: ["exec", "Reply with exactly: bridge-ok"] };
 }

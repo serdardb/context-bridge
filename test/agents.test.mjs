@@ -273,3 +273,21 @@ test("the official first import marks the new thread, so the return does not rep
   assert.equal(s.agents.codex.id, threadId);
   assert.ok(s.agents.codex.mark, "the imported thread must be marked as already shared");
 });
+
+test("doctor reports every agent and every directed route from the registry", async () => {
+  const { collect } = await import("../src/doctor.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-doctor-")));
+  const r = collect(project);
+
+  assert.deepEqual(Object.keys(r.agents).sort(), [...AGENT_IDS].sort());
+  // Three agents mean six directed routes, not three.
+  assert.equal(Object.keys(r.routes).length, AGENT_IDS.length * (AGENT_IDS.length - 1));
+  assert.ok(r.routes["claude->grok"], "a route to the newest agent exists without touching doctor");
+  assert.equal(r.routes["claude->codex"].firstSwitch.startsWith("official import"), true);
+  assert.equal(r.routes["codex->grok"].firstSwitch, "delta-seeded", "only Claude→Codex has an official import");
+  for (const health of Object.values(r.agents)) {
+    for (const key of ["version", "auth", "extras", "ready", "installHint"]) {
+      assert.ok(key in health, `health must report ${key}`);
+    }
+  }
+});

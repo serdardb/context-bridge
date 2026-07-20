@@ -2,9 +2,11 @@
 // so this round only gives it the shared shape. Injection is the one asymmetry
 // that survives — Claude has no auto-submitted resume prompt, so context arrives
 // through the official SessionStart hook instead.
+import fs from "node:fs";
+import path from "node:path";
 import { latestClaudeTranscript } from "../discover.mjs";
 import { claudeMessagesSince } from "../delta.mjs";
-import { nowIso } from "../util.mjs";
+import { nowIso, tryExec, fileExists, readJson, HOME, CLAUDE_DIR } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -58,4 +60,39 @@ export function currentMark() {
 /** A brand new session. Claude receives context through its hook, not a prompt. */
 export function startCommand(extraArgs = []) {
   return { cmd: "claude", args: [...extraArgs] };
+}
+
+/** What `bridge doctor` needs to know about this agent. Never reads a secret. */
+export function health() {
+  const version = tryExec("claude", ["--version"]);
+  const account = readJson(path.join(HOME, ".claude.json"))?.oauthAccount?.emailAddress ?? null;
+  let auth = { ok: false, via: null, account: null };
+  if (process.platform === "darwin" && tryExec("security", ["find-generic-password", "-s", "Claude Code-credentials"]) !== null) {
+    auth = { ok: true, via: "keychain", account };
+  } else if (fileExists(path.join(CLAUDE_DIR, ".credentials.json"))) {
+    auth = { ok: true, via: "credentials-file", account };
+  } else if (account) {
+    auth = { ok: true, via: "oauth-account", account };
+  }
+  const plugins = readJson(path.join(CLAUDE_DIR, "plugins", "installed_plugins.json"))?.plugins || {};
+  const bridgePlugin = !!plugins["bridge@context-bridge"];
+  return {
+    version,
+    auth,
+    extras: [
+      {
+        ok: bridgePlugin,
+        label: "context-bridge plugin installed (provides /bridge and the session hooks)",
+        fix: "bridge doctor --fix",
+      },
+    ],
+    // Claude needs its plugin: without the hooks nothing records the session.
+    ready: !!(version && auth.ok && bridgePlugin),
+    installHint: "curl -fsSL https://claude.ai/install.sh | bash",
+  };
+}
+
+/** A harmless one-line headless prompt: proves the CLI actually answers today. */
+export function smokeCommand() {
+  return { cmd: "claude", args: ["-p", "Reply with exactly: bridge-ok"] };
 }
