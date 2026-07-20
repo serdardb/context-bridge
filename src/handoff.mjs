@@ -9,7 +9,7 @@ import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, STATE_VE
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
-import { pruneCheckpoints } from "./clean.mjs";
+import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
@@ -66,6 +66,10 @@ function detectSource(s, target) {
 
 function projectDirOf(s) {
   return s.project;
+}
+
+function kb(bytes) {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 /**
@@ -271,6 +275,17 @@ export function handoff(
     next: splitNotes(nextNotes),
   };
 
+  // Re-issuing a handoff to the same target replaces the undelivered one instead
+  // of leaving it behind: those orphans were pure waste, and two pending packages
+  // for one agent is a state nobody can reason about.
+  if (s.pendingInjection?.agent === target) {
+    const dropped = supersedePending(projectDir, s.pendingInjection);
+    if (dropped.files) {
+      lines.push(`${OK} Replaced the previous undelivered handoff to ${targetAdapter.displayName} (${kb(dropped.bytes)} freed).`);
+    }
+    s.pendingInjection = null;
+  }
+
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
   const full = composeFullContext(sections);
   const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, full);
@@ -289,7 +304,10 @@ export function handoff(
       "un-clipped. Later handoffs carry only what is new.";
   } else {
     delta = composeDelta(sections);
-    delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
+    delta +=
+      `\n\nTemporary full context companion: ${fullRel}` +
+      " — messages above are clipped to one line each. Read it during this receiving session if exact wording matters; " +
+      "it may be pruned after this agent hands off.";
   }
   if (adopted) {
     delta += sourceRef?.transcriptPath
@@ -324,9 +342,20 @@ export function handoff(
   const others = streams.filter((st) => st.id !== sourceId).map((st) => st.label);
   lines.push(
     `${OK} Prepared ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta ` +
-      `(${messageCount} messages, ${sections.work.length} work items` +
+      `(${messageCount} messages, ${sections.work.length} work items, ${kb(Buffer.byteLength(delta))}` +
       `${others.length ? `, including catch-up from ${others.join(" and ")}` : ""}).`
   );
+
+  // This agent is handing off, which proves it had a live session after anything
+  // delivered to it arrived and is done reading those companions. From here the
+  // native transcripts and knownBy are the record.
+  const freed = dropDeliveredCompanions(projectDir, sourceId);
+  if (freed.files) {
+    lines.push(
+      `${OK} Cleared ${freed.files} delivered context file${freed.files === 1 ? "" : "s"} ` +
+        `for ${sourceAdapter.displayName} (${kb(freed.bytes)} freed).`
+    );
+  }
   autoPrune(projectDir, lines);
   lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher));
   if (!decisions && !nextNotes) {

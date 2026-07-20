@@ -201,7 +201,8 @@ export function appendFinalWords(projectDir, s, agent) {
   } catch {
     return; // already consumed or unwritable: the switch still stands
   }
-  // The companion promises exact wording, so it gets the closing words in full.
+  // The companion holds exact wording for the receiving session, so it gets the
+  // closing words in full while it still exists.
   // Skipping it would quietly make the file a worse record than the summary.
   const fullPath = deltaPath.replace(/\.md$/, "-full.md");
   const verbatim = tail.messages

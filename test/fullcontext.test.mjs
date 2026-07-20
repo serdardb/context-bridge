@@ -81,8 +81,15 @@ test("a first switch carries the whole conversation, a later one carries only wh
   s = loadState(project);
   const laterDelta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
   assert.ok(!laterDelta.includes(LONG_MESSAGE), "a later delta clips long messages");
-  const ref = laterDelta.match(/Full un-truncated context: (\S+)/);
-  assert.ok(ref, "a later delta references the full-context checkpoint");
+  // Companion is temporary: retention may prune it after this agent hands off.
+  // The path must not be sold as permanently available archive storage.
+  const ref = laterDelta.match(/Temporary full context companion: (\S+)/);
+  assert.ok(ref, "a later delta references the temporary full-context companion");
+  assert.match(
+    laterDelta,
+    /may be pruned after this agent hands off/,
+    "wording must not promise permanent availability"
+  );
   const full = fs.readFileSync(path.join(project, ref[1]), "utf8");
-  assert.ok(full.includes(LONG_MESSAGE), "the checkpoint keeps the message verbatim");
+  assert.ok(full.includes(LONG_MESSAGE), "the companion keeps the message verbatim while it lives");
 });

@@ -3,7 +3,7 @@ import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoff } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
-import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
+import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS, DEFAULT_KEEP_COMPANIONS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
@@ -91,6 +91,20 @@ export async function main(argv) {
         log(`  ${agentId.padEnd(14)} ${mask(slot.id)}   synced ${synced}`);
       }
       log(`  pending        ${s.pendingHandoff ? `handoff → ${s.pendingHandoff.target}` : s.pendingInjection ? `injection → ${s.pendingInjection.agent}` : dim("none")}`);
+      // Which agents each one has been caught up with. Free: it is already state.
+      const linked = AGENT_IDS.filter((a) => s.agents?.[a]?.id);
+      if (linked.length > 1) {
+        log("");
+        log("  caught up with");
+        for (const target of linked) {
+          const seen = linked.filter((src) => src !== target && s.knownBy?.[target]?.[src]);
+          const missing = linked.filter((src) => src !== target && !s.knownBy?.[target]?.[src]);
+          log(
+            `  ${target.padEnd(14)} ${seen.length ? seen.join(", ") : dim("nobody")}` +
+              `${missing.length ? dim(`   (never synced: ${missing.join(", ")})`) : ""}`
+          );
+        }
+      }
       return;
     }
 
@@ -118,10 +132,17 @@ export async function main(argv) {
         dryRun: flags.has("--dry-run"),
       });
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
-      if (res.deletedGroups === 0) {
+      // Companions are deleted on their own schedule, so counting only whole
+      // groups reported "nothing to prune" while dozens of files were going.
+      if (res.deletedGroups === 0 && res.deletedCompanions === 0) {
         log(`${NONE} Nothing to prune (${res.groups} checkpoint groups, all recent or protected).`);
       } else {
-        log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
+        if (res.deletedGroups) {
+          log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
+        }
+        if (res.deletedCompanions) {
+          log(`${OK} ${verb} ${res.deletedCompanions} un-truncated context files kept beyond the newest ${DEFAULT_KEEP_COMPANIONS}.`);
+        }
       }
       return;
     }

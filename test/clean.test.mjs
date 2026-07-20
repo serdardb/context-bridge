@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pruneCheckpoints } from "../src/clean.mjs";
+import { pruneCheckpoints, supersedePending } from "../src/clean.mjs";
+import { AGENT_IDS } from "../src/agents/index.mjs";
 import { defaultState, saveState, checkpointsDir } from "../src/state.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -35,7 +36,8 @@ test("old groups inside the newest N and fresh groups beyond N both survive (AND
 test("dry-run reports without deleting and both files of a group are counted", () => {
   const project = makeProject();
   makeGroups(project, { count: 22, ageDays: 30, startIndex: 0 });
-  const res = pruneCheckpoints(project, { dryRun: true });
+  // keepCompanions off: this test is about group accounting, not the backstop.
+  const res = pruneCheckpoints(project, { dryRun: true, keepCompanions: Infinity });
   assert.equal(res.deletedGroups, 2);
   assert.equal(res.deletedFiles, 4); // delta + full per group
   assert.equal(remainingGroups(project), 22);
@@ -100,3 +102,72 @@ function remainingGroups(project) {
   }
   return seen.size;
 }
+
+test("the companion backstop keeps only the newest few, whatever their age", () => {
+  // Companions are ~92% of the bytes and are read at most once, by the session
+  // that received them. Their real lifetime is an event, so this only catches
+  // the case where that event never comes.
+  const project = makeProject();
+  makeGroups(project, { count: 8, ageDays: 0, startIndex: 0 });
+
+  const dry = pruneCheckpoints(project, { dryRun: true, keepCompanions: 3 });
+  assert.equal(dry.deletedGroups, 0, "fresh groups are not group-pruned");
+  assert.equal(dry.deletedCompanions, 5, "8 companions, 3 kept");
+  assert.equal(countFiles(project, "-full.md"), 8, "dry run deletes nothing");
+
+  pruneCheckpoints(project, { keepCompanions: 3 });
+  assert.equal(countFiles(project, "-full.md"), 3);
+  assert.equal(countFiles(project, ".md") - countFiles(project, "-full.md"), 8, "bounded deltas are untouched");
+});
+
+test("supersedePending removes delta and full even if the disk is half-consumed", () => {
+  // Healthy pending points at an unconsumed .md. A crashed consume can leave
+  // .md.consumed while state still names the old path; supersede must not leave
+  // the companion behind in either shape.
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const stem = "2026-07-20T00-00-00-000Z-claude-to-codex";
+  fs.writeFileSync(path.join(dir, `${stem}.md.consumed`), "delta");
+  fs.writeFileSync(path.join(dir, `${stem}-full.md`), "full");
+
+  const res = supersedePending(project, {
+    deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`),
+  });
+  assert.equal(res.files, 2);
+  assert.equal(fs.existsSync(path.join(dir, `${stem}.md.consumed`)), false);
+  assert.equal(fs.existsSync(path.join(dir, `${stem}-full.md`)), false);
+});
+
+function countFiles(project, suffix) {
+  return fs.readdirSync(checkpointsDir(project)).filter((f) => f.endsWith(suffix)).length;
+}
+
+test("every registered agent pair is prunable, including any added later", () => {
+  // The bug this guards: the group pattern was written by hand for the original
+  // pair, so Grok's checkpoints were invisible to pruning and simply piled up.
+  // Iterating the registry means a fourth agent is covered the day it is added,
+  // instead of the day someone notices its files never disappear.
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const pairs = [];
+  for (const from of AGENT_IDS) {
+    for (const to of AGENT_IDS) {
+      if (from === to) continue;
+      pairs.push(`${from}-to-${to}`);
+    }
+  }
+
+  const old = new Date(Date.now() - 60 * DAY);
+  pairs.forEach((pair, i) => {
+    const stem = `2026-01-${String(i + 1).padStart(2, "0")}T00-00-00-000Z-${pair}`;
+    for (const name of [`${stem}.md`, `${stem}-full.md`]) {
+      const p = path.join(dir, name);
+      fs.writeFileSync(p, "checkpoint");
+      fs.utimesSync(p, old, old);
+    }
+  });
+
+  const res = pruneCheckpoints(project, { keep: 0, days: 0 });
+  assert.equal(res.deletedGroups, pairs.length, `all ${pairs.length} directed pairs must be recognised`);
+  assert.equal(fs.readdirSync(dir).length, 0, "nothing belonging to a registered agent survives");
+});
