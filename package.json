@@ -1,5 +1,5 @@
 {
-  "name": "context-bridge",
+  "name": "@serdardb/context-bridge",
   "version": "0.8.0",
   "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
   "type": "module",
@@ -25,7 +25,6 @@
   },
   "repository": "github:SerdarDB/context-bridge",
   "license": "MIT",
-  "private": true,
   "author": "SerdarDB",
   "homepage": "https://github.com/SerdarDB/context-bridge#readme",
   "bugs": {
@@ -40,5 +39,8 @@
     "bridge",
     "cli",
     "developer-tools"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -94,12 +94,22 @@ shell
 ## Installation
 
 ```bash
-git clone https://github.com/SerdarDB/context-bridge.git
-cd context-bridge
-npm install -g .
+npm install -g @serdardb/context-bridge
 
 bridge doctor        # see what's present and what's missing
 bridge doctor --fix  # bootstrap the missing pieces (asks before each change)
+```
+
+The plain `context-bridge` name on npm belongs to an unrelated library, so the
+package is published under a scope. Everything else keeps the name: the repo, the
+command, the plugin.
+
+To work on the bridge itself, install from a clone instead:
+
+```bash
+git clone https://github.com/SerdarDB/context-bridge.git
+cd context-bridge
+npm install -g .
 ```
 
 `bridge doctor --fix` can install, with your confirmation, using only official mechanisms:
@@ -232,7 +242,6 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 - Per-agent flags at launch and at handoff time (`bridge claude --dangerously-skip-permissions` works today; arming a second agent in the same run does not yet)
 - `bridge unlink` / multi-pair support
 - Linux verification, Windows support
-- npm package (`npm install -g context-bridge`)
 - Optional MCP quick-question mode (ask the other agent without switching)
 
 ## Development status
