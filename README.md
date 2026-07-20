@@ -14,7 +14,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 **Supported today: Claude Code, Codex and Grok**, in any of the six directions.
 
-> **Status: developer preview (0.7.1).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.8.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -119,24 +119,24 @@ Nothing is mutated without confirmation, and no secrets are ever read or printed
 Context Bridge Doctor
 
 Claude Code
-  ✓ Installed: 2.1.215 (Claude Code)
+  ✓ Installed: 2.1.216 (Claude Code)
   ✓ Authenticated (you@example.com)
   ✓ context-bridge plugin installed (provides /bridge and the session hooks)
   ✓ Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)
-  ✓ Session readable by this version of the bridge (507 messages)
+  ✓ Session readable by this version of the bridge (584 messages)
 
 Codex
   ✓ Installed: codex-cli 0.144.6
   ✓ Authenticated (Logged in using ChatGPT)
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
   ✓ bridge command pre-allowed in Codex rules
-  ✓ Session readable by this version of the bridge (291 messages)
+  ✓ Session readable by this version of the bridge (313 messages)
 
 Grok
   ✓ Installed: grok 0.2.106
   ✓ Authenticated
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
-  ✓ Session readable by this version of the bridge (54 messages)
+  ✓ Session readable by this version of the bridge (68 messages)
 
 Bridge
   ✓ bridge on PATH (hooks can reach it)
@@ -157,6 +157,8 @@ On a fresh machine the plugin/skill rows start as `✗` with the exact official 
 
 The wording is deliberate. `CONFIGURED` means installed, logged in, and *its session files still parse with this version of the bridge*. That last check runs by default and costs about 100ms, because it is the failure nobody would otherwise notice: session formats are internal to each vendor, so a renamed field ships in a point release and every handoff quietly returns an empty delta while the binary is still installed and still logged in. If that happens the row reads `Session UNREADABLE` and every route through that agent carries the reason.
 
+The same check covers the other reader. Finding a session and reading one are different pieces of code, and the second kind of failure is just as quiet: if sessions are stored on disk and not one of them can be named, discovery has gone blind and doctor says so. A project with nothing stored stays neutral.
+
 What `CONFIGURED` still cannot promise is that the agent answers. `bridge doctor --deep` asks each one a real one-line question and reports `LIVE` or `BROKEN`; it is not the default because it is slow and depends on the network.
 
 ## First run
@@ -168,6 +170,8 @@ bridge grok         # or start on any supported agent
 ```
 
 `bridge` starts (or resumes) that agent as its child, and forwards any flags you add straight to it (`bridge claude --dangerously-skip-permissions`). Work normally; the session is recorded automatically and you never see an ID.
+
+A session the bridge starts is a session the bridge can return to: it links what it launched, while the agent is still running and once more when it exits, so `bridge grok` later resumes that same conversation instead of opening a new one. If you happen to have a second session of the same agent open elsewhere, it links neither and says so rather than guessing.
 
 ## Switching
 
@@ -205,7 +209,7 @@ Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributin
 - Everything is local. No SaaS, no accounts, no telemetry, no database server.
 - No API keys are read, requested, or stored. Auth detection checks *existence* only (e.g. Keychain entry name, `codex login status`) and never touches secret values.
 - `.bridge/` holds references, timestamps and bounded delta files — not full transcripts — and is added to your `.gitignore` automatically.
-- Context deltas travel only between your two local CLIs, inside their normal subscription-authenticated calls.
+- Context deltas travel only between the agent CLIs on your machine, inside their normal subscription-authenticated calls.
 
 ## Compatibility
 
@@ -220,6 +224,7 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 - A launcher left running across a bridge upgrade cannot read the newer state file. It says so and asks to be restarted; the pending handoff is preserved.
 - Decision/Next quality depends on the departing agent following its handoff instructions; Conversation/Work sections are deterministic from session files and git regardless.
 - If you run `claude`/`codex` outside the `bridge` launcher, handoffs still record state, but the actual switch is manual (the handoff message tells you exactly what to run).
+- Codex stores its sessions by date rather than by project, so the discovery check for it is measured across the machine rather than for one project.
 - **This is an early developer preview — not production-ready.**
 
 ## Roadmap
@@ -232,13 +237,15 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 
 ## Development status
 
-0.7.1 — developer preview. Round-trips across all three agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex and Grok hand this repo's work back and forth through it daily, including three-agent review rounds where each one's findings reach the next.
+0.8.0 — developer preview. Round-trips across all three agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex and Grok hand this repo's work back and forth through it daily, including three-agent review rounds where each one's findings reach the next.
 
 Since the first release:
 
 - **Adopt flow** — sessions started outside the bridge can be linked mid-flight (deterministic via `CODEX_THREAD_ID`, confirmed when heuristic)
-- **Full-context checkpoints** — every delta ships with an un-truncated companion, so long prose survives a handoff
+- **Full-context checkpoints** — every delta ships with a temporary un-truncated companion, so long prose survives a handoff
 - **Three agents, six directions** — Grok joined behind an adapter contract, and a `knownBy` matrix keeps chains from dropping the hop before last
+- **Sessions the bridge starts are linked** — Codex and Grok used to be unreachable until they handed off once, so `bridge grok` refused to resume the session it had just created
+- **Doctor tells the truth** — `READY` became `CONFIGURED`, and two canaries check that this version of the bridge can still read what each agent writes and still find what each agent stores
 - **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks, gated on ubuntu+macos × Node 18/20/22
 - **Checkpoint retention** — checkpoints are delivery artifacts: a companion is dropped once its reader has handed off, with `bridge clean` as the manual backstop
 
