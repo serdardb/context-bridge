@@ -11,7 +11,16 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
-import { grokHome, fileExists, readJson, tryExec, HOME } from "../util.mjs";
+import {
+  grokHome,
+  fileExists,
+  readJson,
+  tryExec,
+  REPO_ROOT,
+  SHARED_SKILL_PATH,
+  installedCopyStatus,
+} from "../util.mjs";
+import { skillLabel } from "./codex.mjs";
 
 export const id = "grok";
 export const displayName = "Grok";
@@ -209,12 +218,12 @@ export function health() {
   const version = tryExec("grok", ["--version"]);
   // Existence only: the file holds credentials and is never read.
   const authed = fileExists(path.join(grokHome(), "auth.json"));
-  const skill = fileExists(path.join(HOME, ".agents", "skills", "bridge", "SKILL.md"));
+  const skill = installedCopyStatus(SHARED_SKILL_PATH, path.join(REPO_ROOT, "codex", "SKILL.md"));
   return {
     version,
     auth: { ok: authed, via: "grok login", account: null },
-    extras: [{ ok: skill, label: "$bridge skill installed (~/.agents/skills/bridge)", fix: "bridge doctor --fix" }],
-    ready: !!(version && authed && skill),
+    extras: [{ ok: skill === "current", label: skillLabel(skill), fix: "bridge doctor --fix" }],
+    ready: !!(version && authed && skill !== "missing"),
     installHint: "see https://grok.com for the Grok CLI installer",
   };
 }

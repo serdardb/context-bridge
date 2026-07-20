@@ -2,8 +2,11 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export const HOME = os.homedir();
+export const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const SHARED_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, ".codex");
 export const GROK_HOME = process.env.GROK_HOME || path.join(HOME, ".grok");
@@ -138,4 +141,24 @@ function sliceUtf8End(s, maxBytes) {
 export function oneLine(s, max = 200) {
   const t = String(s).replace(/\s+/g, " ").trim();
   return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
+/**
+ * Status of a file installed from a repo original: missing, stale or current.
+ * Existence alone is not health — an installed copy that has drifted behind the
+ * repo silently teaches the agent the wrong instructions, which is how a stale
+ * Codex-only skill survived the move to three agents.
+ */
+export function installedCopyStatus(installedPath, sourcePath) {
+  let installed;
+  try {
+    installed = fs.readFileSync(installedPath, "utf8");
+  } catch {
+    return "missing";
+  }
+  try {
+    return installed === fs.readFileSync(sourcePath, "utf8") ? "current" : "stale";
+  } catch {
+    return "current"; // no source to compare against: not the user's problem
+  }
 }

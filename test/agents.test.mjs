@@ -291,3 +291,19 @@ test("doctor reports every agent and every directed route from the registry", as
     }
   }
 });
+
+test("an installed skill that drifted behind the repo is reported as stale, not ok", async () => {
+  const { installedCopyStatus } = await import("../src/util.mjs");
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-skill-")));
+  const source = path.join(dir, "SKILL.md");
+  const installed = path.join(dir, "installed.md");
+  fs.writeFileSync(source, "target as written\n");
+
+  assert.equal(installedCopyStatus(installed, source), "missing");
+  // Exactly the failure Grok hit: the copy exists, so existence checks pass, but
+  // it still teaches the pre-migration instructions.
+  fs.writeFileSync(installed, "only codex is supported\n");
+  assert.equal(installedCopyStatus(installed, source), "stale");
+  fs.copyFileSync(source, installed);
+  assert.equal(installedCopyStatus(installed, source), "current");
+});

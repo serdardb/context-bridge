@@ -2,7 +2,15 @@
 import { findRolloutPath, latestRolloutForProject } from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
 import path from "node:path";
-import { nowIso, fileExists, tryExec, HOME, CODEX_HOME } from "../util.mjs";
+import {
+  nowIso,
+  fileExists,
+  tryExec,
+  CODEX_HOME,
+  REPO_ROOT,
+  SHARED_SKILL_PATH,
+  installedCopyStatus,
+} from "../util.mjs";
 
 export const id = "codex";
 export const displayName = "Codex";
@@ -75,20 +83,31 @@ export function startCommand(extraArgs = []) {
 export function health() {
   const version = tryExec("codex", ["--version"]);
   const detail = version ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
-  const skill = fileExists(path.join(HOME, ".agents", "skills", "bridge", "SKILL.md"));
+  const skill = installedCopyStatus(SHARED_SKILL_PATH, path.join(REPO_ROOT, "codex", "SKILL.md"));
   const rules = fileExists(path.join(CODEX_HOME, "rules", "bridge.rules"));
   return {
     version,
     auth: { ok: detail !== null, via: "codex login", account: detail },
     extras: [
-      { ok: skill, label: "$bridge skill installed (~/.agents/skills/bridge)", fix: "bridge doctor --fix" },
+      {
+        ok: skill === "current",
+        label: skillLabel(skill),
+        fix: "bridge doctor --fix",
+      },
       { ok: rules, label: "bridge command pre-allowed in Codex rules", fix: "bridge doctor --fix", info: true },
     ],
-    ready: !!(version && detail !== null && skill),
+    ready: !!(version && detail !== null && skill !== "missing"),
     installHint: "npm install -g @openai/codex",
   };
 }
 
 export function smokeCommand() {
   return { cmd: "codex", args: ["exec", "Reply with exactly: bridge-ok"] };
+}
+
+/** Says which of the three states the installed skill is in, never just "ok". */
+export function skillLabel(status) {
+  if (status === "missing") return "$bridge skill not installed (~/.agents/skills/bridge)";
+  if (status === "stale") return "$bridge skill is OUT OF DATE (~/.agents/skills/bridge) — it teaches the old instructions";
+  return "$bridge skill installed and current (~/.agents/skills/bridge)";
 }

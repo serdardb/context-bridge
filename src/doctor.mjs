@@ -194,10 +194,12 @@ async function applyFixes(projectDir, r) {
         run("claude", ["plugin", "install", "bridge@context-bridge"]);
       }
     }
-    if (!r.codex.skill) {
-      if (await yes("Install the $bridge skill for Codex (~/.agents/skills/bridge/SKILL.md)?")) {
+    const skillExtra = r.agents.codex.extras.find((e) => e.label.includes("$bridge skill"));
+    if (skillExtra && !skillExtra.ok) {
+      const verb = skillExtra.label.includes("OUT OF DATE") ? "Update" : "Install";
+      if (await yes(`${verb} the shared $bridge skill (~/.agents/skills/bridge/SKILL.md)?`)) {
         installCodexSkill();
-        log(`${OK} Codex $bridge skill installed.`);
+        log(`${OK} Shared $bridge skill written from this repo.`);
       }
     }
     if (!r.codex.rules) {
