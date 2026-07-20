@@ -8,7 +8,7 @@ import { splitLauncherArgs } from "./agentargs.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 

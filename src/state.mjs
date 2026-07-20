@@ -50,6 +50,10 @@ export function defaultState(projectDir) {
     //  "sources":{<source>:<mark>}}  — what went into the delta, committed to
     //  knownBy once that delta is finalised.
     pendingInjection: null,
+    // Last launcher process that opened an agent for this project. This is not
+    // required to resume state; it only lets handoff warn when an old launcher is
+    // still running after a bridge upgrade.
+    launcher: null,
     // knownBy[target][source] = how far into SOURCE's own stream the bridge has
     // packed material for TARGET. This is what makes a chain work: a handoff to
     // an agent carries everything it has not seen, from every agent, not just

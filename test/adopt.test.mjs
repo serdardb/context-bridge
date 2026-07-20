@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState } from "../src/state.mjs";
+import { defaultState, saveState, loadState, STATE_VERSION } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -91,7 +91,7 @@ test("discovery falls back to the filename uuid when session_meta lacks an id", 
   assert.equal(loadState(project).agents.codex.id, THREAD_ID);
 });
 
-test("under the launcher the handoff promises the automatic switch instead", () => {
+test("an old launcher marker avoids promising an automatic switch", () => {
   const { project, codexHome } = makeCodexFixture();
   const res = runBridge(["handoff", "claude"], project, {
     CODEX_HOME: codexHome,
@@ -99,8 +99,65 @@ test("under the launcher the handoff promises the automatic switch instead", () 
     CONTEXT_BRIDGE_LAUNCHER: "1",
   });
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /will close Codex and .* automatically/);
+  assert.match(res.stdout, /predates this check/, "no marker means a launcher from before this protocol");
+  assert.match(res.stdout, /If the switch stalls/);
+  assert.doesNotMatch(res.stdout, /will close Codex and .* automatically/);
   assert.doesNotMatch(res.stdout, /not running under the bridge launcher/);
+});
+
+test("a current launcher marker suppresses the stale-launcher warning", () => {
+  const { project, codexHome } = makeCodexFixture();
+  const s = defaultState(project);
+  s.launcher = { stateVersion: STATE_VERSION, pid: process.pid, recordedAt: "2026-07-20T00:00:00.000Z" };
+  saveState(project, s);
+
+  const res = runBridge(["handoff", "claude"], project, {
+    CODEX_HOME: codexHome,
+    CODEX_THREAD_ID: THREAD_ID,
+    CONTEXT_BRIDGE_LAUNCHER: "1",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stdout, /older bridge launcher/);
+  assert.match(res.stdout, /launcher will close Codex/);
+});
+
+test("a current marker left by a launcher that has exited still warns", () => {
+  // Grok caught this: matching the state version proves the marker was written by
+  // a compatible launcher, not that anything is still watching. A dead launcher
+  // with a current marker was being promised an automatic switch.
+  const { project, codexHome } = makeCodexFixture();
+  const s = defaultState(project);
+  s.launcher = { stateVersion: STATE_VERSION, pid: 999999, recordedAt: "2026-07-20T00:00:00.000Z" };
+  saveState(project, s);
+
+  const res = runBridge(["handoff", "claude"], project, {
+    CODEX_HOME: codexHome,
+    CODEX_THREAD_ID: THREAD_ID,
+    CONTEXT_BRIDGE_LAUNCHER: "1",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /launcher that has since exited/);
+  assert.doesNotMatch(res.stdout, /will close Codex and .* automatically/);
+});
+
+test("the warning says which side is behind, and whether that launcher still exists", () => {
+  const { project, codexHome } = makeCodexFixture();
+  const s = defaultState(project);
+  // A launcher that understands a NEWER state file than this bridge writes: it is
+  // this bridge that is behind, and saying "older launcher" would be backwards.
+  s.launcher = { stateVersion: STATE_VERSION + 1, pid: 999999, recordedAt: "2026-07-20T00:00:00.000Z" };
+  saveState(project, s);
+
+  const res = runBridge(["handoff", "claude"], project, {
+    CODEX_HOME: codexHome,
+    CODEX_THREAD_ID: THREAD_ID,
+    CONTEXT_BRIDGE_LAUNCHER: "1",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /newer bridge launcher/);
+  assert.doesNotMatch(res.stdout, /older bridge launcher/);
+  // The marker's process is long gone, so the marker describes nobody.
+  assert.match(res.stdout, /no longer running/);
 });
 
 test("handoff claude without any Codex session fails with guidance", () => {

@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark } from "./state.mjs";
+import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
@@ -95,6 +95,47 @@ function preflightOfficialImport() {
 }
 
 /**
+ * A launcher records the state version it understands before it spawns an agent.
+ * A mismatch means the process watching for this handoff cannot read the file we
+ * are about to write, so the switch will not fire. Say which way round it is:
+ * "older launcher" is wrong when the launcher is in fact the newer one.
+ */
+function launcherIsStale(s, lines) {
+  if (!underLauncher()) return false;
+  const seen = s.launcher?.stateVersion ?? null;
+  const pid = s.launcher?.pid ?? null;
+  // A marker describes a process. If that process is gone, the marker describes
+  // nobody, and a matching version proves nothing: something has to be watching
+  // for the switch to happen at all.
+  const markerAlive = pid ? processAlive(pid) : null;
+  if (seen === STATE_VERSION && markerAlive !== false) return false;
+
+  const which =
+    seen === null
+      ? "a launcher that predates this check"
+      : seen === STATE_VERSION
+        ? "a launcher that has since exited"
+        : seen < STATE_VERSION
+          ? `an older bridge launcher (understands state v${seen}, this bridge writes v${STATE_VERSION})`
+          : `a newer bridge launcher (understands state v${seen}, this bridge writes v${STATE_VERSION})`;
+  const gone = markerAlive === false && seen !== STATE_VERSION ? ", and that launcher process is no longer running" : "";
+  lines.push(
+    `${WARN} This agent is running under ${which}${gone}. ` +
+      "The handoff is saved either way, but automatic switching may not fire."
+  );
+  return true;
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0); // signal 0 tests for existence without touching it
+    return true;
+  } catch (e) {
+    return e.code === "EPERM"; // alive but owned by someone else
+  }
+}
+
+/**
  * Make sure the source agent is linked, adopting its running session when needed.
  * Deterministic identity adopts silently; a heuristic match needs --adopt.
  */
@@ -159,6 +200,7 @@ export function handoff(
   const sourceAdapter = adapterFor(sourceId);
 
   checkTarget(target, lines);
+  const staleLauncher = launcherIsStale(s, lines);
   const adopted = ensureSourceLinked(projectDir, s, sourceId, adopt, lines);
   const sourceSlot = agentSlot(s, sourceId);
   const targetSlot = agentSlot(s, target);
@@ -188,7 +230,7 @@ export function handoff(
     s.pendingHandoff = { target, ready: true, requestedAt: now };
     saveState(projectDir, s);
     lines.push(`${OK} First switch: Claude session imported into Codex via the official OpenAI transfer.`);
-    lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter));
+    lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher));
     return lines.join("\n");
   }
 
@@ -286,7 +328,7 @@ export function handoff(
       `${others.length ? `, including catch-up from ${others.join(" and ")}` : ""}).`
   );
   autoPrune(projectDir, lines);
-  lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter));
+  lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher));
   if (!decisions && !nextNotes) {
     lines.push(`${WARN} No --decisions/--next notes were provided; the delta contains conversation + git truth only.`);
   }
@@ -294,12 +336,19 @@ export function handoff(
 }
 
 /** The one honest sentence about what happens next, launcher or not. */
-function switchNote(targetAdapter, targetSlot, sourceAdapter) {
+function switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher = false) {
   const what = targetSlot.id
     ? `resume your ${targetAdapter.displayName} session`
     : `start a fresh ${targetAdapter.displayName} session seeded with this context`;
-  if (underLauncher()) {
+  if (underLauncher() && !staleLauncher) {
     return [`${OK} Handoff is ready. The bridge launcher will close ${sourceAdapter.displayName} and ${what} automatically.`];
+  }
+  if (underLauncher() && staleLauncher) {
+    return [
+      `${OK} Handoff is ready.`,
+      `${WARN} If the switch stalls, exit ${sourceAdapter.displayName} and run 'bridge ${targetAdapter.id}' to ${what}. ` +
+        `Nothing is lost: this ${sourceAdapter.displayName} session stays linked and resumes next time.`,
+    ];
   }
   return [
     `${OK} Handoff is ready.`,

@@ -7,10 +7,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { ensureState, loadState, saveState, agentSlot, commitKnown } from "./state.mjs";
+import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
-import { log, dim, bold, OK, WARN, BAD, oneLine } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso } from "./util.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -53,6 +53,7 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     // This launch consumes any pending handoff towards `agent`.
     if (s.pendingHandoff?.target === agent) s.pendingHandoff = null;
     s.activeAgent = agent;
+    s.launcher = { stateVersion: STATE_VERSION, pid: process.pid, recordedAt: nowIso() };
     agentSlot(s, agent).set({ idle: false });
     saveState(projectDir, s);
 
