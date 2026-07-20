@@ -87,7 +87,7 @@ test("--flag=value form is dropped as one token", () => {
 test("buildCommand puts the bridge's own --resume last so it wins", () => {
   const project = makeProject();
   const s = defaultState(project);
-  s.agents.claude.sessionId = "linked-session";
+  s.agents.claude.id = "linked-session";
   const { cmd, args } = buildCommand(project, s, "claude", ["--dangerously-skip-permissions"]);
   assert.equal(cmd, "claude");
   assert.deepEqual(args, ["--dangerously-skip-permissions", "--resume", "linked-session"]);
@@ -99,10 +99,10 @@ test("buildCommand shields the codex delta behind -- so variadic flags cannot sw
   fs.writeFileSync(path.join(checkpointsDir(project), "delta.md"), "[Bridge Context Update]");
 
   const s = defaultState(project);
-  s.agents.codex.threadId = "linked-thread";
+  s.agents.codex.id = "linked-thread";
   s.pendingInjection = {
     agent: "codex",
-    threadId: "linked-thread",
+    id: "linked-thread",
     deltaFile: path.join(".bridge", "checkpoints", "delta.md"),
     createdAt: "2026-01-01T00:00:00.000Z",
   };

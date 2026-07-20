@@ -5,9 +5,10 @@ import { handoffCodex, handoffClaude } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
+import { AGENT_IDS } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 
@@ -80,8 +81,11 @@ export async function main(argv) {
       log(bold("context-bridge status"));
       log(`  project        ${s.project}`);
       log(`  active agent   ${s.activeAgent ?? dim("none")}`);
-      log(`  claude session ${mask(s.agents.claude.sessionId)}   synced ${s.agents.claude.lastSyncAt ?? dim("never")}`);
-      log(`  codex thread   ${mask(s.agents.codex.threadId)}   synced ${s.agents.codex.lastSyncAt ?? dim("never")}`);
+      for (const agentId of AGENT_IDS) {
+        const slot = s.agents?.[agentId] ?? {};
+        const synced = slot.mark ? (typeof slot.mark === "string" ? slot.mark : JSON.stringify(slot.mark)) : dim("never");
+        log(`  ${agentId.padEnd(14)} ${mask(slot.id)}   synced ${synced}`);
+      }
       log(`  pending        ${s.pendingHandoff ? `handoff → ${s.pendingHandoff.target}` : s.pendingInjection ? `injection → ${s.pendingInjection.agent}` : dim("none")}`);
       return;
     }

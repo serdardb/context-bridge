@@ -17,11 +17,11 @@ test("Claude SessionStart hook injects pending delta exactly once", () => {
   fs.writeFileSync(path.join(checkpointDir, "delta.md"), "[Bridge Context Update]\nCodex changed files.\n");
 
   const state = defaultState(project);
-  state.agents.claude.sessionId = "claude-session-1";
+  state.agents.claude.id = "claude-session-1";
   state.agents.claude.transcriptPath = path.join(project, "claude.jsonl");
   state.pendingInjection = {
     agent: "claude",
-    sessionId: "claude-session-1",
+    id: "claude-session-1",
     deltaFile: path.join(".bridge", "checkpoints", "delta.md"),
     createdAt: "2026-01-01T00:00:00.000Z",
   };

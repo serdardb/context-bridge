@@ -62,7 +62,7 @@ export function collect(projectDir) {
   } catch (e) {
     stateError = e.message;
   }
-  const linked = !!(state?.agents?.claude?.sessionId && state?.agents?.codex?.threadId);
+  const linked = !!(state?.agents?.claude?.id && state?.agents?.codex?.id);
 
   const claudeReady = !!(claudeVersion && claudeAuth.ok && ourPlugin);
   const codexReady = !!(codexVersion && codexAuth && codexSkill);

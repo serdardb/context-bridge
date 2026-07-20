@@ -14,7 +14,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 **Supported today: Claude Code ⇄ Codex** (Gemini planned, not implemented).
 
-> **Status: developer preview (0.5.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.6.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -215,7 +215,7 @@ Verified against: **Claude Code 2.1.214** and **codex-cli 0.143.0** on macOS (No
 
 ## Development status
 
-0.5.0 — developer preview. The full Claude → Codex → original-Claude round-trip (repeatedly, without re-import) passes a real end-to-end test on macOS, and the bridge is developed with itself: Claude and Codex hand this repo's work back and forth through it daily.
+0.6.0 — developer preview. The full Claude → Codex → original-Claude round-trip (repeatedly, without re-import) passes a real end-to-end test on macOS, and the bridge is developed with itself: Claude and Codex hand this repo's work back and forth through it daily.
 
 Since the first release:
 

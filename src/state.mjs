@@ -4,8 +4,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic, readJson, nowIso, fileExists } from "./util.mjs";
+import { AGENT_IDS } from "./agents/index.mjs";
 
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 export function bridgeDir(projectDir) {
   return path.join(projectDir, ".bridge");
@@ -23,31 +24,29 @@ export function logsDir(projectDir) {
   return path.join(bridgeDir(projectDir), "logs");
 }
 
+/** One agent slot. Same shape for every agent, whatever the vendor calls things. */
+export function emptyAgent() {
+  return {
+    // native reference only: session id or thread id, whatever resumes it
+    id: null,
+    transcriptPath: null,
+    // opaque sync watermark, defined by that agent's adapter — never compared
+    // across agents, never interpreted here (ISO instant for Claude and Codex,
+    // a compound {rows, ts} for Grok)
+    mark: null,
+    idle: false,
+  };
+}
+
 export function defaultState(projectDir) {
   return {
     version: STATE_VERSION,
     project: projectDir,
     activeAgent: null,
-    agents: {
-      claude: {
-        // native refs only
-        sessionId: null,
-        transcriptPath: null,
-        // timestamp up to which CLAUDE has received Codex context
-        lastSyncAt: null,
-        idle: false,
-      },
-      codex: {
-        threadId: null,
-        rolloutPath: null,
-        // timestamp up to which CODEX has received Claude context
-        lastSyncAt: null,
-        idle: false,
-      },
-    },
-    // {"target":"codex"|"claude","ready":true,"requestedAt":iso}
+    agents: Object.fromEntries(AGENT_IDS.map((agentId) => [agentId, emptyAgent()])),
+    // {"target":<agent>,"ready":true,"requestedAt":iso}
     pendingHandoff: null,
-    // {"agent":"claude"|"codex","sessionId":..,"deltaFile":relpath,"createdAt":iso}
+    // {"agent":<agent>,"id":<session id|null>,"deltaFile":relpath,"createdAt":iso}
     pendingInjection: null,
     // git checkpoint recorded at each handoff, used for "commits since"
     git: { sha: null, recordedAt: null },
@@ -55,62 +54,99 @@ export function defaultState(projectDir) {
   };
 }
 
-/**
- * Uniform per-agent view over a state file that is not uniform on disk.
- *
- * Claude and Codex were written before adapters existed and store the same
- * concept under different names (`sessionId`/`transcriptPath` versus
- * `threadId`/`rolloutPath`). Rewriting that shape would mean bumping
- * STATE_VERSION, and `loadState` throws on a version it does not know — every
- * existing .bridge/state.json in the wild would break. So instead of migrating,
- * this accessor translates. New agents get the uniform shape from the start.
- *
- * Returns a live view: `set()` writes back to the underlying slot.
- */
+/** The agent's slot, created on first use so a new agent needs no migration. */
 export function agentSlot(s, agentId) {
-  if (!s.agents[agentId]) s.agents[agentId] = { id: null, transcriptPath: null, lastSyncAt: null, idle: false };
+  if (!s.agents[agentId]) s.agents[agentId] = emptyAgent();
   const slot = s.agents[agentId];
-  const legacy =
-    agentId === "claude"
-      ? { id: "sessionId", path: "transcriptPath" }
-      : agentId === "codex"
-        ? { id: "threadId", path: "rolloutPath" }
-        : null;
   return {
     get id() {
-      return legacy ? (slot[legacy.id] ?? null) : (slot.id ?? null);
+      return slot.id ?? null;
     },
     get transcriptPath() {
-      return legacy ? (slot[legacy.path] ?? null) : (slot.transcriptPath ?? null);
+      return slot.transcriptPath ?? null;
     },
     get mark() {
-      // Legacy agents kept an ISO instant under lastSyncAt; adapters treat the
-      // watermark as opaque, so it is read and written through one name.
-      return slot.lastSyncAt ?? null;
+      return slot.mark ?? null;
     },
     get idle() {
       return slot.idle === true;
     },
     set(values) {
-      for (const [key, value] of Object.entries(values)) {
-        if (key === "id") slot[legacy ? legacy.id : "id"] = value;
-        else if (key === "transcriptPath") slot[legacy ? legacy.path : "transcriptPath"] = value;
-        else if (key === "mark") slot.lastSyncAt = value;
-        else slot[key] = value;
-      }
+      Object.assign(slot, values);
       return slot;
     },
   };
 }
 
-/** Load state; returns null when no .bridge/state.json exists. */
+/**
+ * v1 stored each agent under vendor-specific names and gave the delta watermark
+ * a time-flavoured name, which stopped being true once Grok arrived: its chat
+ * rows carry no timestamps, so its watermark is a row count. v2 is uniform and
+ * the watermark is opaque.
+ */
+function migrateV1ToV2(s) {
+  const next = {
+    ...s,
+    version: 2,
+    agents: Object.fromEntries(AGENT_IDS.map((agentId) => [agentId, emptyAgent()])),
+  };
+  const legacy = { claude: ["sessionId", "transcriptPath"], codex: ["threadId", "rolloutPath"] };
+  for (const [agentId, [idKey, pathKey]] of Object.entries(legacy)) {
+    const old = s.agents?.[agentId];
+    if (!old) continue;
+    next.agents[agentId] = {
+      id: old[idKey] ?? null,
+      transcriptPath: old[pathKey] ?? null,
+      mark: old.lastSyncAt ?? null,
+      idle: old.idle === true,
+    };
+  }
+  if (s.pendingInjection) {
+    const { sessionId, threadId, ...rest } = s.pendingInjection;
+    // sessionId was allowed to be null on purpose (seed the next new session),
+    // so keep null distinct from absent.
+    next.pendingInjection = { ...rest, id: sessionId !== undefined ? sessionId : (threadId ?? null) };
+  }
+  return next;
+}
+
+const MIGRATIONS = { 1: migrateV1ToV2 };
+
+/**
+ * Load state; returns null when no .bridge/state.json exists.
+ * Older files are migrated in place, keeping a one-time backup of the original.
+ * A file from a NEWER bridge is refused rather than guessed at.
+ */
 export function loadState(projectDir) {
-  const s = readJson(statePath(projectDir));
+  const p = statePath(projectDir);
+  let s = readJson(p);
   if (!s) return null;
-  if (s.version !== STATE_VERSION) {
+  if (s.version === STATE_VERSION) return s;
+  if (s.version > STATE_VERSION) {
     throw new Error(
-      `.bridge/state.json version ${s.version} is not supported by this bridge (expected ${STATE_VERSION}).`
+      `.bridge/state.json is version ${s.version}, newer than this bridge understands (${STATE_VERSION}). Update context-bridge.`
     );
+  }
+
+  const from = s.version;
+  while (s.version < STATE_VERSION) {
+    const migrate = MIGRATIONS[s.version];
+    if (!migrate) {
+      throw new Error(`.bridge/state.json version ${s.version} cannot be upgraded by this bridge.`);
+    }
+    s = migrate(s);
+  }
+  try {
+    try {
+      // COPYFILE_EXCL: the first backup is the real original, so never overwrite
+      // it — a later restore-and-remigrate must not clobber the good copy.
+      fs.copyFileSync(p, `${p}.v${from}.backup`, fs.constants.COPYFILE_EXCL);
+    } catch {
+      // Backup already exists: keep it.
+    }
+    writeJsonAtomic(p, s);
+  } catch {
+    // Read-only project or a race: the migrated state is still correct in memory.
   }
   return s;
 }

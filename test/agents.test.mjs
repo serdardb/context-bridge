@@ -159,7 +159,7 @@ test("the launcher builds commands through adapters, including for grok", async 
 
   const s = defaultState(project);
   // A brand new agent slot: no legacy field names, written by the uniform accessor.
-  s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, lastSyncAt: null, idle: false };
+  s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, mark: null, idle: false };
 
   const built = buildCommand(project, s, "grok", ["--permission-mode", "auto"]);
   assert.equal(built.cmd, "grok");
@@ -182,28 +182,50 @@ test("an unlinked prompt-injecting agent refuses to start, a hook-injecting one 
   assert.deepEqual(claude.args, [], "a fresh Claude session needs no resume flag");
 });
 
-test("legacy state field names still read through the uniform accessor", async () => {
-  const { defaultState, agentSlot } = await import("../src/state.mjs");
-  const s = defaultState("/tmp/x");
-  s.agents.claude.sessionId = "claude-1";
-  s.agents.codex.threadId = "codex-1";
-  s.agents.codex.rolloutPath = "/tmp/rollout.jsonl";
+test("a v1 state file is migrated in place, with a backup kept", async () => {
+  const { loadState, statePath } = await import("../src/state.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-v1-")));
+  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  const v1 = {
+    version: 1,
+    project,
+    activeAgent: "claude",
+    agents: {
+      claude: { sessionId: "claude-1", transcriptPath: "/tmp/claude.jsonl", lastSyncAt: "2026-07-20T00:00:00Z", idle: true },
+      codex: { threadId: "codex-1", rolloutPath: "/tmp/rollout.jsonl", lastSyncAt: null, idle: false },
+    },
+    pendingHandoff: null,
+    pendingInjection: { agent: "claude", sessionId: null, deltaFile: ".bridge/checkpoints/d.md", createdAt: "2026-07-20T00:00:00Z" },
+    git: { sha: null, recordedAt: null },
+    updatedAt: null,
+  };
+  fs.writeFileSync(statePath(project), JSON.stringify(v1));
 
-  assert.equal(agentSlot(s, "claude").id, "claude-1");
-  assert.equal(agentSlot(s, "codex").id, "codex-1");
-  assert.equal(agentSlot(s, "codex").transcriptPath, "/tmp/rollout.jsonl");
-
-  // Writes land back on the legacy names, so old bridges keep reading the file.
-  agentSlot(s, "claude").set({ id: "claude-2", mark: "2026-07-20T00:00:00Z" });
-  assert.equal(s.agents.claude.sessionId, "claude-2");
-  assert.equal(s.agents.claude.lastSyncAt, "2026-07-20T00:00:00Z");
-
-  // A new agent gets the uniform shape instead.
-  agentSlot(s, "grok").set({ id: "grok-1", transcriptPath: "/tmp/chat.jsonl" });
-  assert.deepEqual(s.agents.grok, {
-    id: "grok-1",
-    transcriptPath: "/tmp/chat.jsonl",
-    lastSyncAt: null,
-    idle: false,
+  const s = loadState(project);
+  assert.equal(s.version, 2);
+  assert.deepEqual(s.agents.claude, {
+    id: "claude-1",
+    transcriptPath: "/tmp/claude.jsonl",
+    mark: "2026-07-20T00:00:00Z",
+    idle: true,
   });
+  assert.equal(s.agents.codex.id, "codex-1");
+  assert.equal(s.agents.codex.transcriptPath, "/tmp/rollout.jsonl");
+  assert.ok(s.agents.grok, "a new agent slot appears without any migration of its own");
+  // A null id means "seed the next new session"; that must survive as null, not vanish.
+  assert.equal(s.pendingInjection.id, null);
+  assert.equal(s.pendingInjection.deltaFile, ".bridge/checkpoints/d.md");
+
+  assert.ok(fs.existsSync(statePath(project) + ".v1.backup"), "the original file is kept");
+  assert.equal(JSON.parse(fs.readFileSync(statePath(project), "utf8")).version, 2, "migration is written back");
+  assert.equal(loadState(project).version, 2, "second load is a no-op");
 });
+
+test("a state file from a newer bridge is refused, not guessed at", async () => {
+  const { loadState, statePath } = await import("../src/state.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-v9-")));
+  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  fs.writeFileSync(statePath(project), JSON.stringify({ version: 99, agents: {} }));
+  assert.throws(() => loadState(project), /newer than this bridge understands/);
+});
+

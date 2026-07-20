@@ -26,11 +26,11 @@ function hookSessionStart(projectDir, s, input) {
   let dirty = false;
 
   // Record the native Claude session refs (never shown to the user).
-  if (!s.agents.claude.sessionId && input.session_id) {
-    s.agents.claude.sessionId = input.session_id;
+  if (!s.agents.claude.id && input.session_id) {
+    s.agents.claude.id = input.session_id;
     s.agents.claude.transcriptPath = input.transcript_path || null;
     dirty = true;
-  } else if (s.agents.claude.sessionId === input.session_id && input.transcript_path) {
+  } else if (s.agents.claude.id === input.session_id && input.transcript_path) {
     if (s.agents.claude.transcriptPath !== input.transcript_path) {
       s.agents.claude.transcriptPath = input.transcript_path;
       dirty = true;
@@ -38,13 +38,13 @@ function hookSessionStart(projectDir, s, input) {
   }
 
   // Inject a pending Codex→Claude delta exactly once. Two delivery modes:
-  //  - sessionId set: on resume of that original session (proven in T1)
-  //  - sessionId null: Codex-first project — deliver to the first Claude
+  //  - id set: on resume of that original session (proven in T1)
+  //  - id null: Codex-first project — deliver to the first Claude
   //    session that starts here, whatever its source.
   const inj = s.pendingInjection;
   const injectHere =
     inj?.agent === "claude" &&
-    (inj.sessionId == null || (input.source === "resume" && inj.sessionId === input.session_id));
+    (inj.id == null || (input.source === "resume" && inj.id === input.session_id));
   if (injectHere) {
     const deltaPath = path.join(projectDir, inj.deltaFile);
     let delta = null;
@@ -93,7 +93,7 @@ function hookStop(projectDir, s, input) {
   // A Claude turn finished. Only meaningful while a handoff away from claude
   // is pending — flip the idle marker the launcher waits for.
   if (s.pendingHandoff?.ready && s.pendingHandoff.target !== "claude" && s.activeAgent === "claude") {
-    if (!s.agents.claude.sessionId || s.agents.claude.sessionId === input.session_id) {
+    if (!s.agents.claude.id || s.agents.claude.id === input.session_id) {
       s.agents.claude.idle = true;
       saveState(projectDir, s);
     }

@@ -26,10 +26,10 @@ test("handoff claude auto-adopts the running Codex session via CODEX_THREAD_ID",
   assert.doesNotMatch(res.stdout, /launcher will close/, "must not promise an automatic switch without a launcher");
 
   const s = loadState(project);
-  assert.equal(s.agents.codex.threadId, THREAD_ID);
-  assert.equal(s.agents.codex.rolloutPath, rolloutPath);
+  assert.equal(s.agents.codex.id, THREAD_ID);
+  assert.equal(s.agents.codex.transcriptPath, rolloutPath);
   assert.equal(s.pendingInjection.agent, "claude");
-  assert.equal(s.pendingInjection.sessionId, null);
+  assert.equal(s.pendingInjection.id, null);
   assert.equal(s.pendingHandoff.target, "claude");
 
   const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
@@ -44,11 +44,11 @@ test("handoff claude falls back to cwd-matched discovery and requires --adopt", 
   assert.equal(denied.status, 2, "adopt-confirmation-needed is a structured exit code 2");
   assert.match(denied.stderr, /--adopt/);
   assert.doesNotMatch(denied.stderr, /at handoffClaude/, "expected errors print without a stack trace");
-  assert.equal(loadState(project).agents.codex.threadId, null);
+  assert.equal(loadState(project).agents.codex.id, null);
 
   const adopted = runBridge(["handoff", "claude", "--adopt"], project, { CODEX_HOME: codexHome });
   assert.equal(adopted.status, 0, adopted.stderr);
-  assert.equal(loadState(project).agents.codex.threadId, THREAD_ID);
+  assert.equal(loadState(project).agents.codex.id, THREAD_ID);
 });
 
 test("handoff claude env-adopt without a rollout warns loudly but still transfers decisions", () => {
@@ -64,7 +64,7 @@ test("handoff claude env-adopt without a rollout warns loudly but still transfer
   assert.match(res.stdout, /rollout file was not found/);
 
   const s = loadState(project);
-  assert.equal(s.agents.codex.threadId, THREAD_ID);
+  assert.equal(s.agents.codex.id, THREAD_ID);
   const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /\[Bridge warning\]/);
   assert.match(delta, /ship it/);
@@ -88,7 +88,7 @@ test("discovery falls back to the filename uuid when session_meta lacks an id", 
 
   const res = runBridge(["handoff", "claude", "--adopt"], project, { CODEX_HOME: codexHome });
   assert.equal(res.status, 0, res.stderr);
-  assert.equal(loadState(project).agents.codex.threadId, THREAD_ID);
+  assert.equal(loadState(project).agents.codex.id, THREAD_ID);
 });
 
 test("under the launcher the handoff promises the automatic switch instead", () => {
@@ -120,7 +120,7 @@ test("SessionStart hook delivers a sessionId=null delta to the first new Claude 
   const state = defaultState(project);
   state.pendingInjection = {
     agent: "claude",
-    sessionId: null,
+    id: null,
     deltaFile: path.join(".bridge", "checkpoints", "delta.md"),
     createdAt: "2026-01-01T00:00:00.000Z",
   };
@@ -140,7 +140,7 @@ test("SessionStart hook delivers a sessionId=null delta to the first new Claude 
   assert.match(payload.hookSpecificOutput.additionalContext, /Codex-first seed/);
 
   const s = loadState(project);
-  assert.equal(s.agents.claude.sessionId, "brand-new-session");
+  assert.equal(s.agents.claude.id, "brand-new-session");
   assert.equal(s.pendingInjection, null);
   assert.ok(fs.existsSync(path.join(checkpointDir, "delta.md.consumed")));
 });

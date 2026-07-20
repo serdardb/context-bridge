@@ -53,7 +53,7 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
   const s = ensureState(projectDir);
   const lines = [];
 
-  if (!s.agents.claude.sessionId || !s.agents.claude.transcriptPath) {
+  if (!s.agents.claude.id || !s.agents.claude.transcriptPath) {
     // Adopt path: the hook did not record this session (plugin installed
     // mid-session, or state was created after startup). Transcript discovery is
     // a HEURISTIC (newest mtime), so it requires explicit user confirmation.
@@ -72,24 +72,24 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
         { exitCode: 2, code: "adopt-confirmation-needed" }
       );
     }
-    s.agents.claude.sessionId = cand.sessionId;
+    s.agents.claude.id = cand.sessionId;
     s.agents.claude.transcriptPath = cand.p;
     lines.push(`${OK} Adopted the most recent Claude session of this project (user-confirmed).`);
   }
   preflightCodex();
 
   const now = nowIso();
-  if (!s.agents.codex.threadId) {
+  if (!s.agents.codex.id) {
     // FIRST switch: official import (full context seed). Never repeated afterwards.
     const res = transferClaudeSession(s.agents.claude.transcriptPath);
-    s.agents.codex.threadId = res.threadId;
-    s.agents.codex.rolloutPath = findRolloutPath(res.threadId);
-    s.agents.codex.lastSyncAt = now; // codex now knows claude-context up to now
-    s.agents.claude.lastSyncAt = now; // nothing codex-side yet for claude to learn
+    s.agents.codex.id = res.threadId;
+    s.agents.codex.transcriptPath = findRolloutPath(res.threadId);
+    s.agents.codex.mark = now; // codex now knows claude-context up to now
+    s.agents.claude.mark = now; // nothing codex-side yet for claude to learn
     lines.push(`${OK} First switch: Claude session imported into Codex via the official OpenAI transfer.`);
   } else {
     // REPEAT switch: resume + delta. Never re-import.
-    const msgs = claudeMessagesSince(s.agents.claude.transcriptPath, s.agents.codex.lastSyncAt);
+    const msgs = claudeMessagesSince(s.agents.claude.transcriptPath, s.agents.codex.mark);
     const git = gitDelta(projectDir, s.git.sha);
     const sections = {
       fromAgent: "claude",
@@ -105,8 +105,8 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
       `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.` +
       "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
     const rel = writeCheckpoint(projectDir, `${ts(now)}-claude-to-codex.md`, deltaWithAck);
-    s.pendingInjection = { agent: "codex", threadId: s.agents.codex.threadId, deltaFile: rel, createdAt: now };
-    s.agents.codex.lastSyncAt = now;
+    s.pendingInjection = { agent: "codex", id: s.agents.codex.id, deltaFile: rel, createdAt: now };
+    s.agents.codex.mark = now;
     lines.push(`${OK} Prepared Claude→Codex context delta (${msgs.length} messages, ${git.lines.length} work items).`);
   }
 
@@ -134,14 +134,14 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
   const lines = [];
 
   let adopted = false;
-  if (!s.agents.codex.threadId) {
+  if (!s.agents.codex.id) {
     // Adopt rule: automatic when identity is deterministic, confirmed when heuristic.
     const envId = process.env.CODEX_THREAD_ID;
     if (envId) {
       // Codex CLI exposes the running session's thread id — zero ambiguity.
-      s.agents.codex.threadId = envId;
-      s.agents.codex.rolloutPath = findRolloutPath(envId);
-      if (s.agents.codex.rolloutPath) {
+      s.agents.codex.id = envId;
+      s.agents.codex.transcriptPath = findRolloutPath(envId);
+      if (s.agents.codex.transcriptPath) {
         lines.push(`${OK} Adopted this Codex session (started outside the bridge) as the project's linked thread.`);
       } else {
         // Never silent: without the rollout the delta loses the conversation,
@@ -167,21 +167,21 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
           { exitCode: 2, code: "adopt-confirmation-needed" }
         );
       }
-      s.agents.codex.threadId = cand.threadId;
-      s.agents.codex.rolloutPath = cand.rolloutPath;
+      s.agents.codex.id = cand.threadId;
+      s.agents.codex.transcriptPath = cand.rolloutPath;
       lines.push(`${OK} Adopted the most recent Codex session of this project (user-confirmed).`);
     }
     // The adopted conversation was never synced: deliver it from the beginning.
-    s.agents.claude.lastSyncAt = null;
+    s.agents.claude.mark = null;
     adopted = true;
   }
-  if (!s.agents.codex.rolloutPath || !fileExists(s.agents.codex.rolloutPath)) {
-    s.agents.codex.rolloutPath = findRolloutPath(s.agents.codex.threadId);
+  if (!s.agents.codex.transcriptPath || !fileExists(s.agents.codex.transcriptPath)) {
+    s.agents.codex.transcriptPath = findRolloutPath(s.agents.codex.id);
   }
 
   const now = nowIso();
-  const activity = s.agents.codex.rolloutPath
-    ? codexActivitySince(s.agents.codex.rolloutPath, s.agents.claude.lastSyncAt)
+  const activity = s.agents.codex.transcriptPath
+    ? codexActivitySince(s.agents.codex.transcriptPath, s.agents.claude.mark)
     : { messages: [], patchedFiles: [], turnsCompleted: 0 };
   const git = gitDelta(projectDir, s.git.sha);
   const work = [
@@ -198,11 +198,11 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
   let delta = composeDelta(sections);
   const fullRel = writeCheckpoint(projectDir, `${ts(now)}-codex-to-claude-full.md`, composeFullContext(sections));
   delta += `\n\nFull un-truncated context: ${fullRel} — messages above are clipped to one line each; read that file whenever exact wording matters.`;
-  if (adopted && s.agents.codex.rolloutPath) {
+  if (adopted && s.agents.codex.transcriptPath) {
     // The bounded delta cannot carry a whole adopted session — point Claude at
     // the native rollout so it can read the full history on demand.
     delta +=
-      `\n\nFull transcript of the adopted Codex session (JSONL): ${s.agents.codex.rolloutPath}` +
+      `\n\nFull transcript of the adopted Codex session (JSONL): ${s.agents.codex.transcriptPath}` +
       "\nRead it if you need more detail than this bounded delta.";
   } else if (adopted) {
     delta +=
@@ -216,17 +216,17 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
     agent: "claude",
     // null = Codex-first project: no session to resume — the delta seeds the
     // first Claude session that starts in this project instead.
-    sessionId: s.agents.claude.sessionId ?? null,
+    id: s.agents.claude.id ?? null,
     deltaFile: rel,
     createdAt: now,
   };
-  s.agents.claude.lastSyncAt = now;
+  s.agents.claude.mark = now;
   s.git = { sha: currentGitSha(projectDir), recordedAt: now };
   s.pendingHandoff = { target: "claude", ready: true, requestedAt: now };
   saveState(projectDir, s);
 
   lines.push(`${OK} Prepared Codex→Claude context delta (${activity.messages.length} messages, ${work.length} work items).`);
-  const claudeTarget = s.agents.claude.sessionId
+  const claudeTarget = s.agents.claude.id
     ? "resume your original Claude session"
     : "start a fresh Claude session seeded with this context";
   autoPrune(projectDir, lines);
