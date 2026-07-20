@@ -10,9 +10,7 @@ import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
-import { nowIso, tryExec, OK, WARN, BridgeError,
-  processAlive,
-} from "./util.mjs";
+import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
 function underLauncher() {
@@ -63,6 +61,27 @@ function detectSource(s, target) {
     `Cannot tell which agent is handing off to ${target}: no linked or discoverable ` +
       `${others.join(" or ")} session in this project. ` +
       "Run this from inside an agent started in this directory."
+  );
+}
+
+/**
+ * A session we hold an id for, whose file is not there, is a broken link rather
+ * than an empty one. Naming it here means the reason travels with the handoff
+ * instead of surfacing later as somebody else's error.
+ */
+function warnIfSourceUnreadable(projectDir, sourceId, sourceSlot) {
+  if (!sourceSlot?.id) return; // nothing linked yet is a different, handled case
+  const adapter = adapterFor(sourceId);
+  let ref = null;
+  try {
+    ref = adapter?.hydrate?.(projectDir, sourceSlot) ?? null;
+  } catch {}
+  const transcriptPath = ref?.transcriptPath ?? sourceSlot.transcriptPath ?? null;
+  if (transcriptPath && fileExists(transcriptPath)) return;
+  log(
+    `${WARN} The linked ${adapter?.displayName ?? sourceId} session has no transcript on disk yet` +
+      `${transcriptPath ? ` (${path.basename(transcriptPath)})` : ""}; ` +
+      "this handoff can only carry your notes and the git delta."
   );
 }
 
@@ -203,6 +222,13 @@ export function handoff(
   const sourceSlot = agentSlot(s, sourceId);
   const targetSlot = agentSlot(s, target);
   const now = nowIso();
+
+  // Say plainly when the source we are about to read is not on disk. It is a
+  // warning rather than a refusal because one legitimate case exists already: a
+  // Codex thread adopted from the environment whose rollout has not been written
+  // yet still carries its decisions across. The paths that genuinely need the
+  // file fail on their own, and now with one clear line instead of a stack.
+  warnIfSourceUnreadable(projectDir, sourceId, sourceSlot);
 
   // FIRST switch, Claude to Codex only: the official OpenAI transfer seeds a full
   // thread. No other pair has an equivalent, so those first switches carry the

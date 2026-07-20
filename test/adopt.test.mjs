@@ -197,10 +197,50 @@ test("SessionStart hook delivers a sessionId=null delta to the first new Claude 
   const payload = JSON.parse(res.stdout);
   assert.match(payload.hookSpecificOutput.additionalContext, /Codex-first seed/);
 
+  // The delta is delivered to whichever session starts here, but the link is not
+  // claimed yet: Claude names its transcript at SessionStart and only writes it
+  // at the first message. A session abandoned before that would otherwise leave
+  // the project pointing at a file that never existed.
   const s = loadState(project);
-  assert.equal(s.agents.claude.id, "brand-new-session");
+  assert.equal(s.agents.claude.id, null, "nothing to link to until the transcript exists");
+  assert.equal(s.agents.claude.pendingId, "brand-new-session", "the id is remembered, not thrown away");
   assert.equal(s.pendingInjection, null);
   assert.ok(fs.existsSync(path.join(checkpointDir, "delta.md.consumed")));
+
+  // The user speaks, Claude writes the transcript, and the candidate is promoted.
+  fs.writeFileSync(path.join(project, "claude.jsonl"), "");
+  const after = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "user-prompt-submit"], {
+    input: JSON.stringify({
+      cwd: project,
+      session_id: "brand-new-session",
+      transcript_path: path.join(project, "claude.jsonl"),
+    }),
+    encoding: "utf8",
+  });
+  assert.equal(after.status, 0);
+  assert.equal(loadState(project).agents.claude.id, "brand-new-session");
+});
+
+test("a Claude session that never writes a transcript never becomes the project's link", () => {
+  // The fresh-install failure, exactly: the agent opened, nobody typed, the
+  // window closed. State used to keep the id and a path that was never created,
+  // and the next handoff died on it with a stack trace.
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-empty-"));
+  saveState(project, defaultState(project));
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+    input: JSON.stringify({
+      cwd: project,
+      source: "startup",
+      session_id: "abandoned-session",
+      transcript_path: path.join(project, "never-written.jsonl"),
+    }),
+    encoding: "utf8",
+  });
+  assert.equal(res.status, 0);
+  const s = loadState(project);
+  assert.equal(s.agents.claude.id, null, "an empty session must not become the link");
+  assert.equal(s.agents.claude.transcriptPath, null);
 });
 
 function makeCodexFixture() {

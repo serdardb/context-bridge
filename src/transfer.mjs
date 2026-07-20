@@ -3,7 +3,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { CLAUDE_DIR, readJson, fileExists } from "./util.mjs";
+import { CLAUDE_DIR, readJson, fileExists, BridgeError } from "./util.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,7 +32,10 @@ export function findCompanionScript() {
 export function transferClaudeSession(transcriptPath) {
   const companion = findCompanionScript();
   if (!companion) {
-    throw new Error(
+    // Expected states throw BridgeError so the CLI prints one clear line. A raw
+    // Error here handed the user an eight-line Node stack for a missing plugin,
+    // which reads as "the tool is broken" rather than "install this".
+    throw new BridgeError(
       "Official OpenAI Codex plugin not found. Install it with:\n" +
         "  claude plugin marketplace add openai/codex-plugin-cc\n" +
         "  claude plugin install codex@openai-codex\n" +
@@ -47,11 +50,11 @@ export function transferClaudeSession(transcriptPath) {
     });
   } catch (e) {
     const msg = e.stdout || e.stderr || e.message;
-    throw new Error(`Official Claude→Codex transfer failed: ${String(msg).trim()}`);
+    throw new BridgeError(`Official Claude→Codex transfer failed: ${String(msg).trim()}`);
   }
   const parsed = extractJson(stdout);
   if (!parsed?.threadId) {
-    throw new Error(`Transfer did not return a threadId. Output was:\n${stdout.trim()}`);
+    throw new BridgeError(`Transfer did not return a threadId. Output was:\n${stdout.trim()}`);
   }
   return parsed;
 }

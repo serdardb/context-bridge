@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadState, saveState, commitKnown } from "./state.mjs";
+import { fileExists } from "./util.mjs";
 
 export async function runHook(event) {
   const input = await readStdinJson();
@@ -22,20 +23,53 @@ export async function runHook(event) {
   return 0;
 }
 
-function hookSessionStart(projectDir, s, input) {
-  let dirty = false;
+/**
+ * Link Claude's session to the project, but only once there is something to link
+ * TO. Claude names the transcript at SessionStart and writes it at the first
+ * message, so a session opened and closed without a word leaves state pointing at
+ * a file that never existed — seen live in a fresh-install test, where the
+ * project ended up linked to nothing and the next handoff died on it.
+ *
+ * The id itself is not thrown away: SessionStart is the one moment we learn it
+ * for certain, so it is held as a candidate and promoted the moment the file
+ * appears. Every Claude hook calls this, because any of them may be the first to
+ * run after the transcript lands.
+ */
+function linkClaudeSession(s, input) {
+  const id = input?.session_id;
+  const transcriptPath = input?.transcript_path || null;
+  if (!id) return false;
 
-  // Record the native Claude session refs (never shown to the user).
-  if (!s.agents.claude.id && input.session_id) {
-    s.agents.claude.id = input.session_id;
-    s.agents.claude.transcriptPath = input.transcript_path || null;
-    dirty = true;
-  } else if (s.agents.claude.id === input.session_id && input.transcript_path) {
-    if (s.agents.claude.transcriptPath !== input.transcript_path) {
-      s.agents.claude.transcriptPath = input.transcript_path;
-      dirty = true;
+  if (s.agents.claude.id === id) {
+    // Already linked: keep the path fresh, Claude may have moved the file.
+    if (transcriptPath && s.agents.claude.transcriptPath !== transcriptPath) {
+      s.agents.claude.transcriptPath = transcriptPath;
+      return true;
     }
+    return false;
   }
+  if (s.agents.claude.id) return false; // a different session is linked; leave it alone
+
+  if (!transcriptPath || !fileExists(transcriptPath)) {
+    // Remember the candidate without claiming the link. An empty session that
+    // never writes its file simply expires here instead of poisoning state.
+    if (s.agents.claude.pendingId !== id || s.agents.claude.pendingPath !== transcriptPath) {
+      s.agents.claude.pendingId = id;
+      s.agents.claude.pendingPath = transcriptPath;
+      return true;
+    }
+    return false;
+  }
+
+  s.agents.claude.id = id;
+  s.agents.claude.transcriptPath = transcriptPath;
+  delete s.agents.claude.pendingId;
+  delete s.agents.claude.pendingPath;
+  return true;
+}
+
+function hookSessionStart(projectDir, s, input) {
+  let dirty = linkClaudeSession(s, input);
 
   // Inject a pending Codex→Claude delta exactly once. Two delivery modes:
   //  - id set: on resume of that original session (proven in T1)
@@ -91,22 +125,30 @@ function hookSessionStart(projectDir, s, input) {
 }
 
 function hookStop(projectDir, s, input) {
+  // A turn just ended, so the transcript exists now if it ever will.
+  let dirty = linkClaudeSession(s, input);
+
   // A Claude turn finished. Only meaningful while a handoff away from claude
   // is pending — flip the idle marker the launcher waits for.
   if (s.pendingHandoff?.ready && s.pendingHandoff.target !== "claude" && s.activeAgent === "claude") {
     if (!s.agents.claude.id || s.agents.claude.id === input.session_id) {
       s.agents.claude.idle = true;
-      saveState(projectDir, s);
+      dirty = true;
     }
   }
+  // One write per hook: both changes belong to the same turn ending.
+  if (dirty) saveState(projectDir, s);
   return 0;
 }
 
-function hookUserPromptSubmit(projectDir, s) {
+function hookUserPromptSubmit(projectDir, s, input) {
+  // The user just spoke, which is what brings the transcript into being.
+  let dirty = linkClaudeSession(s, input);
   if (s.agents.claude.idle) {
     s.agents.claude.idle = false;
-    saveState(projectDir, s);
+    dirty = true;
   }
+  if (dirty) saveState(projectDir, s);
   return 0;
 }
 
