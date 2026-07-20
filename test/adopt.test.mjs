@@ -21,6 +21,9 @@ test("handoff claude auto-adopts the running Codex session via CODEX_THREAD_ID",
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /Adopted this Codex session/);
   assert.match(res.stdout, /start a fresh Claude session/);
+  assert.doesNotMatch(res.stderr, /fatal:/, "git probes in a non-repo must not leak stderr");
+  assert.match(res.stdout, /not running under the bridge launcher/);
+  assert.doesNotMatch(res.stdout, /launcher will close/, "must not promise an automatic switch without a launcher");
 
   const s = loadState(project);
   assert.equal(s.agents.codex.threadId, THREAD_ID);
@@ -86,6 +89,18 @@ test("discovery falls back to the filename uuid when session_meta lacks an id", 
   const res = runBridge(["handoff", "claude", "--adopt"], project, { CODEX_HOME: codexHome });
   assert.equal(res.status, 0, res.stderr);
   assert.equal(loadState(project).agents.codex.threadId, THREAD_ID);
+});
+
+test("under the launcher the handoff promises the automatic switch instead", () => {
+  const { project, codexHome } = makeCodexFixture();
+  const res = runBridge(["handoff", "claude"], project, {
+    CODEX_HOME: codexHome,
+    CODEX_THREAD_ID: THREAD_ID,
+    CONTEXT_BRIDGE_LAUNCHER: "1",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /will close Codex and .* automatically/);
+  assert.doesNotMatch(res.stdout, /not running under the bridge launcher/);
 });
 
 test("handoff claude without any Codex session fails with guidance", () => {
@@ -155,5 +170,6 @@ function makeCodexFixture() {
 function runBridge(args, cwd, envOverrides) {
   const env = { ...process.env, ...envOverrides };
   if (!("CODEX_THREAD_ID" in envOverrides)) delete env.CODEX_THREAD_ID;
+  if (!("CONTEXT_BRIDGE_LAUNCHER" in envOverrides)) delete env.CONTEXT_BRIDGE_LAUNCHER;
   return spawnSync(process.execPath, [BRIDGE_BIN, ...args], { cwd, encoding: "utf8", env });
 }

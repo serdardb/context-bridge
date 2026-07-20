@@ -17,6 +17,11 @@ import {
 import { pruneCheckpoints } from "./clean.mjs";
 import { nowIso, tryExec, fileExists, OK, WARN, BridgeError } from "./util.mjs";
 
+/** True when this handoff runs inside an agent spawned by the bridge launcher. */
+function underLauncher() {
+  return process.env.CONTEXT_BRIDGE_LAUNCHER === "1";
+}
+
 /** Auto-prune after a handoff writes its checkpoints. Never fails the handoff, never silent. */
 function autoPrune(projectDir, lines) {
   try {
@@ -111,8 +116,15 @@ export function handoffCodex(projectDir, { decisions = "", next = "", adopt = fa
   saveState(projectDir, s);
 
   autoPrune(projectDir, lines);
-  lines.push(`${OK} Handoff to Codex is ready. The bridge launcher will close Claude and open Codex automatically.`);
-  lines.push("If you started Claude without the bridge launcher, exit Claude and run: bridge codex");
+  if (underLauncher()) {
+    lines.push(`${OK} Handoff to Codex is ready. The bridge launcher will close Claude and open Codex automatically.`);
+  } else {
+    lines.push(`${OK} Handoff to Codex is ready.`);
+    lines.push(
+      `${WARN} This session is not running under the bridge launcher, so nothing switches automatically: ` +
+        "exit Claude and run 'bridge codex' to continue. Nothing is lost: this Claude session is saved and resumes on the way back."
+    );
+  }
   return lines.join("\n");
 }
 
@@ -214,13 +226,19 @@ export function handoffClaude(projectDir, { decisions = "", next = "", adopt = f
   saveState(projectDir, s);
 
   lines.push(`${OK} Prepared Codex→Claude context delta (${activity.messages.length} messages, ${work.length} work items).`);
-  lines.push(
-    s.agents.claude.sessionId
-      ? `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and resume your original Claude session automatically.`
-      : `${OK} Handoff to Claude is ready. The bridge launcher will close Codex and start a fresh Claude session seeded with this context.`
-  );
+  const claudeTarget = s.agents.claude.sessionId
+    ? "resume your original Claude session"
+    : "start a fresh Claude session seeded with this context";
   autoPrune(projectDir, lines);
-  lines.push("If you started Codex without the bridge launcher, exit Codex and run: bridge claude");
+  if (underLauncher()) {
+    lines.push(`${OK} Handoff to Claude is ready. The bridge launcher will close Codex and ${claudeTarget} automatically.`);
+  } else {
+    lines.push(`${OK} Handoff to Claude is ready.`);
+    lines.push(
+      `${WARN} This session is not running under the bridge launcher, so nothing switches automatically: ` +
+        `exit Codex and run 'bridge claude' to ${claudeTarget}. Nothing is lost: this Codex thread stays linked and resumes next time.`
+    );
+  }
   if (!decisions && !next) {
     lines.push(`${WARN} No --decisions/--next notes were provided; the delta contains conversation + git truth only.`);
   }

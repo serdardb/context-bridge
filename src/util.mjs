@@ -51,10 +51,17 @@ export function claudeProjectDir(cwd) {
   return path.join(CLAUDE_DIR, "projects", claudeProjectSlug(cwd));
 }
 
-/** Run a command, capture stdout; returns null on any failure. */
+/** Run a command, capture stdout; returns null on any failure. Child stderr is
+ * suppressed — a probe that is ALLOWED to fail must not leak "fatal: …" noise
+ * into the user's terminal. */
 export function tryExec(cmd, args, opts = {}) {
   try {
-    return execFileSync(cmd, args, { encoding: "utf8", timeout: opts.timeout ?? 15000, ...opts }).trim();
+    return execFileSync(cmd, args, {
+      encoding: "utf8",
+      timeout: opts.timeout ?? 15000,
+      stdio: ["ignore", "pipe", "ignore"],
+      ...opts,
+    }).trim();
   } catch {
     return null;
   }

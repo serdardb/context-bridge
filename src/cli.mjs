@@ -6,7 +6,7 @@ import { loadState } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 

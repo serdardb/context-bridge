@@ -215,5 +215,8 @@ function childEnv() {
   // Never look like a nested Claude session to the child TUIs.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
+  // Mark agent children so `bridge handoff` can tell whether the launcher is
+  // actually watching (auto-switch) or the user started the agent bare (manual).
+  env.CONTEXT_BRIDGE_LAUNCHER = "1";
   return env;
 }
