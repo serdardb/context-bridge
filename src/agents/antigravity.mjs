@@ -433,8 +433,12 @@ export function auditSince(ref, mark) {
       // Blocker found in review: the capability declared filesChanged true while
       // this always returned an empty list, so the manifest contradicted itself.
       for (const c of row.tool_calls) {
+        if (c?.name === "view_file") {
+          const f = unquote(c?.args?.AbsolutePath ?? c?.args?.TargetFile ?? c?.args?.FilePath);
+          if (f) filesRead.add(f);
+        }
         if (/replace_file_content|write_to_file|create_file/.test(c?.name ?? "")) {
-          const f = unquote(c?.args?.TargetFile ?? c?.args?.FilePath);
+          const f = unquote(c?.args?.TargetFile ?? c?.args?.AbsolutePath ?? c?.args?.FilePath);
           if (f) filesChanged.add(f);
         }
       }

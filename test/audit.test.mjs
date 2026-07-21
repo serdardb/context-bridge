@@ -273,3 +273,37 @@ test("nothing is dropped for being late: a failure past any old cap still appear
   const rendered = renderManifest({ source: "codex", target: "claude", agents: { codex: { ...audit, filesChanged: [], filesRead: [], capabilities: {} } } });
   assert.match(rendered, /step 240/, "and it is rendered, because failures come first regardless of position");
 });
+
+// The gap a live session exposed: filesRead was captured in the manifest and
+// never printed by inspect. It was invisible until Antigravity, on a real
+// session, read a file, because the old on-disk fixture had no reads to render.
+test("files an agent read are shown, capped lower than changes because they are context not consequence", () => {
+  const out = renderManifest({
+    source: "antigravity",
+    target: "claude",
+    agents: {
+      antigravity: {
+        commands: [{ tool: "run_command", args: "npm test", ok: true, exitCode: null, durationMs: 2000 }],
+        filesRead: Array.from({ length: 14 }, (_, i) => `src/f${i}.mjs`),
+        filesChanged: ["src/audit.mjs"],
+        dropped: 0,
+        capabilities: { commandArgs: true, filesRead: true },
+      },
+    },
+  });
+  assert.match(out, /read {5}src\/f0\.mjs/, "a read the agent actually did must appear");
+  assert.match(out, /read {5}… and 4 more/, "and the cap has to say what it hid, not pretend there were ten");
+  // Reads come after changes: consequences before context.
+  assert.ok(out.indexOf("changed  src/audit.mjs") < out.indexOf("read     src/f0.mjs"), "changes are more urgent than reads");
+});
+
+test("an agent that read nothing prints no read line at all", () => {
+  const out = renderManifest({
+    source: "codex",
+    target: "claude",
+    agents: {
+      codex: { commands: [{ tool: "exec_command", args: "ls", ok: true, exitCode: 0, durationMs: 1 }], filesRead: [], filesChanged: [], dropped: 0, capabilities: {} },
+    },
+  });
+  assert.doesNotMatch(out, /^ {2}read /m, "an empty read set is silence, not an empty row");
+});

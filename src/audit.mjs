@@ -24,6 +24,9 @@ export const MANIFEST_VERSION = 1;
 /** How many successful commands per agent are worth showing before it is a wall. */
 const SHOWN_PER_AGENT = 15;
 
+/** Reads are context, not consequence, so they are capped lower than changes. */
+const SHOWN_READS = 10;
+
 /**
  * Build the manifest for one handoff, from every agent the target has not caught
  * up with, in the same shape the delta is gathered.
@@ -139,6 +142,14 @@ export function renderManifest(manifest) {
     if (hidden > 0) lines.push(`  ran      … and ${hidden} more`);
     for (const f of a.filesChanged.slice(0, 20)) lines.push(`  changed  ${f}`);
     if (a.filesChanged.length > 20) lines.push(`  changed  … and ${a.filesChanged.length - 20} more`);
+
+    // Reads come last and are capped lower than changes, because they answer a
+    // softer question. What an agent changed is a consequence and what it read
+    // is only context, so a long read list is more noise than a long change
+    // list. The gap was invisible until a live session actually read a file:
+    // the manifest captured it and inspect never printed it.
+    for (const f of a.filesRead.slice(0, SHOWN_READS)) lines.push(`  read     ${f}`);
+    if (a.filesRead.length > SHOWN_READS) lines.push(`  read     … and ${a.filesRead.length - SHOWN_READS} more`);
 
     // The limits that explain an empty column, so nobody reads absence as zero.
     const c = a.capabilities ?? {};
