@@ -342,3 +342,60 @@ function* readJsonl(p) {
 export function detectHost() {
   return null;
 }
+
+/**
+ * Measured on a real transcript, and its record is split across two row shapes,
+ * which is why a first reading of it is misleading.
+ *
+ * The command text is NOT in the `RUN_COMMAND` row, whose content opens with
+ * timestamps and then the output. It is in the `tool_calls` array on the
+ * preceding `PLANNER_RESPONSE`, as a name and an args object. Read only the
+ * RUN_COMMAND rows and Antigravity looks like Grok, unable to say what it ran.
+ *
+ * `outcome` and `duration` are parsed rather than structured: the content says
+ * `The command completed successfully` in prose and carries `Created At` and
+ * `Completed At` lines to subtract. Both work and both are one reword from
+ * breaking.
+ *
+ * `toolOutput` is truncated rather than a pointer, and this one is not our
+ * choice: Antigravity cuts row content at roughly 4KB and records the fact in
+ * `truncated_fields`, so what it kept is all there will ever be. There is no
+ * fuller copy to point at.
+ *
+ * `filesChanged` is true: Antigravity edits files using `replace_file_content`,
+ * `multi_replace_file_content`, and `write_to_file`.
+ */
+export const capabilities = {
+  commands: true,
+  commandArgs: true,
+  outcome: "parsed",
+  exitCode: false,
+  duration: "parsed",
+  filesRead: true,
+  filesChanged: true,
+  toolOutput: "truncated",
+  reasoning: true,
+  tokenUsage: false,
+  pairing: "keyed",
+};
+
+/** What this session proves about Antigravity. `null` means it was silent. */
+export function observeAudit(ref) {
+  let sawTool = false;
+  let args = false;
+  let read = false;
+  let changed = false;
+  for (const row of readJsonl(ref?.transcriptPath)) {
+    if (row?.type === "VIEW_FILE" || row?.type === "LIST_DIRECTORY") read = true;
+    if ((row?.tool_calls ?? []).length) {
+      sawTool = true;
+      if (row.tool_calls.some((c) => c?.args)) args = true;
+      if (row.tool_calls.some((c) => ["replace_file_content", "multi_replace_file_content", "write_to_file"].includes(c?.name))) {
+        changed = true;
+      }
+    }
+    if (row?.type === "RUN_COMMAND") sawTool = true;
+  }
+  if (!sawTool) return { commandArgs: null, filesRead: null, filesChanged: null };
+  return { commandArgs: args, filesRead: read, filesChanged: changed };
+}

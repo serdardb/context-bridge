@@ -343,3 +343,58 @@ export function smokeCommand() {
 export function detectHost() {
   return null;
 }
+
+/**
+ * Measured from a real session's `events.jsonl`, and it is the most lopsided of
+ * the four: richest where nobody expected and blind where everyone assumed.
+ *
+ * `commandArgs` is false, and this is the finding that broke the first manifest
+ * design. A `tool_started` row carries exactly three fields, `ts`, `type` and
+ * `tool_name`, so Grok can say that a terminal command ran and failed but never
+ * which command it was. That was proposed as a required field for all four
+ * agents until this was measured; it was assumed rather than checked, because
+ * Grok's quota had run out and nobody thought to read the files it had already
+ * written.
+ *
+ * Against that, `duration` is true where Codex has to parse it out of prose and
+ * Claude has none, since `tool_completed` carries `duration_ms` as a real field.
+ * And `hunk_records.jsonl` is the best file-change record of any agent here: per
+ * line, with `authorType` separating what the agent wrote from what the human
+ * did.
+ *
+ * `pairing` is positional because neither tool row carries an id, so a start is
+ * matched to a completion by order alone. That holds for a single stream and is
+ * the first thing to distrust if Grok ever runs tools concurrently.
+ */
+export const capabilities = {
+  commands: true,
+  commandArgs: false,
+  outcome: true,
+  exitCode: false,
+  duration: true,
+  filesRead: false,
+  filesChanged: true,
+  toolOutput: false,
+  reasoning: false,
+  tokenUsage: false,
+  pairing: "positional",
+};
+
+/**
+ * What this session actually proves about Grok, as opposed to what we declare.
+ * `null` means the session was silent on the point, which is not the same as no,
+ * and the distinction is the whole reason this returns three values.
+ */
+export function observeAudit(ref) {
+  let sawTool = false;
+  let args = false;
+  let duration = false;
+  for (const e of readJsonl(ref?.eventsPath ?? ref?.transcriptPath)) {
+    if (e?.type !== "tool_started" && e?.type !== "tool_completed") continue;
+    sawTool = true;
+    if (e.args || e.arguments || e.command) args = true;
+    if (typeof e.duration_ms === "number") duration = true;
+  }
+  if (!sawTool) return { commandArgs: null, duration: null };
+  return { commandArgs: args, duration };
+}

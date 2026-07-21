@@ -28,6 +28,7 @@
 //   health()                      -> {version, auth, extras, ready, installHint}
 //   smokeCommand()                -> {cmd, args}   (harmless headless probe)
 //   detectHost(env)               -> id | null   (see the warning below)
+//   capabilities                  -> what this agent's own record can ever yield
 //
 // `messages` is always [{role: "user"|"assistant", text, at}] regardless of vendor.
 //
@@ -57,6 +58,44 @@
 // process rather than exporting it into the session. Returning null costs little:
 // under the launcher the bridge already knows who is running from its own record,
 // and this is consulted only for sessions started outside it.
+//
+// `capabilities` answers a different question from anything else here: not what
+// happened in a handoff, but what this agent's own record COULD ever tell us.
+// The two must not be mixed. An empty list of commands in a manifest means no
+// command ran; an agent that cannot record command text at all is not the same
+// fact, and a reader with only the manifest cannot tell them apart. That is the
+// exact shape of the worst bug this project has had, where Codex discovery was
+// dead for weeks because a failed parse looked identical to a project with no
+// match. So the structural limit is declared once, here, rather than repeated
+// into every manifest as noise.
+//
+// Values are deliberately not booleans, because the truth is not binary:
+//   true        the vendor records it as a structured field
+//   false       it is not recorded at all, and no amount of parsing will find it
+//   "parsed"    recoverable only by reading it out of an unstructured string,
+//               so it works today and is the first thing to break on a reword
+//   "partial"   recorded for some paths and invisible for others by construction
+//   "pointer"   too large to carry, but reachable in the agent's own files
+//   "full"      recorded complete and in the clear, with nothing held back
+//   "summary"   only a condensed form exists; the full thing is not available
+//   "truncated" recorded but cut by the vendor before we ever see it
+//   "keyed"     calls and results pair on an id, so pairing survives reordering
+//   "positional" they pair by order alone, which is the first thing to distrust
+//               if the agent ever runs tools concurrently
+//
+// The list is closed, and a test enforces that. A value outside it is not a
+// lesser fault than a missing one, because a reader that meets a word it does
+// not know will either guess or ignore it.
+//
+// Every value below was measured against a real session on this machine, never
+// read from a vendor's documentation. Documentation was wrong three times in one
+// day here: on Antigravity's storage, on OpenCode's storage, and on OpenCode's
+// environment. `capabilities` is a claim, and an unverified claim is how `READY`
+// came to mean "the binary is installed". Fixture tests cut from real transcripts
+// pin these, and a probe compares what is declared against what a live session
+// actually yields — in BOTH directions, because a canary that only catches loss
+// would never notice a vendor starting to record something we still report as
+// missing, and we would under-report it forever without a single failure.
 import * as claude from "./claude.mjs";
 import * as codex from "./codex.mjs";
 import * as grok from "./grok.mjs";

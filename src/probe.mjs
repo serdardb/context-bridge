@@ -91,3 +91,48 @@ export function probeWithActivity(adapter, ref, shape) {
     return { ...shape, status: "mismatch", messages: null, detail: err.message };
   }
 }
+
+/**
+ * Does what an agent DECLARES it can record still match what it actually writes?
+ *
+ * `capabilities` is a claim, and claims rot in two directions. The existing
+ * canaries only catch one of them: if a vendor renames a field we already read,
+ * parsing breaks and something goes red. But if a vendor STARTS recording
+ * something we declare as absent, nothing breaks at all. Grok could begin
+ * storing command arguments tomorrow and this project would keep reporting that
+ * it cannot, forever, without a single failing test. A canary that only watches
+ * for loss is half a canary.
+ *
+ * The hard part is not the comparison, it is knowing when to stay quiet. A
+ * session where no tool ever ran proves nothing about what the agent could have
+ * recorded, and reporting that as a missing capability would be the same false
+ * alarm as calling a fresh project a broken one. So an observation is only
+ * reported when there was something to observe, and `observed: null` means the
+ * session had nothing to say rather than that it said no.
+ */
+export function capabilityDrift(declared, observed) {
+  const lost = [];
+  const gained = [];
+  for (const [field, claim] of Object.entries(declared ?? {})) {
+    const seen = observed?.[field];
+    if (seen === null || seen === undefined) continue; // nothing to learn from this session
+    // An observation has to be expressed in the same words as the claim, or the
+    // comparison is meaningless. The first run of this reported that Codex had
+    // LOST its exit code, because the claim said "parsed", meaning read out of
+    // prose, while the observer looked for a structured field and correctly
+    // failed to find one. Both were right and the diff was still wrong.
+    if (rank(seen) < rank(claim)) lost.push(field);
+    // Worth catching in its own right: a vendor promoting prose to a real field
+    // is a gain, and nothing else in this codebase would ever notice it.
+    if (rank(seen) > rank(claim)) gained.push(field);
+  }
+  const status = lost.length ? "lost" : gained.length ? "gained" : "matches";
+  return { status, lost, gained };
+}
+
+/** Absent, recoverable only by parsing, or recorded outright. */
+function rank(value) {
+  if (value === false || value === undefined || value === null) return 0;
+  if (value === "parsed" || value === "partial" || value === "truncated") return 1;
+  return 2;
+}

@@ -141,3 +141,65 @@ export function smokeCommand() {
 export function detectHost(env = process.env) {
   return env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT ? "claude" : null;
 }
+
+/**
+ * Measured on a real 7878-row session transcript, not read from documentation.
+ *
+ * Tool calls and their results pair perfectly through `tool_use_id`: 1185 of
+ * 1185 in the session this was measured on, with failures marked by `is_error`.
+ * What Claude does NOT record is the shape of the result: there is no exit code,
+ * only a boolean, and no duration at all.
+ *
+ * `filesRead` is the honest weak spot. The `Read` tool names its file, but most
+ * reading here happens inside `Bash` (930 calls against 56 Reads) through grep,
+ * sed and cat, which is invisible without parsing shell. Reporting only the Read
+ * tool would make Claude look like it barely reads anything, so this says partial
+ * rather than true and the difference is the whole reason the field is not a
+ * boolean.
+ */
+export const capabilities = {
+  commands: true,
+  commandArgs: true,
+  outcome: true,
+  exitCode: false,
+  duration: false,
+  filesRead: "partial",
+  filesChanged: true,
+  toolOutput: "pointer",
+  reasoning: "full",
+  tokenUsage: false,
+  pairing: "keyed",
+};
+
+/** What this session proves about Claude. `null` means it was silent. */
+export function observeAudit(ref) {
+  let sawTool = false;
+  let args = false;
+  let exitCode = false;
+  let content;
+  try {
+    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+  } catch {
+    return { commandArgs: null, exitCode: null };
+  }
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    for (const b of row?.message?.content ?? []) {
+      if (b?.type === "tool_use") {
+        sawTool = true;
+        if (b.input && Object.keys(b.input).length) args = true;
+      }
+      // If Claude ever starts reporting a real exit code, this notices. Today it
+      // reports only is_error, which is why the declaration says false.
+      if (b?.type === "tool_result" && (b.exit_code !== undefined || b.exitCode !== undefined)) exitCode = true;
+    }
+  }
+  if (!sawTool) return { commandArgs: null, exitCode: null };
+  return { commandArgs: args, exitCode };
+}

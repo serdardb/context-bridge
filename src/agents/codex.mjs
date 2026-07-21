@@ -263,3 +263,79 @@ export function skillLabel(status) {
 export function detectHost() {
   return null;
 }
+
+/**
+ * Measured against a real 4011-line rollout: 637 `function_call` rows and 636
+ * `function_call_output` rows, paired by `call_id`, which is carried on both
+ * sides. A single unpaired call is the turn that was still open when the file
+ * was read.
+ *
+ * Codex is the only agent here that exposes a process exit code, and it exposes
+ * duration too. Both are marked parsed rather than true for a reason: they
+ * arrive inside the output string as the prose `Process exited with code 0` and
+ * `Wall time: 0.0000 seconds`. That works today and is the first thing to break
+ * the day somebody rewords a sentence, which is not a hypothetical failure mode
+ * in this codebase.
+ *
+ * `filesRead` is false rather than partial: Codex does everything through
+ * `exec_command`, 626 of 637 calls here, so it has no file-reading tool to
+ * observe. An empty read set from Codex means the concept does not apply, not
+ * that it read nothing.
+ */
+export const capabilities = {
+  commands: true,
+  commandArgs: true,
+  outcome: "parsed",
+  exitCode: "parsed",
+  duration: "parsed",
+  filesRead: false,
+  filesChanged: true,
+  toolOutput: "pointer",
+  reasoning: "summary",
+  tokenUsage: true,
+  pairing: "keyed",
+};
+
+/** What this session proves about Codex. `null` means it was silent. */
+export function observeAudit(ref) {
+  let sawTool = false;
+  let args = false;
+  let outcome = false;
+  let exitCode = false;
+  let duration = false;
+  let content;
+  try {
+    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+  } catch {
+    return { commandArgs: null, outcome: null, exitCode: null, duration: null };
+  }
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const p = row?.payload;
+    if (p?.type === "function_call") {
+      sawTool = true;
+      if (p.arguments) args = true;
+    }
+    // The day Codex reports an exit code as a field instead of inside prose,
+    // this notices and the declaration stops being "parsed".
+    if (p?.type === "function_call_output") {
+      // Two ways this can be true, and they are not the same fact. A field would
+      // be a real upgrade; prose is what exists today and is what "parsed" means.
+      if (p.exit_code !== undefined || p.exitCode !== undefined) exitCode = true;
+      else if (exitCode !== true && /Process exited with code/.test(p.output ?? "")) {
+        exitCode = "parsed";
+        outcome = "parsed";
+      }
+      if (p.duration_ms !== undefined || p.durationMs !== undefined) duration = true;
+      else if (duration !== true && /Wall time:/.test(p.output ?? "")) duration = "parsed";
+    }
+  }
+  if (!sawTool) return { commandArgs: null, outcome: null, exitCode: null, duration: null };
+  return { commandArgs: args, outcome, exitCode, duration };
+}
