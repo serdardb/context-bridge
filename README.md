@@ -1,6 +1,9 @@
 # context-bridge
 
+[![npm](https://img.shields.io/npm/v/@serdardb/context-bridge)](https://www.npmjs.com/package/@serdardb/context-bridge)
 [![CI](https://github.com/serdardb/context-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/serdardb/context-bridge/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@serdardb/context-bridge)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/@serdardb/context-bridge)](LICENSE)
 
 **Switch agents. Not context.**
 
@@ -8,7 +11,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 **context-bridge connects native coding-agent sessions.** Each agent keeps its own real session; the bridge remembers which sessions belong to the same project and transfers only the context the other agent is missing.
 
-- It does **not** replace Claude Code or Codex.
+- It does **not** replace Claude Code, Codex or Grok.
 - It does **not** proxy their APIs.
 - It requires **no API keys** — it drives the subscription-authenticated CLIs you already have.
 
