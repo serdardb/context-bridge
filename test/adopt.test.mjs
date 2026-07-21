@@ -191,6 +191,7 @@ test("SessionStart hook delivers a sessionId=null delta to the first new Claude 
       session_id: "brand-new-session",
       transcript_path: path.join(project, "claude.jsonl"),
     }),
+    env: hookEnv(),
     encoding: "utf8",
   });
   assert.equal(res.status, 0);
@@ -215,6 +216,7 @@ test("SessionStart hook delivers a sessionId=null delta to the first new Claude 
       session_id: "brand-new-session",
       transcript_path: path.join(project, "claude.jsonl"),
     }),
+    env: hookEnv(),
     encoding: "utf8",
   });
   assert.equal(after.status, 0);
@@ -235,6 +237,7 @@ test("a Claude session that never writes a transcript never becomes the project'
       session_id: "abandoned-session",
       transcript_path: path.join(project, "never-written.jsonl"),
     }),
+    env: hookEnv(),
     encoding: "utf8",
   });
   assert.equal(res.status, 0);
@@ -270,4 +273,18 @@ function runBridge(args, cwd, envOverrides) {
   if (!("CODEX_THREAD_ID" in envOverrides)) delete env.CODEX_THREAD_ID;
   if (!("CONTEXT_BRIDGE_LAUNCHER" in envOverrides)) delete env.CONTEXT_BRIDGE_LAUNCHER;
   return spawnSync(process.execPath, [BRIDGE_BIN, ...args], { cwd, encoding: "utf8", env });
+}
+
+/**
+ * A hook environment that belongs to the test rather than to the machine it runs
+ * on. Every agent marker is stripped and Claude's is set back, because otherwise
+ * these tests quietly measure whichever agent the developer happens to be inside.
+ */
+function hookEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(CLAUDECODE|CLAUDE_CODE_|GROK_|CODEX_)/.test(key)) delete env[key];
+  }
+  env.CLAUDECODE = "1";
+  return env;
 }

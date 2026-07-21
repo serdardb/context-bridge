@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState } from "../src/state.mjs";
+import { defaultState, saveState, loadState } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -50,6 +50,83 @@ test("Claude SessionStart hook injects pending delta exactly once", () => {
 function runHook(input) {
   return spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
     input,
+    // Scrubbed on purpose. A developer machine already carries another agent's
+    // variables, and a test that inherits them is testing the machine rather than
+    // the code: an earlier version of the guard's own test passed because the
+    // ambient CLAUDECODE meant the guard was never reached.
+    env: { ...cleanEnv(), CLAUDECODE: "1" },
     encoding: "utf8",
   });
+}
+
+// Grok loads Claude's own ~/.claude/settings.json hooks for compatibility, so a
+// bridge hook can fire inside a Grok session and write Claude's slot from another
+// agent's conversation: an id that looks entirely valid, pointing at the wrong
+// session, with nothing to indicate it.
+test("a hook running inside Grok refuses to touch this project's state", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-foreign-"));
+  saveState(project, defaultState(project));
+  const transcript = path.join(project, "transcript.jsonl");
+  fs.writeFileSync(transcript, "");
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+    input: JSON.stringify({
+      cwd: project,
+      source: "startup",
+      session_id: "session-belonging-to-grok",
+      transcript_path: transcript,
+    }),
+    // GROK_HOOK_EVENT is injected by Grok's hook runner into every hook process,
+    // which makes it a marker of a hook rather than of a session.
+    env: { ...cleanEnv(), GROK_HOOK_EVENT: "session_start", GROK_SESSION_ID: "019f-grok" },
+    encoding: "utf8",
+  });
+
+  assert.equal(res.status, 0, "a refusal is not a failure; the agent must keep working");
+  assert.match(res.stderr, /Grok/, "the refusal has to say which agent it saw");
+  assert.equal(loadState(project).agents.claude.id, null, "Grok must not become Claude's linked session");
+});
+
+// The first version of this guard also refused on CODEX_THREAD_ID, and review
+// caught why that was wrong: it is ambient session environment, inherited by
+// every child process, so a Claude hook running anywhere downstream of a Codex
+// session was refused. A guard that disables the bridge on a variable nobody
+// chose is worse than the exposure it was closing.
+test("a leaked Codex session variable does not disable Claude's own hook", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-leak-"));
+  saveState(project, defaultState(project));
+  const transcript = path.join(project, "transcript.jsonl");
+  fs.writeFileSync(transcript, "");
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+    input: JSON.stringify({ cwd: project, source: "startup", session_id: "real-claude", transcript_path: transcript }),
+    env: { ...cleanEnv(), CODEX_THREAD_ID: "leaked-from-a-parent-shell" },
+    encoding: "utf8",
+  });
+  assert.equal(res.status, 0);
+  assert.equal(loadState(project).agents.claude.id, "real-claude", "the session must still be recorded");
+});
+
+test("the same hook still records the session when it really is Claude", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-"));
+  saveState(project, defaultState(project));
+  const transcript = path.join(project, "transcript.jsonl");
+  fs.writeFileSync(transcript, "");
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+    input: JSON.stringify({ cwd: project, source: "startup", session_id: "real-claude", transcript_path: transcript }),
+    env: { ...cleanEnv(), CLAUDECODE: "1" },
+    encoding: "utf8",
+  });
+  assert.equal(res.status, 0);
+  assert.equal(loadState(project).agents.claude.id, "real-claude");
+});
+
+/** The test's own environment, minus every agent marker, so each case sets its own. */
+function cleanEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(CLAUDECODE|CLAUDE_CODE_|GROK_|CODEX_)/.test(key)) delete env[key];
+  }
+  return env;
 }

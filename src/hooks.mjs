@@ -6,7 +6,47 @@ import path from "node:path";
 import { loadState, saveState, commitKnown } from "./state.mjs";
 import { fileExists } from "./util.mjs";
 
+/**
+ * Is this hook running inside an agent that is not Claude?
+ *
+ * The question is not academic. Grok loads Claude's own `~/.claude/settings.json`
+ * hooks by default, for compatibility, so a bridge hook can fire inside a Grok
+ * session and write Claude's slot from another agent's conversation. The
+ * corruption would be silent: an id that looks perfectly valid, pointing at the
+ * wrong session.
+ *
+ * Only Grok is detected, and only by `GROK_HOOK_EVENT`, which its documentation
+ * says the hook runner injects into every hook process. That is a marker of a
+ * hook, not of a session, which is exactly the distinction that matters here.
+ *
+ * Codex is deliberately NOT guarded against, and the first attempt at this got it
+ * wrong. `CODEX_THREAD_ID` looked like a Codex marker but it is ambient session
+ * environment: it inherits into every child process, so any hook running without
+ * `CLAUDECODE` beside it was refused, including Claude's own. Review caught it and
+ * a test reproduces it. Guarding Codex needs a real hook-runner marker, which we
+ * do not have yet and will not invent; the exposure is small in the meantime,
+ * because Codex only runs a hook someone configured in its own files and we never
+ * write ours there.
+ *
+ * Requiring positive proof of Claude instead was considered and refused. Making
+ * every state write depend on `CLAUDECODE` means the day Claude stops exporting
+ * it, the bridge stops recording sessions and says nothing. A guard should fail
+ * towards working.
+ */
+function foreignHost(env = process.env) {
+  return env.GROK_HOOK_EVENT ? "Grok" : null;
+}
+
 export async function runHook(event) {
+  const host = foreignHost();
+  if (host) {
+    // stderr, never stdout: stdout is the hook's protocol channel with Claude.
+    process.stderr.write(
+      `context-bridge: ignoring the '${event}' hook because it is running inside ${host}, not Claude Code. ` +
+        "These hooks record Claude's session and would write the wrong conversation into this project's state.\n"
+    );
+    return 0;
+  }
   const input = await readStdinJson();
   const projectDir = input?.cwd || process.cwd();
   let s;
