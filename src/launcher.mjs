@@ -217,6 +217,33 @@ function warnAboutOtherLauncher(s) {
   log(dim("  Both will keep working, but they do not share one session. Close the one you are done with."));
 }
 
+/**
+ * Has the agent finished the turn it was in when the handoff was requested?
+ *
+ * A turn ending is something an agent can simply tell us through its Stop hook,
+ * and something we otherwise have to infer by re-reading its transcript looking
+ * for a vendor-specific completion record.
+ *
+ * The marker is read first because it is both cheaper and truer: it costs
+ * nothing, it arrives when the turn ends rather than whenever the file is next
+ * flushed, and it does not depend on a field name a vendor may rename. It cannot
+ * be stale either, since the launcher clears it before every launch, so a marker
+ * found here belongs to this run.
+ *
+ * Parsing stays as the fallback, and that is not tidiness. Hooks do not run
+ * until they are trusted, and a launcher that listened only for a hook would
+ * wait for a switch that can never come.
+ */
+export function turnHasEnded(projectDir, s, agent, pending) {
+  const slot = agentSlot(s, agent);
+  if (slot.idle === true) return true;
+
+  const adapter = adapterFor(agent);
+  if (!adapter) return false;
+  const ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
+  return ref ? adapter.idleAfter(ref, pending.requestedAt) === true : false;
+}
+
 export function buildCommand(projectDir, s, agent, extra = []) {
   const adapter = adapterFor(agent);
   if (!adapter) return { cmd: null, args: [], note: `Unknown agent '${agent}'.` };
@@ -377,17 +404,7 @@ function watchForHandoff(projectDir, agent, child) {
       return;
     }
 
-    // Idle checks (spec §11). Each adapter answers from its own session files;
-    // an adapter returning null reports idleness out of band instead (Claude does
-    // this through its Stop hook, which writes the marker in state).
-    const adapter = adapterFor(agent);
-    const slot = agentSlot(s, agent);
-    let idle = false;
-    if (adapter) {
-      const ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
-      const fromFiles = ref ? adapter.idleAfter(ref, pending.requestedAt) : null;
-      idle = fromFiles === null ? slot.idle : fromFiles === true;
-    }
+    const idle = turnHasEnded(projectDir, s, agent, pending);
 
     if (!idle) {
       // Uncertain/no idle signal: after a generous window, fall back to a

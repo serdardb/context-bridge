@@ -135,3 +135,47 @@ function cleanEnv() {
   }
   return env;
 }
+
+// Codex's Stop hook already reports the end of a turn, so the launcher no longer
+// has to infer it by re-reading a 3MB transcript twice a second looking for a
+// vendor-specific completion record.
+test("a turn that the hook reported as ended needs no transcript read at all", async () => {
+  const { turnHasEnded } = await import("../src/launcher.mjs");
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-idle-"));
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(rollout, ""); // deliberately empty: parsing would say "not idle"
+
+  const state = defaultState(project);
+  state.agents.codex = { id: "019f-x", transcriptPath: rollout, mark: null, idle: true };
+  const pending = { target: "grok", ready: true, requestedAt: new Date().toISOString() };
+
+  assert.equal(turnHasEnded(project, state, "codex", pending), true, "the marker is the answer");
+});
+
+// Hooks do not run until they are trusted. A launcher that listened only for the
+// marker would wait for a switch that can never come.
+test("without a marker the transcript still decides, either way", async () => {
+  const { turnHasEnded } = await import("../src/launcher.mjs");
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-idle-fallback-"));
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(rollout, "");
+
+  const state = defaultState(project);
+  state.agents.codex = { id: "019f-x", transcriptPath: rollout, mark: null, idle: false };
+  const pending = { target: "grok", ready: true, requestedAt: "2026-07-21T09:00:00.000Z" };
+  assert.equal(turnHasEnded(project, state, "codex", pending), false, "nothing has finished yet");
+
+  fs.writeFileSync(
+    rollout,
+    JSON.stringify({ timestamp: "2026-07-21T09:00:01.000Z", type: "event_msg", payload: { type: "task_complete" } }) + "\n"
+  );
+  assert.equal(turnHasEnded(project, state, "codex", pending), true, "the transcript answers when the hook cannot");
+});
+
+test("an agent with no linked session is never assumed to have finished", async () => {
+  const { turnHasEnded } = await import("../src/launcher.mjs");
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-idle-unlinked-"));
+  const state = defaultState(project);
+  const pending = { target: "grok", ready: true, requestedAt: new Date().toISOString() };
+  assert.equal(turnHasEnded(project, state, "codex", pending), false);
+});
