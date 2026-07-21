@@ -15,9 +15,9 @@ Developers increasingly use multiple coding agents — but switching between the
 - It does **not** proxy their APIs.
 - It requires **no API keys** — it drives the subscription-authenticated CLIs you already have.
 
-**Supported today: Claude Code, Codex and Grok**, in any of the six directions.
+**Supported today: Claude Code, Codex, Grok and Antigravity**, in any of the twelve directions.
 
-> **Status: developer preview (0.8.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.9.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -57,18 +57,19 @@ One direction already exists officially: OpenAI ships a Claude Code plugin and C
 
 1. **The way back.** Nothing official returns another agent's context to your *original* session. The bridge extracts what changed (conversation, decisions, files, git) and injects it on resume, through each agent's own mechanism.
 2. **Repeat switching.** Re-importing creates a brand-new thread every time (we verified this). The bridge links each agent **once**, remembers the session, and afterwards syncs with compact deltas into the *same* sessions.
-3. **Chains, not just pairs.** With three agents there are six directions, and a hop must not cost you the hop before it. The bridge tracks what each agent has already been told, by each other agent, so a handoff carries everything the target missed no matter who produced it.
+3. **Chains, not just pairs.** With four agents there are twelve directions, and a hop must not cost you the hop before it. The bridge tracks what each agent has already been told, by each other agent, so a handoff carries everything the target missed no matter who produced it.
 4. **Zero session management.** Session discovery, thread capture, resume commands, injection — all automatic. You only ever type `/bridge <agent>` or `$bridge <agent>`.
 
-**Honest about the asymmetry.** The first switch to an agent has to create something, for every tool that does this, because the target has no session yet: Claude → Codex uses OpenAI's official import, and the others open a new session seeded with the conversation. After that first switch the three agents differ in how a handoff reaches them, and the difference is worth stating plainly rather than glossing:
+**Honest about the asymmetry.** The first switch to an agent has to create something, for every tool that does this, because the target has no session yet: Claude → Codex uses OpenAI's official import, and the others open a new session seeded with the conversation. After that first switch the agents differ in how a handoff reaches them, and the difference is worth stating plainly rather than glossing:
 
 | | how a delta arrives | why |
 |---|---|---|
 | Claude Code | its `SessionStart` hook | the conversation continues; nothing is pasted in front of it |
 | Codex | its `SessionStart` hook | same, once you have trusted the hooks with `/hooks` |
 | Grok | the opening prompt of the resumed session | its hooks exist but ignore what they print, so nothing can be injected |
+| Antigravity | the opening prompt of the resumed session | it ships no hook mechanism to inject through |
 
-The knowledge is equal in all three. The session shape is not, and Grok's case is a limit in Grok rather than something waiting to be built here.
+The knowledge is equal in all four. The session shape is not, and the prompt-seeded cases are limits in those agents rather than something waiting to be built here.
 
 ## How it works
 
@@ -83,7 +84,7 @@ shell
                                  (never transcripts; auto-gitignored)
 ```
 
-- `/bridge <agent>` (a Claude plugin skill) and `$bridge <agent>` (a shared skill for Codex and Grok) are the same command with a target argument. The departing agent writes down its decisions and open questions, the bridge computes what the target is missing from every agent's native session files plus git, and delivers it as a bounded 4-section delta (Conversation / Decisions / Work / Next).
+- `/bridge <agent>` (a Claude plugin skill) and `$bridge <agent>` (a shared skill for Codex, Grok and Antigravity) are the same command with a target argument. The departing agent writes down its decisions and open questions, the bridge computes what the target is missing from every agent's native session files plus git, and delivers it as a bounded 4-section delta (Conversation / Decisions / Work / Next).
 - **Delivery uses whatever each agent supports.** Claude and Codex take the delta through their own `SessionStart` hook, so it lands inside the conversation; Codex falls back to an auto-submitted resume prompt until you have trusted its hooks once with `/hooks`, and Grok always uses the prompt, because its hooks fire but ignore what they print. Either road delivers exactly once, and only ever one of them per handoff.
 - Later deltas can ship a **temporary full-context companion** in `.bridge/checkpoints/`, referenced from the delta itself. The bounded summary keeps handoffs fast; exact wording is available **during the receiving session** if the clipped one-liners aren't enough. Companions are delivery artifacts, not an archive: they may be pruned after that agent hands off (or by a small newest-N backstop). Canonical memory is each agent's native transcript plus the `knownBy` matrix.
 - **Agent flags pass straight through.** `bridge claude --dangerously-skip-permissions --model claude-fable-5` forwards everything after the agent name to that agent verbatim, so any flag it supports (now or later) just works. The set applies to that launch. `--cb-save-args` writes it to `.bridge/config.json` as this project's default, `--cb-clear-args` takes it back, and `bridge status` lists what is armed, because a saved permission bypass nobody can find is one nobody can undo. Flags that change what an agent may do without asking are announced on a plain line at every launch. The only args the bridge holds back are the ones that would break its own session link (`-c`, `--resume`, `--fork-session`, `--no-session-persistence` on Claude; `--last`, `--cd`, `--remote` on Codex), each dropped with a printed reason. `--cb-*` is reserved for the bridge itself.
@@ -127,7 +128,7 @@ npm install -g .
 
 - the **context-bridge Claude plugin** (provides `/bridge` + session hooks)
 - the **official OpenAI Codex plugin** for Claude Code (`openai/codex-plugin-cc`, used for the first import)
-- the **$bridge agent skill** (`~/.agents/skills/bridge/SKILL.md`, shared by Codex and Grok)
+- the **$bridge agent skill** (`~/.agents/skills/bridge/SKILL.md`, shared by Codex, Grok and Antigravity)
 - an optional Codex allow-rule so `bridge handoff` runs without an approval prompt
 
 Agent-specific steps are only offered for agents you actually have installed.
@@ -222,7 +223,7 @@ Each delta costs the receiving agent one short acknowledgment sentence — that 
 | `knownBy` matrix | Per pair, how far into each agent's own stream has been packed for each other agent. This is what makes chains keep their history. |
 | Claude plugin | `/bridge` skill + `SessionStart` / `Stop` / `UserPromptSubmit` hooks (session recording, delta injection, idle marking) |
 | Codex hooks | The same three events in `~/.codex/hooks.json`, installed by `doctor --fix` and merged into whatever is already there. Each hook names the agent it belongs to, so one firing inside a different CLI refuses instead of writing the wrong session into state. |
-| Shared agent skill | `$bridge <agent>` for Codex and Grok → runs `bridge handoff <agent>` |
+| Shared agent skill | `$bridge <agent>` for Codex, Grok and Antigravity → runs `bridge handoff <agent>` |
 | Official import | The first Claude→Codex switch uses OpenAI's `codex-plugin-cc` transfer (`externalAgentConfig/import` under the hood) |
 | `.bridge/config.json` | Per-agent launch flags for this project. Written by `--cb-save-args`, never by hand, listed in `bridge status`, and cleared with `--cb-clear-args`. |
 
@@ -262,7 +263,7 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 
 ## Development status
 
-0.8.0 — developer preview. Round-trips across all three agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex and Grok hand this repo's work back and forth through it daily, including three-agent review rounds where each one's findings reach the next.
+0.9.0 — developer preview. Round-trips across all four agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok and Antigravity hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed.
 
 Since the first release:
 
@@ -275,6 +276,7 @@ Since the first release:
 - **Doctor tells the truth** — `READY` became `CONFIGURED`, and two canaries check that this version of the bridge can still read what each agent writes and still find what each agent stores
 - **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks, gated on ubuntu+macos × Node 18/20/22
 - **Checkpoint retention** — checkpoints are delivery artifacts: a companion is dropped once its reader has handed off, with `bridge clean` as the manual backstop
+- **A fourth agent, and what reaching it exposed** — Antigravity joined behind the same adapter contract, and getting a delta to it uncovered a first switch too large for a command line, a delta recorded as delivered before anything carried it, and an agent's identity read from a variable that outlives its session
 
 What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 

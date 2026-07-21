@@ -8,8 +8,17 @@ import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const VERSION = "0.8.0";
+// Read from the manifest rather than repeating it. This was a hardcoded string,
+// and a release bumped package.json while `bridge --version` kept answering the
+// previous version to everyone who installed it. Two sources of one truth drift
+// the moment somebody remembers only one of them, which is every time.
+const VERSION = JSON.parse(
+  fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
+).version;
 
 const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 

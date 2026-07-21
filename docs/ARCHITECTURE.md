@@ -8,9 +8,9 @@ working on it see [DEVELOPMENT.md](./DEVELOPMENT.md).
 ## Design principles
 
 1. **Native sessions are preserved, never replaced.** Claude keeps its own
-   session, Codex its own thread, Grok its own session directory. The bridge
-   orchestrates them and re-implements none of them. Delete the bridge and all
-   three still work with their own CLIs.
+   session, Codex its own thread, Grok and Antigravity their own session
+   directories. The bridge orchestrates them and re-implements none of them.
+   Delete the bridge and all four still work with their own CLIs.
 2. **Official mechanisms wherever one exists.** Import, resume, hooks, plugins
    and skills are all vendor-supported surfaces. The bridge adds only what no
    vendor ships: the mapping between sessions, the way back, and switching
@@ -30,10 +30,12 @@ shell
 └── bridge                       launcher, zero-dependency Node CLI
     └── exactly one agent at a time
 
-        claude ⇄ codex ⇄ grok    six directed routes
+   claude ⇄ codex ⇄ grok ⇄ antigravity    twelve directed routes
 
-  ~/.claude/projects/…    ~/.codex/sessions/…    ~/.grok/sessions/…
-     native session          native thread         native session
+  ~/.claude/projects/…   ~/.codex/sessions/…   ~/.grok/sessions/…
+     native session         native thread        native session
+                  ~/.gemini/antigravity-cli/brain/…
+                            native conversation
 
         .bridge/state.json   ← what links them, references only
         .bridge/config.json  ← per-agent launch flags for this project
@@ -290,8 +292,8 @@ Both exist because of failures that produce no error at all.
 bridge can still read what an agent writes, and for a while the doctor's routes
 claimed readiness on that basis alone. Session formats are internal to each vendor: a renamed field ships in a
 point release and every handoff quietly returns an empty delta. So each adapter
-runs its own parse path over the linked session, which costs 98ms across all
-three on this repository. An empty session is readable, a fresh project is
+runs its own parse path over the linked session, which cost 98ms measured
+across the three that existed when it was added. An empty session is readable, a fresh project is
 neutral and never red, and rows that parse into nothing recognisable are the
 drift signal.
 
@@ -314,7 +316,7 @@ into `.bridge/config.json`, and `--cb-clear-args` takes it back. Nobody edits
 the file by hand.
 
 Saved defaults come first and typed flags come last, which relies on a CLI
-taking the last occurrence of a repeated flag; that holds for all three agents
+taking the last occurrence of a repeated flag; that holds for all four agents
 and is convention rather than law. A flag that would break the session link is
 refused when it is saved, so the complaint reaches whoever wrote it. Flags that
 change what an agent may do without asking are announced on a plain line at
