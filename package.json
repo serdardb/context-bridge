@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;"
+    "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;",
+    "prepublishOnly": "npm test && npm run check"
   },
   "engines": {
     "node": ">=18.18"
