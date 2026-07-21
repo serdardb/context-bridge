@@ -10,6 +10,7 @@ import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
+import { hookDeliveryEligible } from "./delivery.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
@@ -343,6 +344,12 @@ export function handoff(
 
   s.pendingInjection = {
     agent: target,
+    // The road this delta takes, decided here and honoured by exactly one
+    // deliverer. Inferring it later from the agent's injection mode looked
+    // tempting and is fragile: seeding a first session, resuming one, and
+    // resuming one whose hooks are live are three different cases that would
+    // have to be told apart from the same field.
+    via: hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt",
     // null = nothing to resume on that side: the delta seeds the first session
     // the target opens in this project.
     id: targetSlot.id ?? null,

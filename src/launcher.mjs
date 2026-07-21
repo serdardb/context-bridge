@@ -11,6 +11,7 @@ import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSIO
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
+import { deltaWasConsumed } from "./delivery.mjs";
 import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso, processAlive } from "./util.mjs";
 
 const POLL_MS = 500;
@@ -103,6 +104,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     };
     process.once("SIGTERM", termHandler);
 
+    const pendingBefore = s.pendingInjection?.agent === agent ? s.pendingInjection : null;
     const watcher = watchForHandoff(projectDir, agent, child);
     const exit = await waitForExit(child);
     watcher.stop();
@@ -124,6 +126,16 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     }
 
     s = loadState(projectDir);
+    // Hook delivery is a judgement, not a certainty: hooks do not run until the
+    // user trusts them and that trust can be withdrawn without telling anyone.
+    // So the guess is checked rather than believed. Nothing is resent
+    // automatically, because the next handoff supersedes this delta anyway; what
+    // matters is that a delta which never arrived is never passed over quietly.
+    if (pendingBefore?.via === "hook" && pendingBefore.agent === agent && !deltaWasConsumed(projectDir, pendingBefore)) {
+      log(`${WARN} The context for ${agent} was not delivered: its hooks did not run.`);
+      log(dim(`  It is still at ${pendingBefore.deltaFile}, and the next handoff will carry it again.`));
+      log(dim(`  Codex runs hooks only after you review them once with /hooks.`));
+    }
     // The agent's closing message is written after the handoff command runs, so
     // it is never in the delta the handoff produced. Now that the process has
     // exited it IS on disk: fold it in before the other agent reads anything.
@@ -227,6 +239,7 @@ export function buildCommand(projectDir, s, agent, extra = []) {
     const { cmd, args } = adapter.startCommand(extra);
     const note = `Starting a new ${adapter.displayName} session for this project…`;
     if (!seeding || adapter.injection !== "prompt") return { cmd, args, note };
+    if (inj?.via === "hook") return { cmd, args, note };
     const seeded = consumeDelta(projectDir, s, inj, agent);
     if (seeded) args.push(...adapter.promptArgs(seeded));
     return { cmd, args, note };
@@ -239,7 +252,10 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   // Prompt-injecting agents receive a pending delta as the auto-submitted resume
   // prompt (proven in T2 for Codex). Hook-injecting agents get it from their own
   // session hook instead, so nothing is appended here.
-  if (adapter.injection === "prompt" && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
+  // `via` is the whole guard against delivering twice: a hook putting the delta
+  // into the conversation while the prompt also carried it would repeat it word
+  // for word.
+  if (inj?.via !== "hook" && adapter.injection === "prompt" && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
     const delta = consumeDelta(projectDir, s, inj, agent);
     if (delta) args.push(...adapter.promptArgs(delta));
   }

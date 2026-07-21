@@ -6,6 +6,7 @@ import path from "node:path";
 import { loadState, saveState, commitKnown, agentSlot } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
+import { hookBody, companionFor } from "./delivery.mjs";
 
 /**
  * Is this hook running inside an agent that is not Claude?
@@ -200,6 +201,29 @@ function hookSessionStart(projectDir, s, input) {
   return 0;
 }
 
+/**
+ * Claim a pending delta for hook delivery, exactly once. The rename is what
+ * makes "exactly once" true across a crash or a race: whoever renames the file
+ * owns the delivery, and everyone else can see it already happened.
+ */
+function consumeForHook(projectDir, s, inj) {
+  const deltaPath = path.join(projectDir, inj.deltaFile);
+  let delta;
+  try {
+    delta = fs.readFileSync(deltaPath, "utf8");
+  } catch {
+    return null; // already taken, or never written; either way not ours to deliver
+  }
+  try {
+    fs.renameSync(deltaPath, deltaPath + ".consumed");
+  } catch {
+    return null;
+  }
+  commitKnown(s, inj);
+  s.pendingInjection = null;
+  return hookBody(delta, companionFor(projectDir, inj.deltaFile));
+}
+
 function hookStop(projectDir, s, input) {
   // A turn just ended, so the transcript exists now if it ever will.
   let dirty = linkClaudeSession(s, input);
@@ -269,6 +293,16 @@ function codexHook(projectDir, s, event, input) {
     dirty = true;
   }
 
+  // Deliver a delta that was routed this way. Only `via: "hook"` is taken: a
+  // delta addressed to the prompt path is already riding in the resume command,
+  // and taking it here as well would hand the agent the same text twice.
+  let delivered = null;
+  const inj = s.pendingInjection;
+  if (event === "session-start" && inj?.agent === "codex" && inj.via === "hook") {
+    delivered = consumeForHook(projectDir, s, inj);
+    if (delivered) dirty = true;
+  }
+
   // A finished turn is what the launcher waits for before switching away.
   if (event === "stop" && s.pendingHandoff?.ready && s.pendingHandoff.target !== "codex" && s.activeAgent === "codex") {
     if (!slot.id || slot.id === id) {
@@ -282,5 +316,12 @@ function codexHook(projectDir, s, event, input) {
   }
 
   if (dirty) saveState(projectDir, s);
+  // Codex reads this shape as extra developer context, which is what puts the
+  // delta inside the conversation rather than in front of it.
+  if (delivered) {
+    process.stdout.write(
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: delivered } })
+    );
+  }
   return 0;
 }
