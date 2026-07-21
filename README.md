@@ -60,7 +60,15 @@ One direction already exists officially: OpenAI ships a Claude Code plugin and C
 3. **Chains, not just pairs.** With three agents there are six directions, and a hop must not cost you the hop before it. The bridge tracks what each agent has already been told, by each other agent, so a handoff carries everything the target missed no matter who produced it.
 4. **Zero session management.** Session discovery, thread capture, resume commands, injection — all automatic. You only ever type `/bridge <agent>` or `$bridge <agent>`.
 
-**Honest about the asymmetry:** only Claude → Codex has an official import, which seeds the new thread with the whole session. Every other first switch opens a fresh session whose opening prompt is the full un-clipped conversation instead. The knowledge is equal; the session shape is not.
+**Honest about the asymmetry.** The first switch to an agent has to create something, for every tool that does this, because the target has no session yet: Claude → Codex uses OpenAI's official import, and the others open a new session seeded with the conversation. After that first switch the three agents differ in how a handoff reaches them, and the difference is worth stating plainly rather than glossing:
+
+| | how a delta arrives | why |
+|---|---|---|
+| Claude Code | its `SessionStart` hook | the conversation continues; nothing is pasted in front of it |
+| Codex | its `SessionStart` hook | same, once you have trusted the hooks with `/hooks` |
+| Grok | the opening prompt of the resumed session | its hooks exist but ignore what they print, so nothing can be injected |
+
+The knowledge is equal in all three. The session shape is not, and Grok's case is a limit in Grok rather than something waiting to be built here.
 
 ## How it works
 
@@ -136,20 +144,21 @@ Claude Code
   ✓ Authenticated (you@example.com)
   ✓ context-bridge plugin installed (provides /bridge and the session hooks)
   ✓ Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)
-  ✓ Session readable by this version of the bridge (584 messages)
+  ✓ Session readable by this version of the bridge (884 messages)
 
 Codex
   ✓ Installed: codex-cli 0.144.6
   ✓ Authenticated (Logged in using ChatGPT)
+  ⚠ Session hooks not installed (optional: they make Codex session linking exact)
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
   ✓ bridge command pre-allowed in Codex rules
-  ✓ Session readable by this version of the bridge (313 messages)
+  ✓ Session readable by this version of the bridge (417 messages)
 
 Grok
   ✓ Installed: grok 0.2.106
   ✓ Authenticated
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
-  ✓ Session readable by this version of the bridge (68 messages)
+  ✓ Session readable by this version of the bridge (104 messages)
 
 Bridge
   ✓ bridge on PATH (hooks can reach it)
@@ -212,8 +221,10 @@ Each delta costs the receiving agent one short acknowledgment sentence — that 
 | `src/agents/` | One adapter per agent: discovery, resume command, activity parsing, idle signal, conflicting flags, health. Adding an agent is one file. |
 | `knownBy` matrix | Per pair, how far into each agent's own stream has been packed for each other agent. This is what makes chains keep their history. |
 | Claude plugin | `/bridge` skill + `SessionStart` / `Stop` / `UserPromptSubmit` hooks (session recording, delta injection, idle marking) |
+| Codex hooks | The same three events in `~/.codex/hooks.json`, installed by `doctor --fix` and merged into whatever is already there. Each hook names the agent it belongs to, so one firing inside a different CLI refuses instead of writing the wrong session into state. |
 | Shared agent skill | `$bridge <agent>` for Codex and Grok → runs `bridge handoff <agent>` |
 | Official import | The first Claude→Codex switch uses OpenAI's `codex-plugin-cc` transfer (`externalAgentConfig/import` under the hood) |
+| `.bridge/config.json` | Per-agent launch flags for this project. Written by `--cb-save-args`, never by hand, listed in `bridge status`, and cleared with `--cb-clear-args`. |
 
 Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributing: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -233,6 +244,8 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 - Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
 - One linked session per agent per project (no `bridge unlink` yet — delete `.bridge/` to relink).
 - Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
+- Codex runs hooks only after you review them once with `/hooks`, and that trust is not readable from outside. Until then a handoff falls back to the prompt path, and when a delta was routed to a hook that never fired the launcher says so and names the file it is still sitting in.
+- Grok cannot receive a delta through a hook at all: its hooks fire but their output is ignored for passive events, so Grok stays on prompt delivery.
 - An agent's own dialogs (folder trust, update prompts) can appear before a resumed session; answer them once and the flow continues.
 - A launcher left running across a bridge upgrade cannot read the newer state file. It says so and asks to be restarted; the pending handoff is preserved.
 - Decision/Next quality depends on the departing agent following its handoff instructions; Conversation/Work sections are deterministic from session files and git regardless.
@@ -242,7 +255,7 @@ Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.
 
 ## Roadmap
 
-- Per-agent flags at launch and at handoff time (`bridge claude --dangerously-skip-permissions` works today; arming a second agent in the same run does not yet)
+- Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
 - `bridge unlink` / multi-pair support
 - Linux verification, Windows support
 - Optional MCP quick-question mode (ask the other agent without switching)
@@ -256,6 +269,8 @@ Since the first release:
 - **Adopt flow** — sessions started outside the bridge can be linked mid-flight (deterministic via `CODEX_THREAD_ID`, confirmed when heuristic)
 - **Full-context checkpoints** — every delta ships with a temporary un-truncated companion, so long prose survives a handoff
 - **Three agents, six directions** — Grok joined behind an adapter contract, and a `knownBy` matrix keeps chains from dropping the hop before last
+- **Codex is hook-driven too** — it records its own session, receives deltas inside the conversation rather than in front of it, and reports the end of a turn instead of having it inferred from a 3MB transcript
+- **Per-agent launch flags** — typed when you want them, saved with `--cb-save-args` when you want them to stick, announced loudly when they change what an agent may do without asking
 - **Sessions the bridge starts are linked** — Codex and Grok used to be unreachable until they handed off once, so `bridge grok` refused to resume the session it had just created
 - **Doctor tells the truth** — `READY` became `CONFIGURED`, and two canaries check that this version of the bridge can still read what each agent writes and still find what each agent stores
 - **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks, gated on ubuntu+macos × Node 18/20/22
