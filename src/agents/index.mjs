@@ -4,7 +4,7 @@
 // so adding a fourth agent means writing one file instead of touching eleven.
 // This is deliberately narrow: it covers the four behaviours that are genuinely
 // per-vendor. Handoff composition, checkpointing and doctor still live outside,
-// and are generalised in a later round (see notes/agent-collaboration.md).
+// and are generalised in a later round.
 //
 // @typedef {Object} SessionRef
 //   id             native session/thread id, the thing we resume by
