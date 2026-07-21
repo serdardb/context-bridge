@@ -154,3 +154,74 @@ test("a launcher that cannot read the state file says so instead of waiting fore
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /newer than this bridge understands/);
 });
+
+// Flagged by Antigravity and confirmed by Codex. The official Claude→Codex import
+// used to return the moment it had seeded the thread, before the loop that
+// gathers every other agent ever ran. On a project where Grok or Antigravity had
+// also been working, that is often the FIRST switch anyone makes, and their work
+// simply never arrived. The import answers for exactly one source; it was being
+// treated as if it answered for all of them.
+test("the official import still carries what the other agents did", () => {
+  const { project } = fixture();
+  const s = loadState(project);
+  s.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false }; // Codex is fresh
+  s.activeAgent = "claude";
+  saveState(project, s);
+
+  handoff(project, "codex", {
+    from: "claude",
+    checkTarget: () => {},
+    transfer: () => ({ threadId: "imported-thread" }),
+  });
+
+  const after = loadState(project);
+  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  assert.match(delta, /grok found the bug/, "Grok's work never reached Codex, which is the whole flag");
+  // Recorded as carried, but not yet as known: knownBy is committed on delivery,
+  // because the departing agent's closing words are still to come.
+  assert.ok(after.pendingInjection.sources.grok, "or the next switch would resend it from the beginning");
+});
+
+// The same early return dropped the notes the agent wrote while handing off,
+// which is a quieter loss than the missing history and arguably a worse one: the
+// decisions are the part a human typed on purpose.
+test("the official import still carries the decisions written with it", () => {
+  const { project } = fixture();
+  const s = loadState(project);
+  s.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false };
+  s.activeAgent = "claude";
+  saveState(project, s);
+
+  handoff(project, "codex", {
+    from: "claude",
+    checkTarget: () => {},
+    transfer: () => ({ threadId: "imported-thread" }),
+    decisions: "we chose the adapter contract over per-agent branching",
+    next: "review the leak fix",
+  });
+
+  const after = loadState(project);
+  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  assert.match(delta, /adapter contract over per-agent branching/);
+  assert.match(delta, /review the leak fix/);
+});
+
+// Claude's own conversation is what the import copied, so it must NOT also ride
+// in the delta: that would hand Codex the same history twice on its first read.
+test("what the import already delivered is not sent a second time", () => {
+  const { project } = fixture();
+  const s = loadState(project);
+  s.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false };
+  s.activeAgent = "claude";
+  saveState(project, s);
+
+  handoff(project, "codex", {
+    from: "claude",
+    checkTarget: () => {},
+    transfer: () => ({ threadId: "imported-thread" }),
+  });
+
+  const after = loadState(project);
+  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  assert.doesNotMatch(delta, /claude decided the architecture/, "the import carried this already");
+});

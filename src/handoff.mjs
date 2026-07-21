@@ -270,6 +270,16 @@ export function handoff(
   // FIRST switch, Claude to Codex only: the official OpenAI transfer seeds a full
   // thread. No other pair has an equivalent, so those first switches carry the
   // bounded delta plus its full-context companion instead.
+  //
+  // The import seeds the thread and then falls through, deliberately, because it
+  // answers for exactly one source. It used to return here, and that quietly cost
+  // two things on what is often a project's very first switch: everything Grok
+  // and Antigravity had done never travelled, since the loop below is what
+  // gathers them, and the decisions and next notes written by the agent handing
+  // off were dropped on the floor, because this branch never reads them. Falling
+  // through costs nothing, as Claude's own stream is marked as delivered just
+  // below and so packs as empty, while every other agent packs from the
+  // beginning exactly as it would on any other first switch.
   if (!targetSlot.id && sourceId === "claude" && target === "codex") {
     if (transfer === transferClaudeSession) preflightOfficialImport();
     const res = transfer(sourceSlot.transcriptPath);
@@ -286,13 +296,8 @@ export function handoff(
     // seen it; without this seed the first return would hand it all back.
     s.knownBy ??= {};
     (s.knownBy[target] ??= {})[sourceId] = sourceMark;
-    s.git = { sha: currentGitSha(projectDir), recordedAt: now };
     sourceSlot.set({ idle: false });
-    s.pendingHandoff = { target, ready: true, requestedAt: now };
-    saveState(projectDir, s);
     lines.push(`${OK} First switch: Claude session imported into Codex via the official OpenAI transfer.`);
-    lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher));
-    return lines.join("\n");
   }
 
   // Gather from EVERY agent the target has not caught up with, not only from the
