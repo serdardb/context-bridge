@@ -10,23 +10,44 @@ import { spawn } from "node:child_process";
 import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
+import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
 import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso, processAlive } from "./util.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
 const TERM_GRACE_MS = 10000;
 
-export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
+export async function runLoop(projectDir, startAgent = null, forward = []) {
+  // Accepts either a bare array (older callers) or the split the CLI produces.
+  const forwardArgs = Array.isArray(forward) ? forward : (forward?.agentArgs ?? []);
+  const bridgeFlags = Array.isArray(forward) ? {} : (forward?.bridgeFlags ?? {});
   let s = ensureState(projectDir);
   let agent = startAgent || s.activeAgent || "claude";
 
-  // Forwarded args belong to the agent named on the command line (or, when none
-  // was named, to the one this loop starts with). They are never carried across
-  // a switch: a Claude flag is meaningless or harmful to Codex.
+  if (bridgeFlags.clearArgs) {
+    const gone = clearArgs(projectDir, agent);
+    log(gone.length ? `${OK} Forgot the saved flags for ${agent}: ${gone.join(" ")}` : `${OK} ${agent} had no saved flags.`);
+  }
+  let justSaved = false;
+  if (bridgeFlags.saveArgs) {
+    const saved = saveArgs(projectDir, agent, forwardArgs);
+    justSaved = true; // they are in the config now, so do not also count them as typed
+    log(`${OK} Saved for ${agent}, and used on every launch from now on: ${saved.join(" ")}`);
+    log(dim(`  Undo with: bridge ${agent} --cb-clear-args`));
+  }
+
+  // Flags belong to the agent named on the command line (or, when none was
+  // named, to the one this loop starts with). They are never carried across a
+  // switch: a Claude flag is meaningless or harmful to Codex. Saved defaults for
+  // this project come first, and what was typed now comes last, so the moment
+  // always has the final word over the default.
   const agentArgs = Object.fromEntries(AGENT_IDS.map((id) => [id, []]));
-  if (forwardArgs.length) {
-    const { kept, dropped } = filterAgentArgs(agent, forwardArgs);
-    agentArgs[agent] = kept;
+  for (const id of AGENT_IDS) {
+    const typed = id === agent && !justSaved ? forwardArgs : [];
+    const { all } = resolveArgs(projectDir, id, typed);
+    if (!all.length) continue;
+    const { kept, dropped } = filterAgentArgs(id, all);
+    agentArgs[id] = kept;
     for (const d of dropped) {
       if (d.isValue) continue;
       log(`${WARN} Ignoring ${d.arg}: ${d.why}.`);
@@ -44,6 +65,13 @@ export async function runLoop(projectDir, startAgent = null, forwardArgs = []) {
     s = ensureState(projectDir);
     const { cmd, args, note } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
+      const armed = agentArgs[agent].filter(isDangerous);
+      // Dim for ordinary flags, plain for the ones that change what the agent may
+      // do without asking. A permission bypass nobody notices is the failure this
+      // whole project keeps finding in other places.
+      if (armed.length) {
+        log(`${WARN} ${adapterFor(agent)?.displayName ?? agent} is being launched with ${armed.join(" ")}`);
+      }
       log(dim(`→ Forwarding to ${agent}: ${agentArgs[agent].join(" ")}`));
     }
     if (!cmd) {

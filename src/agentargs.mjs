@@ -40,16 +40,28 @@ const CONFLICTS = {
  */
 export function splitLauncherArgs(tail) {
   const agentArgs = [];
+  const bridgeFlags = { saveArgs: false, clearArgs: false };
   for (const arg of tail) {
+    // The --cb-* namespace belongs to the bridge, never to the agent, which is
+    // what makes it the right home for a flag about the flags.
+    if (arg === "--cb-save-args") {
+      bridgeFlags.saveArgs = true;
+      continue;
+    }
+    if (arg === "--cb-clear-args") {
+      bridgeFlags.clearArgs = true;
+      continue;
+    }
     if (arg.startsWith("--cb-") || arg === "--cb") {
       throw new BridgeError(
         `Unknown bridge flag '${arg}'. The --cb-* namespace is reserved for context-bridge; ` +
-          "this version defines none. Agent flags are forwarded as-is, so drop the --cb- prefix."
+          "this version defines --cb-save-args and --cb-clear-args. " +
+          "Agent flags are forwarded as-is, so drop the --cb- prefix."
       );
     }
     agentArgs.push(arg);
   }
-  return agentArgs;
+  return { agentArgs, bridgeFlags };
 }
 
 /**

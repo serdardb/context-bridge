@@ -5,6 +5,7 @@ import { handoff } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS, DEFAULT_KEEP_COMPANIONS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
+import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, NONE } from "./util.mjs";
 
@@ -91,6 +92,23 @@ export async function main(argv) {
         log(`  ${agentId.padEnd(14)} ${mask(slot.id)}   synced ${synced}`);
       }
       log(`  pending        ${s.pendingHandoff ? `handoff → ${s.pendingHandoff.target}` : s.pendingInjection ? `injection → ${s.pendingInjection.agent}` : dim("none")}`);
+
+      // Saved launch flags. Listed even when empty for the agents that have them,
+      // because a saved permission bypass that nobody can find is one nobody can
+      // undo, and `--cb-clear-args` is only useful if you know there is something
+      // to clear.
+      const config = loadConfig(projectDir);
+      const armedAgents = AGENT_IDS.filter((agentId) => savedArgs(config, agentId).length);
+      if (armedAgents.length) {
+        log("");
+        log("  saved launch flags");
+        for (const agentId of armedAgents) {
+          const args = savedArgs(config, agentId);
+          const loud = args.some(isDangerous);
+          log(`  ${agentId.padEnd(14)} ${args.join(" ")}${loud ? "   (changes what it may do without asking)" : ""}`);
+        }
+        log(dim(`  forget them with: bridge <agent> --cb-clear-args`));
+      }
       // Which agents each one has been caught up with. Free: it is already state.
       const linked = AGENT_IDS.filter((a) => s.agents?.[a]?.id);
       if (linked.length > 1) {

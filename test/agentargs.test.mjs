@@ -24,13 +24,25 @@ test("agent flags pass through verbatim, including values and repeated flags", (
     "--json-schema",
     '{"type":"object"}',
   ];
-  assert.deepEqual(splitLauncherArgs(args), args);
+  assert.deepEqual(splitLauncherArgs(args).agentArgs, args);
   assert.deepEqual(filterAgentArgs("claude", args), { kept: args, dropped: [] });
 });
 
 test("the --cb-* namespace is reserved and rejected instead of silently dropped", () => {
-  assert.throws(() => splitLauncherArgs(["--cb-clear-args"]), /reserved for context-bridge/);
+  assert.throws(() => splitLauncherArgs(["--cb-nonsense"]), /reserved for context-bridge/);
   assert.doesNotThrow(() => splitLauncherArgs(["--cbor"]));
+});
+
+test("the bridge's own flags are claimed rather than forwarded to the agent", () => {
+  // --cb-save-args is a flag about the flags, so handing it to the agent would
+  // make the agent fail on an argument it never defined.
+  const save = splitLauncherArgs(["--dangerously-skip-permissions", "--cb-save-args"]);
+  assert.deepEqual(save.agentArgs, ["--dangerously-skip-permissions"]);
+  assert.equal(save.bridgeFlags.saveArgs, true);
+
+  const clear = splitLauncherArgs(["--cb-clear-args"]);
+  assert.deepEqual(clear.agentArgs, []);
+  assert.equal(clear.bridgeFlags.clearArgs, true);
 });
 
 test("claude session-control flags are dropped with a reason, values included", () => {
@@ -158,3 +170,21 @@ function runBridge(args) {
 function makeProject() {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-args-")));
 }
+
+// The duplication this pins was found by running the real command rather than a
+// test: saving wrote the flag into the config and then also counted it as typed,
+// so the very launch that saved it passed the flag twice.
+test("the launch that saves a flag does not also pass it twice", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-dup-"));
+  const res = spawnSync(
+    process.execPath,
+    [path.join(ROOT, "bin", "bridge.mjs"), "codex", "--dangerously-bypass-approvals-and-sandbox", "--cb-save-args"],
+    // PATH is emptied so the agent itself never starts; the launcher still prints
+    // what it would have forwarded, which is the whole point of the check.
+    { cwd: project, encoding: "utf8", env: { ...process.env, PATH: "/nonexistent" } }
+  );
+  const forwarding = res.stdout.split("\n").find((line) => line.includes("Forwarding to codex"));
+  assert.ok(forwarding, `expected a forwarding line, got:\n${res.stdout}${res.stderr}`);
+  const count = forwarding.split("--dangerously-bypass-approvals-and-sandbox").length - 1;
+  assert.equal(count, 1, `the flag must appear once, got: ${forwarding}`);
+});
