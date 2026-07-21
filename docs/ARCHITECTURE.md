@@ -2,187 +2,358 @@
 
 **Switch agents. Not context.**
 
-This document describes how context-bridge works internally. For product usage, see the [README](../README.md); for contributing, see [DEVELOPMENT.md](./DEVELOPMENT.md).
+How the bridge works inside. For usage see the [README](../README.md); for
+working on it see [DEVELOPMENT.md](./DEVELOPMENT.md).
 
 ## Design principles
 
-1. **Native sessions are preserved, never replaced.** Claude Code keeps its own session (`~/.claude/projects/<project-slug>/<uuid>.jsonl`); Codex keeps its own thread (`~/.codex/sessions/…/rollout-*.jsonl`). context-bridge never wraps, proxies, or re-implements either agent — it orchestrates them. If you delete the bridge, both sessions still work with their own CLIs.
-2. **Official mechanisms wherever one exists.** Session import, resume, hooks, plugins and skills are all vendor-supported surfaces. The bridge adds only what neither vendor ships: the mapping between sessions, the return path, and delta-based repeat switching.
-3. **Deltas, not transcript copies.** Agents already hold their own history. When switching, the bridge transfers only what the target agent is missing.
-4. **No API keys, no extra billing.** Both CLIs run under the user's existing subscription authentication. The bridge never reads or stores credentials.
-5. **Safety over magic.** If any part of a switch cannot be confirmed, the bridge says so and falls back to a manual step instead of pretending.
+1. **Native sessions are preserved, never replaced.** Claude keeps its own
+   session, Codex its own thread, Grok its own session directory. The bridge
+   orchestrates them and re-implements none of them. Delete the bridge and all
+   three still work with their own CLIs.
+2. **Official mechanisms wherever one exists.** Import, resume, hooks, plugins
+   and skills are all vendor-supported surfaces. The bridge adds only what no
+   vendor ships: the mapping between sessions, the way back, and switching
+   repeatedly without starting over.
+3. **Deltas, not transcript copies.** Every agent already holds its own history.
+   A switch carries only what the target has not seen.
+4. **No API keys, no extra billing.** Every CLI runs under the subscription the
+   user already has. The bridge never reads or stores credentials.
+5. **Nothing important is silent.** A dropped input, a deletion, a delta that
+   never arrived, a parser that no longer understands a file: each of these is
+   reported. Most of this document's odder decisions come from this one rule.
 
 ## System overview
 
 ```
 shell
-└── bridge                          launcher (Node CLI, zero dependencies)
-    └── one agent child at a time
-        ┌────────┐    switch    ┌────────┐
-        │ claude │ ───────────► │ codex  │
-        │  TUI   │ ◄─────────── │  TUI   │
-        └────────┘              └────────┘
-             │                       │
-   ~/.claude/projects/…      ~/.codex/sessions/…
-      (native session)         (native thread)
+└── bridge                       launcher, zero-dependency Node CLI
+    └── exactly one agent at a time
 
-        .bridge/state.json  ← per-project link between the two
+        claude ⇄ codex ⇄ grok    six directed routes
+
+  ~/.claude/projects/…    ~/.codex/sessions/…    ~/.grok/sessions/…
+     native session          native thread         native session
+
+        .bridge/state.json   ← what links them, references only
+        .bridge/config.json  ← per-agent launch flags for this project
 ```
-
-Components:
 
 | Component | Role |
 |---|---|
 | `bridge` CLI (`src/`) | launcher loop, state, delta engine, doctor, hook endpoints |
-| Claude Code plugin (`plugin/`) | `/bridge` skill + `SessionStart` / `Stop` / `UserPromptSubmit` hooks |
-| Codex skill (`codex/SKILL.md`) | `$bridge` — instructs Codex to run `bridge handoff claude` |
-| `.bridge/state.json` | project-local link state (references only, never transcripts) |
+| `src/agents/` | one adapter per agent; the only place vendor knowledge lives |
+| Claude plugin (`plugin/`) | `/bridge` skill and the `SessionStart` / `Stop` / `UserPromptSubmit` hooks |
+| Codex hooks (`~/.codex/hooks.json`) | the same three events, installed by `doctor --fix`, merged into whatever is already there |
+| Shared skill (`codex/SKILL.md`) | `$bridge <agent>` for Codex and Grok |
+| `.bridge/state.json` | project-local links, watermarks, pending markers. References, never content |
 
-## Claude → Codex: the first switch
+## The adapter contract
 
-The Claude→Codex direction has an official path: OpenAI's Claude Code plugin ([`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc)) converts a Claude session transcript into a real Codex thread via the Codex app-server (`externalAgentConfig/import`). context-bridge deliberately **uses** this mechanism rather than re-implementing transcript conversion:
+Adding an agent used to mean touching a dozen files. It is now one module in
+`src/agents/` implementing a narrow contract, and the registry is what every
+other part of the system iterates over: the doctor's route table, checkpoint
+pruning, the delta engine. A pruning rule that hard-coded one pair once meant
+Grok's checkpoints were never cleaned up at all, which is why nothing enumerates
+agents by hand any more.
 
-1. The user runs `/bridge codex` inside Claude Code.
-2. The plugin skill has Claude summarize its decisions and open questions, then run `bridge handoff codex --decisions … --next …`.
-3. On the first switch for a project, the bridge invokes the official plugin's transfer machinery (`codex-companion.mjs transfer --json`) with the current session transcript.
-4. The resulting Codex **thread ID** is captured programmatically from the transfer's JSON output (Codex also records the import in `~/.codex/external_agent_session_imports.json`, keyed by source path and content hash).
-5. The thread ID, its rollout path, sync timestamps and a git checkpoint are persisted in `.bridge/state.json`.
+The contract covers exactly the parts that are genuinely per-vendor: discovery,
+rehydrating a reference, the resume and start commands, parsing activity since a
+watermark, the idle signal, flags that would break the session link, health, a
+harmless headless probe, and the two parser canaries below.
 
-The user never sees an ID at any point.
+### Watermarks are opaque
 
-## Why repeated switches never re-import
+The two-agent design assumed time was universal. Claude and Codex timestamp
+their records, so their watermark is an ISO instant. Grok's chat rows carry no
+timestamps at all, so its watermark is a compound `{rows, ts}` counting rows in
+the chat file and the newest event timestamp beside it. Using time there would
+have silently resent the whole conversation on every switch.
 
-Re-running the official import for the same (changed) transcript creates a **brand-new Codex thread** each time — the import ledger is append-only and the previous mapping is not updated. A naive bridge would therefore scatter the user's work across disconnected threads and lose Codex-side context on every switch.
+So a watermark is whatever the adapter says it is. Callers persist it and hand
+it back untouched, never compare one agent's to another's, and never look inside.
 
-So the bridge imports **once per project**, persists the pair, and afterwards:
+## What crosses, and what does not
 
-```
-codex resume <linked-thread-id> "<context delta>"
-```
-
-Interactive `codex resume` auto-submits the prompt argument as a real turn, so the linked thread receives the Claude-side delta the moment it opens — same thread, full prior Codex context, one short acknowledgment sentence as the only overhead. The delta prompt ends with an instruction to acknowledge briefly and not repeat the content back.
-
-## Codex → Claude: the return flow
-
-Nothing official exists in this direction; this is the core problem context-bridge solves.
-
-1. The user runs `$bridge claude` inside Codex.
-2. The Codex skill has the model summarize its decisions and open questions, then run `bridge handoff claude --decisions … --next …`.
-3. The bridge extracts everything that happened in Codex since the last sync, deterministically, from the thread's own rollout file (user/agent messages, per-turn final messages, applied patches) plus git truth (status, commits, diff stat since the recorded checkpoint).
-4. A bounded delta file is written to `.bridge/checkpoints/` and registered as a *pending injection* for the original Claude session.
-5. The launcher resumes the **original** session: `claude --resume <original-session-id>`.
-
-### Why the original session ID is stable
-
-`claude --resume <id>` (interactive and headless) **appends to the same session** — it does not fork unless `--fork-session` is passed explicitly. The bridge records the session ID once, at session start, through its `SessionStart` hook (hook input carries `session_id`, `transcript_path`, and `cwd`), and every return trip resumes that exact session. Identity is preserved across any number of round-trips.
-
-### Context injection via SessionStart(resume)
-
-Claude Code's `SessionStart` hook may return `additionalContext`, which is injected into the resumed conversation — an official, supported mechanism. The bridge's hook:
-
-1. Fires on resume, checks `.bridge/state.json` for a pending injection matching this project and session.
-2. Reads the delta file, **atomically renames it to `*.consumed` before emitting** and clears the pending marker — this guarantees **exactly-once** injection even if hooks fire again (later resumes, restarts). The injected context persists in the session transcript, so it never needs re-injection.
-3. Emits the delta as `additionalContext`. If the delta file is missing, the hook injects an explicit warning instead of failing silently — the bridge never pretends a sync succeeded.
-
-## The context delta model
-
-A delta is a bounded (~8 KB) plain-text block with four sections:
+A delta is a bounded plain-text block with four sections:
 
 ```
 [Bridge Context Update]
 
-Conversation   ← what was discussed (from native session files)
-Decisions      ← what was decided, and what was rejected and why
-Work           ← files changed, patches applied, git commits/status
-Next           ← current objective and unresolved questions
+Conversation   what was said, from the native session files
+Decisions      what was decided, and what was rejected and why
+Work           files touched, commits, diffstat, from git
+Next           the current objective and what is still open
 ```
 
-- **Conversation** and **Work** are extracted deterministically: session/rollout records newer than the last sync timestamp, plus git (`status --porcelain`, `log`/`diff --stat` since the recorded commit checkpoint). No LLM summarization call is added.
-- **Decisions** and **Next** come from the *departing* agent itself: the handoff skill asks it to write one-line notes in the same turn the user triggered — capturing intent that files and git cannot reveal, at zero extra cost.
-- Size is capped by truncating the middle of the conversation region; decisions and next-steps are never truncated.
+Conversation and Work are deterministic: session records newer than the
+watermark, plus `git status --porcelain` and `log`/`diff --stat` since the
+recorded checkpoint. No summarisation call is added anywhere.
 
-## Project state: `.bridge/state.json`
+Decisions and Next come from the departing agent, written in the same turn the
+user triggered the switch. They carry intent, which neither files nor git can
+show.
 
-Versioned, written atomically (temp file + rename). It stores **references, never content**:
+**Tool calls and their output never cross.** They are enormous, shaped
+differently by every vendor, and not replayable in another agent. On this
+repository a raw Claude session file is 14.9MB of which 285KB is conversation:
+the tool output is the noise. The receiving agent debugs against the repository
+itself rather than against a stale account of somebody else's run. The honest
+cost is that a failure which lived only in tool output, and which nobody wrote
+down, does not travel.
+
+Each bounded delta is capped, and the middle is cut rather than the ends, so the
+beginning and the latest exchange both survive. Beside it, every handoff also
+writes an **un-truncated companion** holding every message verbatim. That exists
+because a size cap once clipped long prose in the middle of drafting it.
+
+## knownBy: why chains keep their history
+
+The naive model is a single sync timestamp per agent, and it loses material as
+soon as there are three agents: hand from Claude to Grok to Codex, and Codex
+receives only what Grok said.
+
+State therefore holds `knownBy[target][source]`: for each pair, how far into the
+source's own stream material has been packed for that target. A handoff gathers
+from every agent whose watermark for the target is behind, labels each block by
+who produced it, and commits the new watermarks only once the delta is actually
+delivered. Committing at write time would mark the departing agent's final
+answer as delivered before it had been written.
+
+This ledger is also the difference from tools that copy a session on every
+switch. Copying needs no such bookkeeping because it starts over each time.
+
+## Delivery: two roads, chosen in advance
+
+A delta reaches its target one of two ways.
+
+**Hook.** Claude and Codex both accept `hookSpecificOutput.additionalContext`
+from a `SessionStart` hook, which places the delta inside the conversation. The
+hook renames the delta file to `*.consumed` before emitting, which is what makes
+handing it over happen exactly once even across a crash or a race: whoever
+renames the file owns it. Handed over is as far as this goes; whether the model
+then attends to it is not something any of this can observe.
+
+**Prompt.** The delta rides as the opening message of the resumed session. This
+works everywhere and shapes the session around the delivery. Grok uses it
+permanently: its hooks fire but their output is ignored for passive events.
+
+The road has to be chosen *before* the agent starts, because nothing can be
+injected into a session already running, and whether a hook will fire cannot be
+known: Codex runs hooks only after the user reviews them once with `/hooks`,
+that trust can be withdrawn silently, and neither state is readable from
+outside. So `pendingInjection.via` records the choice at handoff time, and
+exactly one deliverer honours it, which is what makes delivering twice
+impossible rather than merely unlikely.
+
+When the choice turns out wrong the launcher says so after the agent exits,
+names the file the delta is still sitting in, and points at `/hooks`. Nothing is
+resent automatically; the next handoff supersedes that delta anyway. A delayed
+delta is a cost worth paying, a silent one is not.
+
+## The first switch is different, for everyone
+
+The target has no session yet, so something must be created. Claude → Codex uses
+OpenAI's official transfer (`codex-plugin-cc`, `externalAgentConfig/import`
+underneath), which seeds a real thread with the whole conversation; the returned
+thread id is captured programmatically. Every other first switch opens a new
+session whose opening prompt is the conversation.
+
+Re-running that import for a changed transcript creates a **brand-new thread**
+every time, because the import ledger is append-only. So it runs once per
+project, the pair is persisted, and from then on the same session is resumed
+with a delta.
+
+## Project state
+
+`.bridge/state.json`, versioned and written atomically, migrated forward with a
+`.v<n>.backup` kept and a refusal to read anything newer than this build
+understands. References only:
 
 ```json
 {
-  "version": 1,
+  "version": 4,
   "project": "<absolute path>",
   "activeAgent": "claude",
   "agents": {
-    "claude": { "sessionId": "…", "transcriptPath": "…", "lastSyncAt": "…", "idle": false },
-    "codex":  { "threadId": "…",  "rolloutPath": "…",   "lastSyncAt": "…", "idle": false }
+    "claude": { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false },
+    "codex":  { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false, "hookSeen": "…" },
+    "grok":   { "id": "…", "transcriptPath": "…", "mark": { "rows": 262, "ts": "…" }, "idle": false }
   },
+  "knownBy": { "grok": { "claude": "…", "codex": "…" } },
   "pendingHandoff":   { "target": "codex", "ready": true, "requestedAt": "…" },
-  "pendingInjection": { "agent": "claude", "sessionId": "…", "deltaFile": "…" },
+  "pendingInjection": { "agent": "codex", "via": "hook", "deltaFile": "…", "sources": {} },
+  "launcher": { "stateVersion": 4, "pid": 71272, "recordedAt": "…" },
   "git": { "sha": "…", "recordedAt": "…" }
 }
 ```
 
-`lastSyncAt` semantics: `agents.codex.lastSyncAt` is the time up to which *Codex has received Claude context*, and vice versa — each delta filters native files strictly by `timestamp > lastSyncAt`.
+Transcripts are deliberately not duplicated here. The native files already are
+the transcripts; copying them would double the on-disk footprint of sensitive
+conversation, and references plus watermarks are enough to compute every delta.
+`.bridge/` is added to the project's `.gitignore` automatically.
 
-Full transcripts are deliberately **not** duplicated into bridge state: the native session files already are the transcripts, duplicating them would double the on-disk footprint of sensitive conversation data, and references + timestamps are sufficient to compute every delta. `.bridge/` is auto-added to the project's `.gitignore`.
+`launcher` exists because a launcher started before an upgrade cannot read a
+newer state file. It says so and asks to be restarted rather than waiting for a
+switch that can never come.
 
-## Launcher architecture
+## Checkpoints are delivery artifacts
 
-The launcher owns the terminal session and keeps a **flat process tree**:
+Checkpoint files are packages in transit, not memory. The canonical record is
+each agent's native transcript plus `knownBy`.
+
+So retention follows the delivery lifecycle rather than a clock: an un-truncated
+companion is dropped once its reader hands off. That is an event, not a proof.
+It means the agent had a live session in which the companion was available to
+it, which is the strongest thing anything here can observe; nobody watches
+whether a file was opened. A small newest-N cap backstops a target that never
+hands off again. Bounded deltas are kept longer for auditing, and a
+pending injection is never deleted under any flag. Re-issuing a handoff
+supersedes the previous undelivered one instead of leaving it on disk forever.
+
+## Session linking
+
+Claude records itself through its `SessionStart` hook. Codex does the same now:
+its hook input carries `session_id` and `transcript_path`, so linking is a fact
+it tells us rather than something inferred from the newest file on disk.
+
+For an agent started without hooks, the launcher links the session it started
+itself, through `adoptStartedSession` on the adapter. Grok publishes a live
+registry of open sessions at `~/.grok/active_sessions.json` keyed by pid and
+cwd, which identifies our own child exactly. That registry empties the moment a
+session closes, so linking runs while the child is alive *and* once more after
+it exits; post-exit alone would strand every session whose terminal was killed.
+
+When several candidates match, none is adopted and the bridge says so. A user
+with a second session of the same agent open in another terminal must never have
+it taken.
+
+A hook only records what it was installed for. Each hook command declares its
+agent (`internal-hook session-start --agent codex`) and refuses when the
+environment says it woke up somewhere else, which matters because Grok loads
+Claude's own `~/.claude/settings.json` hooks by default.
+
+There is exactly one such marker today: `GROK_HOOK_EVENT`, which Grok's hook
+runner injects into every hook process. Codex has no equivalent, so nothing
+detects it, and that gap is left open rather than filled. Two earlier attempts
+went wrong in opposite directions: refusing on `CODEX_THREAD_ID`, which is
+ambient session environment inherited by every child, made Claude's own hook
+refuse itself, and a `CODEX_HOOK_EVENT` was then added that does not exist
+anywhere in the shipped binary. Detection stays negative and fails towards
+working: demanding positive proof of identity would disable the bridge the day a
+vendor renames a variable.
+
+## Launcher
+
+The process tree stays flat:
 
 ```
 shell
 └── bridge
-    └── claude        (exits) →
-    └── codex         (exits) →
-    └── claude        …
+    └── claude   (exits) →
+    └── codex    (exits) →
+    └── grok     …
 ```
 
-Never `claude → codex → claude` nesting: each agent is a direct child spawned with `stdio: "inherit"`, so the TUI gets the real terminal (raw mode, colors, signals) and the tree never grows. Nested TUIs would stack raw-mode terminals, break Ctrl+C semantics, and leak processes; sequential children provably leave the terminal healthy across switches.
+Never nested. Each agent is a direct child spawned with `stdio: "inherit"`, so
+the TUI gets the real terminal. Nested TUIs would stack raw-mode terminals,
+break Ctrl+C, and leak processes.
 
-Details:
+The parent ignores `SIGINT`, because Ctrl+C typed inside an agent belongs to
+that agent. A missing binary produces a doctor hint; an unexpected exit
+preserves state and explains how to continue.
 
-- The parent ignores `SIGINT` — Ctrl+C typed inside an agent belongs to that agent (the signal reaches the whole foreground process group).
-- Missing binaries (`ENOENT`) produce a doctor hint; unexpected non-zero exits preserve state and explain how to continue; a `SIGTERM`-driven exit is treated as a normal switch.
-- On child exit the launcher re-reads state: a pending handoff towards the other agent continues the loop, otherwise the bridge session ends cleanly.
+### Switching without cutting a turn in half
 
-## Idle-safe automatic switching
+The current agent closes itself after a handoff, which is a guarded termination.
+`SIGTERM` goes out only when a handoff is persisted, the agent is idle, and
+idleness survived a debounce and a final re-read of state.
 
-The headline UX — the current agent closes itself after a handoff — is implemented as a guarded termination. The launcher sends `SIGTERM` only when **all** of these hold:
+Idleness is either something an agent says or something we infer. Claude and
+Codex both report the end of a turn through their `Stop` hook, which is cheaper
+and truer than inference: it arrives when the turn ends rather than when the
+file is next flushed, and it does not depend on a field name a vendor may
+rename. The marker is read first, and re-reading the transcript remains the
+fallback, because hooks do not run until they are trusted and a launcher
+listening only for a marker would wait forever.
 
-1. A handoff has been **persisted** (`pendingHandoff.ready` in state, written by `bridge handoff …`).
-2. The agent is **idle** — its handoff turn has fully completed:
-   - *Claude:* the plugin's `Stop` hook (turn finished) sets an idle marker, and `UserPromptSubmit` clears it, so the marker is true only between turns.
-   - *Codex:* the launcher watches the thread's rollout file for a turn-completion event recorded **after** the handoff request — turn-end truth from Codex's own append-only session file.
-3. Idle persisted across a debounce, and a final state re-read from disk is still consistent.
+Hard rules: the launcher signals only the exact child pid it spawned, never by
+process name, and never `SIGKILL`, because a clean shutdown and a flushed
+session file both depend on `SIGTERM`. If idleness cannot be confirmed within a
+generous window it prints a fallback and does nothing destructive.
 
-Hard rules: the launcher signals **only the exact child PID it spawned** — never `pgrep`, never process-name matching (another process with a similar name must never be touched) — and never `SIGKILL` (both CLIs shut down cleanly on `SIGTERM`, flushing their session files; `SIGKILL` would forfeit that guarantee). If idle cannot be confirmed within a generous window, the launcher prints a clear fallback ("exit the agent normally; the bridge will continue") and does nothing destructive. If the child ignores `SIGTERM`, the launcher says so and waits.
+## Two canaries
 
-## Dependency detection: `bridge doctor`
+Both exist because of failures that produce no error at all.
 
-Every environment assumption is checked, not assumed:
+**Session readability.** Installed and logged in says nothing about whether the
+bridge can still read what an agent writes, and for a while the doctor's routes
+claimed readiness on that basis alone. Session formats are internal to each vendor: a renamed field ships in a
+point release and every handoff quietly returns an empty delta. So each adapter
+runs its own parse path over the linked session, which costs 98ms across all
+three on this repository. An empty session is readable, a fresh project is
+neutral and never red, and rows that parse into nothing recognisable are the
+drift signal.
 
-- **Installed & version** — `claude --version`, `codex --version`.
-- **Subscription auth, without touching secrets** — existence checks only: the Claude Code credentials Keychain entry (macOS) or credentials file (Linux) plus the OAuth account record; `codex login status` exit code for Codex.
-- **Integrations** — the context-bridge Claude plugin, the official OpenAI Codex plugin (needed for first import), the `$bridge` Codex skill, the optional Codex allow-rule, and `bridge` being on `PATH` (hooks invoke it).
-- **Project state health** and a final route table (`Claude <-> Codex READY / NOT READY`).
+**Discovery.** Finding a session and reading one are different code, and the
+second kind of failure is just as quiet. A rollout head record was parsed into a
+fixed 16KB buffer while codex-cli embeds its base instructions there and the
+record grew to 22KB; every parse failed, no rollout matched any project, and
+Codex discovery returned null for every session on the machine, silently,
+because a failed parse looks exactly like "a different project". Each adapter
+now reports whether its discovery reader can still name what is stored on disk.
 
-`bridge doctor --fix` bootstraps missing pieces using only official mechanisms (`claude plugin marketplace add` / `claude plugin install`, file installs for the skill), asking for confirmation before every change. Failures print the exact official command instead of improvising.
+An unreadable session takes its routes off green and the exit code with it.
 
-## Security & privacy
+## Per-agent launch flags
 
-- Local-only: no SaaS, no accounts, no telemetry, no server.
-- No API keys read, requested, or stored; auth checks are existence-only and never print secret values.
-- Bridge state holds references, timestamps and bounded delta files; transcripts stay where the vendors put them.
-- Context deltas travel only inside the two CLIs' own subscription-authenticated calls.
-- The bridge never mutates global CLI configuration without explicit user confirmation (`--fix`).
+Arming an agent is a moment, not a preference: you work with approvals on, and
+then decide, now, that this agent should stop asking. So flags are typed on the
+launcher command line and apply to that launch, `--cb-save-args` promotes them
+into `.bridge/config.json`, and `--cb-clear-args` takes it back. Nobody edits
+the file by hand.
 
-## Current limitations (Claude ⇄ Codex, v0.1)
+Saved defaults come first and typed flags come last, which relies on a CLI
+taking the last occurrence of a repeated flag; that holds for all three agents
+and is convention rather than law. A flag that would break the session link is
+refused when it is saved, so the complaint reaches whoever wrote it. Flags that
+change what an agent may do without asking are announced on a plain line at
+every launch, and `bridge status` lists what is armed, because a saved bypass
+nobody can find is one nobody can undo.
 
-- Verified on macOS; Linux untested; Windows unsupported.
-- One linked session/thread pair per project; delete `.bridge/` to relink.
-- Codex-owned one-time dialogs (folder trust, update prompt) may appear before a resumed thread; the bridge cannot suppress another product's dialogs.
-- Each delta costs the receiving agent one short acknowledgment response.
-- Both vendors' session file formats are internal; parsers are defensive, but a future CLI release may require an update.
+## bridge doctor
 
-## Extensibility toward Gemini
+Every assumption is checked rather than assumed, and the wording is deliberate.
+Routes say `CONFIGURED`, meaning installed, configured, and its session still
+parses; they used to say `READY`, which read as proof that a switch would work.
+`--deep` asks each agent a real one-line question and reports `LIVE` or
+`BROKEN`, and it is not the default because it is slow and depends on the
+network.
 
-The architecture generalizes to any agent that offers: (a) discoverable per-project sessions, (b) resume-by-id, (c) a context injection point, and (d) an in-agent extension mechanism to trigger `bridge handoff`. Gemini CLI has session resume (`--resume`, `--list-sessions`), extensions, hooks and headless JSON output, so a `gemini` entry can slot into `agents` in the state schema and a third branch into the launcher/doctor without changing the delta model. Not implemented in v0.1.
+`--fix` bootstraps missing pieces using only official mechanisms and asks before
+every change. It can install the Codex hooks, and then says plainly that Codex
+will not run them until they are reviewed once with `/hooks`, because that trust
+is not readable and claiming otherwise would be a green tick over an unknown.
+
+## Security and privacy
+
+- Local only: no SaaS, no accounts, no telemetry, no server.
+- No API keys read, requested or stored. Auth checks test for existence and
+  never print secret values.
+- State holds references, timestamps and bounded delta files. Transcripts stay
+  where the vendors put them.
+- Deltas travel only inside the CLIs' own subscription-authenticated calls.
+- Global CLI configuration is never mutated without confirmation.
+
+## Known limits
+
+- Verified on macOS. The suite runs on Linux in CI, but the vendor directory
+  layouts there are unverified. Windows is unsupported.
+- One linked session per agent per project. Deleting `.bridge/` relinks, and
+  takes the saved launch flags with it.
+- Grok cannot receive a delta through a hook, and that is a limit in Grok.
+- Codex stores sessions by date rather than by project, so its discovery check
+  answers for the machine rather than for one project.
+- Every vendor session format is internal. The parsers are defensive and the
+  canaries shout when they stop matching, but a CLI release can still require an
+  update here.
