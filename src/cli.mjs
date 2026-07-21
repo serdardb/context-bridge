@@ -20,17 +20,26 @@ const VERSION = JSON.parse(
   fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8")
 ).version;
 
-const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
+// Wide enough for the longest command label there actually is. This was a fixed
+// 16, which fitted every agent until one was called antigravity and its
+// description ran into its name. A fifth agent would have found it again.
+const LABEL_WIDTH = Math.max(...AGENT_IDS.map((a) => a.length + " [flags]".length), "doctor [--fix]".length) + 2;
+/** Column the descriptions start in: "  " + "bridge " + the widest label. */
+const COL = 2 + "bridge ".length + LABEL_WIDTH;
+const cmd = (label) => `  ${`bridge ${label}`.padEnd(COL - 2)}`;
+const cont = " ".repeat(COL);
+
+export const HELP = `${bold("context-bridge")} ${VERSION} — Switch agents. Not context.
 
 Usage:
-  bridge                 Start the bridged session loop (resumes where you left off)
-${AGENT_IDS.map((a) => `  bridge ${(a + " [flags]").padEnd(16)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
-  bridge doctor [--fix]  Check agents, auth, plugins and routes ( --fix bootstraps,
-                         --deep asks each agent a real one-line question )
-  bridge status          Show project bridge status
-  bridge clean           Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
-                         everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
-                         --days N, --all; a pending injection is never deleted)
+${cmd("")}Start the bridged session loop (resumes where you left off)
+${AGENT_IDS.map((a) => `${cmd(`${a} [flags]`)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
+${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstraps,
+${cont}--deep asks each agent a real one-line question )
+${cmd("status")}Show project bridge status
+${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
+${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
+${cont}--days N, --all; a pending injection is never deleted)
 
 Agent flags:
   bridge claude --dangerously-skip-permissions --model claude-fable-5
@@ -38,9 +47,15 @@ Agent flags:
   every time the bridge reopens it in this launcher run. Nothing is written to
   disk: the next 'bridge' starts from the agent's own defaults again.
 
+  --cb-save-args         Keep the flags typed with this launch in .bridge/config.json
+                         and use them every time this agent opens in this project
+  --cb-clear-args        Forget them again
+
 Inside the agents:
-  Claude Code:  /bridge <agent>   hand off to another agent
-  Codex, Grok:  $bridge <agent>   hand off to another agent
+  ${adapterFor("claude").displayName}:  /bridge <agent>   hand off to another agent
+  ${AGENT_IDS.filter((a) => a !== "claude")
+    .map((a) => adapterFor(a).displayName)
+    .join(", ")}:  $bridge <agent>   hand off to another agent
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
