@@ -130,3 +130,51 @@ function cleanEnv() {
   }
   return env;
 }
+
+// Codex hooks were proven live: SessionStart, UserPromptSubmit and Stop all fire
+// and its hook input carries session_id and transcript_path, which makes linking
+// a fact rather than the filesystem guesswork adoptStartedSession has to do.
+test("the Codex hook links its own session from the hook input", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-cxhook-"));
+  saveState(project, defaultState(project));
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(rollout, "");
+
+  const res = spawnSync(
+    process.execPath,
+    [BRIDGE_BIN, "internal-hook", "session-start", "--agent", "codex"],
+    {
+      input: JSON.stringify({ cwd: project, source: "startup", session_id: "019f-codex", transcript_path: rollout }),
+      // No Codex marker is set, because Codex sets none: the hook is identified
+      // by the --agent it was installed with and by its stdin payload.
+      env: cleanEnv(),
+      encoding: "utf8",
+    }
+  );
+
+  assert.equal(res.status, 0);
+  const slot = loadState(project).agents.codex;
+  assert.equal(slot.id, "019f-codex");
+  assert.equal(slot.transcriptPath, rollout);
+  assert.ok(slot.hookSeen, "the run is stamped, so a later version can tell hooks are actually live here");
+  assert.equal(loadState(project).agents.claude.id, null, "a Codex hook must never write Claude's slot");
+});
+
+// The guard is a comparison now, not a special case: each hook names the agent
+// it was installed for, so it works the same way for an agent added later.
+test("a hook installed for one agent refuses to run inside another", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-crossed-"));
+  saveState(project, defaultState(project));
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(rollout, "");
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start", "--agent", "codex"], {
+    input: JSON.stringify({ cwd: project, source: "startup", session_id: "019f-codex", transcript_path: rollout }),
+    env: { ...cleanEnv(), GROK_HOOK_EVENT: "session_start" },
+    encoding: "utf8",
+  });
+
+  assert.equal(res.status, 0, "a refusal is not a failure");
+  assert.match(res.stderr, /Grok/);
+  assert.equal(loadState(project).agents.codex.id, null, "nothing is written when the host is wrong");
+});

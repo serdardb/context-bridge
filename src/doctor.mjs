@@ -22,6 +22,7 @@ import {
 import { findCompanionScript } from "./transfer.mjs";
 import { loadState, agentSlot } from "./state.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
+import { installHooks as installCodexHooks, hooksPath as codexHooksPath } from "./agents/codex.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CODEX_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
@@ -336,6 +337,14 @@ async function applyFixes(projectDir, r) {
       if (await yes(`${verb} the shared $bridge skill (~/.agents/skills/bridge/SKILL.md)?`)) {
         installCodexSkill();
         log(`${OK} Shared $bridge skill written from this repo.`);
+      }
+    }
+    const hookExtra = r.agents.codex.extras.find((e) => e.label.includes("Session hooks"));
+    if (hookExtra && !hookExtra.ok && r.codex.version) {
+      if (await yes(`Install context-bridge session hooks for Codex (${codexHooksPath()})?`)) {
+        const written = installCodexHooks();
+        log(`${OK} Wrote ${written}.`);
+        log(dim("  Codex will not run them until you review them once with /hooks inside Codex."));
       }
     }
     if (!r.codex.rules) {

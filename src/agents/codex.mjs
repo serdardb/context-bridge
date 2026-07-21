@@ -7,10 +7,12 @@ import {
 } from "../discover.mjs";
 import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
+import fs from "node:fs";
 import path from "node:path";
 import {
   nowIso,
   fileExists,
+  readJson,
   tryExec,
   codexHome,
   REPO_ROOT,
@@ -122,6 +124,92 @@ export function startCommand(extraArgs = []) {
   return { cmd: "codex", args: [...extraArgs] };
 }
 
+const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"];
+
+/** Where Codex looks for user-level hooks. */
+export function hooksPath() {
+  return path.join(codexHome(), "hooks.json");
+}
+
+/**
+ * Our hook definitions, in Codex's own schema. `SessionStart` is matched on
+ * startup and resume because those are the two ways a session we care about
+ * begins; clear and compact are somebody else's business.
+ *
+ * Each command names the agent it belongs to, so a hook that ends up running
+ * inside a different CLI can recognise that and refuse rather than writing the
+ * wrong conversation into a project's state.
+ */
+export function hookDefinitions() {
+  const entry = (event) => ({
+    ...(event === "SessionStart" ? { matcher: "startup|resume" } : {}),
+    hooks: [{ type: "command", command: `bridge internal-hook ${hookEventSlug(event)} --agent codex` }],
+  });
+  return Object.fromEntries(HOOK_EVENTS.map((event) => [event, [entry(event)]]));
+}
+
+function hookEventSlug(event) {
+  return { SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", Stop: "stop" }[event];
+}
+
+/** Which of our hooks are present in the user's file, without judging the rest of it. */
+export function installedHooks() {
+  const file = readJson(hooksPath());
+  const mine = hookDefinitions();
+  const present = HOOK_EVENTS.filter((event) => {
+    const groups = file?.hooks?.[event];
+    if (!Array.isArray(groups)) return false;
+    return groups.some((g) => (g?.hooks ?? []).some((h) => typeof h?.command === "string" && h.command.includes("internal-hook") && h.command.includes("--agent codex")));
+  });
+  return { present, missing: HOOK_EVENTS.filter((e) => !present.includes(e)), fileExists: !!file, definitions: mine };
+}
+
+/**
+ * Add our hooks to whatever is already in the file. Codex merges every hook
+ * source rather than letting one replace another, so the only wrong move here is
+ * discarding somebody else's entries.
+ */
+export function installHooks() {
+  const file = readJson(hooksPath()) ?? {};
+  const hooks = { ...(file.hooks ?? {}) };
+  const mine = hookDefinitions();
+  for (const [event, groups] of Object.entries(mine)) {
+    const existing = (hooks[event] ?? []).filter(
+      (g) => !(g?.hooks ?? []).some((h) => typeof h?.command === "string" && h.command.includes("internal-hook") && h.command.includes("--agent codex"))
+    );
+    hooks[event] = [...existing, ...groups];
+  }
+  fs.mkdirSync(codexHome(), { recursive: true });
+  fs.writeFileSync(hooksPath(), JSON.stringify({ ...file, hooks }, null, 2) + "\n");
+  return hooksPath();
+}
+
+/**
+ * Doctor's line about the hooks. It reports installation, which is knowable, and
+ * says nothing about trust, which is not: Codex records hook trust somewhere we
+ * cannot read, so claiming a hook will run would be exactly the kind of green
+ * tick this project spent a release removing.
+ */
+function hookExtra() {
+  const { present, missing } = installedHooks();
+  if (!present.length) {
+    return {
+      ok: false,
+      info: true,
+      label: "Session hooks not installed (optional: they make Codex session linking exact)",
+      fix: "bridge doctor --fix",
+    };
+  }
+  if (missing.length) {
+    return { ok: false, info: true, label: `Session hooks partly installed, missing ${missing.join(", ")}`, fix: "bridge doctor --fix" };
+  }
+  return {
+    ok: true,
+    info: true,
+    label: "Session hooks installed — run /hooks inside Codex once to trust them, or they never fire",
+  };
+}
+
 export function health() {
   const version = tryExec("codex", ["--version"]);
   const detail = version ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
@@ -131,6 +219,7 @@ export function health() {
     version,
     auth: { ok: detail !== null, via: "codex login", account: detail },
     extras: [
+      hookExtra(),
       {
         ok: skill === "current",
         label: skillLabel(skill),

@@ -165,9 +165,14 @@ export async function main(argv) {
       return;
     }
 
-    case "internal-hook":
-      process.exitCode = await runHook(args[1]);
+    case "internal-hook": {
+      // The hook command names the agent it was installed for, so the identity
+      // guard can compare that against the environment it actually woke up in.
+      const forIndex = argv.indexOf("--agent");
+      const hookAgent = forIndex >= 0 ? argv[forIndex + 1] : "claude";
+      process.exitCode = await runHook(args[1], AGENT_IDS.includes(hookAgent) ? hookAgent : "claude");
       return;
+    }
 
     default:
       // A flag's value lands here when no agent was named: `bridge --model opus`

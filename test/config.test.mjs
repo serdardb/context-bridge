@@ -81,3 +81,34 @@ test("only the flags that change what an agent may do without asking are loud", 
 function fresh() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "bridge-config-"));
 }
+
+// Codex merges every hook source rather than letting one replace another, so the
+// only wrong move when writing ours is discarding somebody else's.
+test("installing Codex hooks preserves whatever was already in the file", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codexhome-"));
+  fs.writeFileSync(
+    path.join(home, "hooks.json"),
+    JSON.stringify({
+      description: "the user's own file",
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo theirs" }] }] },
+    })
+  );
+
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  try {
+    const codex = await import(`../src/agents/codex.mjs?hooks=${home}`);
+    codex.installHooks();
+    const after = JSON.parse(fs.readFileSync(path.join(home, "hooks.json"), "utf8"));
+    assert.equal(after.description, "the user's own file");
+    assert.equal(after.hooks.SessionStart.length, 2, "theirs and ours, not ours alone");
+    assert.match(after.hooks.SessionStart[0].hooks[0].command, /echo theirs/);
+
+    codex.installHooks();
+    const twice = JSON.parse(fs.readFileSync(path.join(home, "hooks.json"), "utf8"));
+    assert.equal(twice.hooks.SessionStart.length, 2, "installing again must not pile up duplicates");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+  }
+});

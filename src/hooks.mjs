@@ -3,8 +3,9 @@
 // have no .bridge/ state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, saveState, commitKnown } from "./state.mjs";
-import { fileExists } from "./util.mjs";
+import { loadState, saveState, commitKnown, agentSlot } from "./state.mjs";
+import { fileExists, nowIso } from "./util.mjs";
+import { adapterFor } from "./agents/index.mjs";
 
 /**
  * Is this hook running inside an agent that is not Claude?
@@ -33,17 +34,45 @@ import { fileExists } from "./util.mjs";
  * it, the bridge stops recording sessions and says nothing. A guard should fail
  * towards working.
  */
-function foreignHost(env = process.env) {
-  return env.GROK_HOOK_EVENT ? "Grok" : null;
+function observedHost(env = process.env) {
+  // Only hook-runner markers count, and only ones that exist. Two attempts got
+  // this wrong in opposite directions: refusing on CODEX_THREAD_ID, which is
+  // ambient session environment inherited by every child, made Claude's own hook
+  // refuse itself; then a CODEX_HOOK_EVENT was added that simply does not exist,
+  // checked against the shipped binary after review asked for proof. Codex
+  // therefore has no marker here, which is the honest state rather than a
+  // convenient one.
+  return env.GROK_HOOK_EVENT ? "grok" : null;
 }
 
-export async function runHook(event) {
-  const host = foreignHost();
+/**
+ * Is this hook running inside the agent it was installed for?
+ *
+ * Each hook command names its own agent (`internal-hook session-start --agent
+ * codex`), so the question is a comparison rather than a guess. It has to be
+ * asked because Grok loads Claude's own `~/.claude/settings.json` hooks by
+ * default: a bridge hook can fire in the wrong agent and write the wrong
+ * conversation into a project's state, and the result would look healthy.
+ *
+ * Only a positively identified foreign host refuses. An unknown environment is
+ * allowed through, because a guard that demands proof of identity stops the
+ * bridge working the day a vendor renames a variable, and it should fail
+ * towards working.
+ */
+function foreignHost(declaredAgent = "claude", env = process.env) {
+  const observed = observedHost(env);
+  if (!observed || observed === declaredAgent) return null;
+  return observed;
+}
+
+export async function runHook(event, agent = "claude") {
+  const host = foreignHost(agent);
   if (host) {
-    // stderr, never stdout: stdout is the hook's protocol channel with Claude.
+    // stderr, never stdout: stdout is the hook's protocol channel with the agent.
+    const name = (id) => adapterFor(id)?.displayName ?? id;
     process.stderr.write(
-      `context-bridge: ignoring the '${event}' hook because it is running inside ${host}, not Claude Code. ` +
-        "These hooks record Claude's session and would write the wrong conversation into this project's state.\n"
+      `context-bridge: ignoring the '${event}' hook installed for ${name(agent)}, because it is running inside ` +
+        `${name(host)}. It would write the wrong conversation into this project's state.\n`
     );
     return 0;
   }
@@ -56,6 +85,13 @@ export async function runHook(event) {
     return 0; // unreadable/foreign state — never break the user's session
   }
   if (!s) return 0;
+
+  // Codex hooks record their own agent. Delta delivery still travels by prompt
+  // for it: the hook can inject context (proven), but hooks do not run until the
+  // user trusts them once and that trust cannot be read back, so binding
+  // delivery to something unverifiable would risk losing context silently.
+  // Recording that the hook ran is exactly what makes the switch provable later.
+  if (agent === "codex") return codexHook(projectDir, s, event, input);
 
   if (event === "session-start") return hookSessionStart(projectDir, s, input);
   if (event === "stop") return hookStop(projectDir, s, input);
@@ -205,4 +241,46 @@ function readStdinJson() {
     });
     setTimeout(() => resolve(null), 3000).unref();
   });
+}
+
+/**
+ * Codex's side of the same job. Its hook input carries `session_id` and
+ * `transcript_path`, which makes linking a fact rather than the filesystem
+ * guesswork `adoptStartedSession` has to do, and every run stamps `hookSeen` so
+ * a later version can tell whether hooks are actually live in this project
+ * instead of assuming it.
+ */
+function codexHook(projectDir, s, event, input) {
+  const slot = agentSlot(s, "codex");
+  let dirty = false;
+
+  if (!s.agents.codex.hookSeen || s.agents.codex.hookSeen < nowIso().slice(0, 10)) {
+    s.agents.codex.hookSeen = nowIso();
+    dirty = true;
+  }
+
+  const id = input?.session_id;
+  const transcriptPath = input?.transcript_path || null;
+  if (id && !slot.id && transcriptPath && fileExists(transcriptPath)) {
+    slot.set({ id, transcriptPath });
+    dirty = true;
+  } else if (id && slot.id === id && transcriptPath && slot.transcriptPath !== transcriptPath) {
+    slot.set({ transcriptPath });
+    dirty = true;
+  }
+
+  // A finished turn is what the launcher waits for before switching away.
+  if (event === "stop" && s.pendingHandoff?.ready && s.pendingHandoff.target !== "codex" && s.activeAgent === "codex") {
+    if (!slot.id || slot.id === id) {
+      slot.set({ idle: true });
+      dirty = true;
+    }
+  }
+  if (event === "user-prompt-submit" && slot.idle) {
+    slot.set({ idle: false });
+    dirty = true;
+  }
+
+  if (dirty) saveState(projectDir, s);
+  return 0;
 }
