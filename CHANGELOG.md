@@ -6,10 +6,20 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
-## Unreleased
+## [0.9.0] — 2026-07-21
 
 ### Added
 
+- **Antigravity is the fourth agent.** It joins behind the same adapter contract
+  as the others, so the agent itself is one file, and it was handed its own
+  adapter to argue against before anything was committed. Two of its objections
+  changed the code: its transcripts carry internal memory-compaction rows that
+  would otherwise have been forwarded to the next agent as though a person had
+  written them, and its idle flag cannot be trusted on its own. One of its
+  claims did not survive checking, which is the point of asking.
+- **`detectHost` is part of the adapter contract**, and deliberately asks whether
+  an environment *proves* a process is that agent rather than which variable
+  names it. On that reading three of the four adapters answer null.
 - **Codex is hook-driven, like Claude.** It records its own session through its
   hooks, so linking is a fact it reports rather than something inferred from the
   newest file on disk. A delta can arrive inside its conversation through
@@ -27,6 +37,37 @@ half.
 
 ### Fixed
 
+- **An agent's identity was read from a variable that outlives it.** A handoff
+  decided who was speaking by reading `CODEX_THREAD_ID` first, but that is
+  exported into a Codex session and inherits into every process below it, so a
+  Grok session opened by a launcher that had itself been opened inside Codex
+  reported Codex as the source: the wrong stream was packed and the wrong
+  watermark moved. The launcher's own record now wins outright whenever it
+  started the process, because preferring a guess over a fact is what made the
+  leak reachable. `hooks.mjs` already carried a comment explaining all of this,
+  written after the same mistake was made there; the lesson never crossed the
+  file boundary, which is why the rule now lives in the contract.
+- **The official Claude→Codex import spoke for one agent and returned for all.**
+  It seeded the thread and returned before the loop that gathers every other
+  agent ran, so on a project where Grok or Antigravity had been working, none of
+  it travelled on what is often the very first switch. The same early return
+  dropped the decisions and next notes written with the handoff, which is the
+  quieter loss and arguably the worse one.
+- **A first switch no longer exceeds the command line.** Packing a whole
+  conversation produced 1.0MB against an `ARG_MAX` of 1048576 and `spawn`
+  refused it outright, so the agent never started and the failure arrived as a
+  launch error rather than as anything about context.
+- **A delta is delivered only once something is carrying it.** Building the
+  command consumed it, so a launch that never started still recorded the context
+  as handed over. Delivery is now committed on the child's spawn event.
+- **A turn is not over because a tool call started.** Antigravity writes a
+  response as `DONE` the instant it issues a tool call, and the tool rows that
+  follow are not conversation, so the transcript read as finished for the whole
+  duration of every tool call. Replaying one real session, the turn looked over
+  at 25 separate moments, each a chance to terminate the agent mid-work.
+- **Text an agent truncated itself no longer travels as though it were whole.**
+- **A missing binary is looked up by the adapter, not by the agent's id**, which
+  had Antigravity reported as not installed while installed, because it is `agy`.
 - **A session the bridge starts is a session it can return to.** Starting a fresh
   Codex or Grok session wrote nothing into state, so `bridge grok` refused to
   resume the very session it had just created and every handoff minted another
