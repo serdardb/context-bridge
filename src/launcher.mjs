@@ -11,7 +11,7 @@ import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSIO
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
-import { deltaWasConsumed } from "./delivery.mjs";
+import { deltaWasConsumed, promptBody, companionFor } from "./delivery.mjs";
 import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso, processAlive } from "./util.mjs";
 
 const POLL_MS = 500;
@@ -64,7 +64,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 
   for (;;) {
     s = ensureState(projectDir);
-    const { cmd, args, note } = buildCommand(projectDir, s, agent, agentArgs[agent]);
+    const { cmd, args, note, carries } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
       const armed = agentArgs[agent].filter(isDangerous);
       // Dim for ordinary flags, plain for the ones that change what the agent may
@@ -95,6 +95,9 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     const startedAt = nowIso();
     const needsLink = !agentSlot(s, agent).id;
     const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv() });
+    // The delta is only delivered once something is actually carrying it. A spawn
+    // that fails must leave the pending delta exactly where it was.
+    child.once("spawn", () => carries && commitDelivery(projectDir, carries));
     const linker = needsLink ? watchForNewSession(projectDir, agent, startedAt, child.pid) : null;
 
     const termHandler = () => {
@@ -267,9 +270,9 @@ export function buildCommand(projectDir, s, agent, extra = []) {
     const note = `Starting a new ${adapter.displayName} session for this project…`;
     if (!seeding || adapter.injection !== "prompt") return { cmd, args, note };
     if (inj?.via === "hook") return { cmd, args, note };
-    const seeded = consumeDelta(projectDir, s, inj, agent);
+    const seeded = readDelta(projectDir, inj);
     if (seeded) args.push(...adapter.promptArgs(seeded));
-    return { cmd, args, note };
+    return { cmd, args, note, carries: seeded ? inj : null };
   }
 
   const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
@@ -283,38 +286,61 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   // into the conversation while the prompt also carried it would repeat it word
   // for word.
   if (inj?.via !== "hook" && adapter.injection === "prompt" && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
-    const delta = consumeDelta(projectDir, s, inj, agent);
-    if (delta) args.push(...adapter.promptArgs(delta));
+    const delta = readDelta(projectDir, inj);
+    if (delta) {
+      args.push(...adapter.promptArgs(delta));
+      return { cmd, args, note, carries: inj };
+    }
   }
   return { cmd, args, note };
 }
 
 /**
- * Read a pending delta and mark it consumed, exactly once. Returns null when it
- * could not be read or claimed — and says so, because a silently dropped delta is
- * indistinguishable from having no context at all.
+ * Read a pending delta, and change nothing.
+ *
+ * Building a command used to consume in the same breath: the file was renamed and
+ * knownBy was committed before the agent had even been spawned. That made two
+ * failures possible and one of them silent. Inspecting what a launch would look
+ * like destroyed the delta being inspected, which is how one was lost while
+ * diagnosing an unrelated bug; worse, a spawn that then failed left context
+ * marked as delivered when nothing had received it. Reading and committing are
+ * now separate, and committing happens only after the child is actually running.
+ *
+ * The body is bounded here because the limit belongs to the road, not to the
+ * delta: a command line is finite in a way a file is not.
  */
-function consumeDelta(projectDir, s, inj, agent) {
-  const deltaPath = path.join(projectDir, inj.deltaFile);
+function readDelta(projectDir, inj) {
+  if (!inj?.deltaFile) return null;
   let delta;
   try {
-    delta = fs.readFileSync(deltaPath, "utf8");
+    delta = fs.readFileSync(path.join(projectDir, inj.deltaFile), "utf8");
   } catch {
-    log(`${WARN} Pending delta could not be read (${inj.deltaFile}); starting ${agent} without it.`);
+    log(`${WARN} Pending delta could not be read (${inj.deltaFile}); the agent starts without it.`);
     return null;
   }
+  return promptBody(delta, companionFor(projectDir, inj.deltaFile));
+}
+
+/**
+ * Mark a delta as delivered, exactly once, after the agent carrying it is up.
+ * The rename is what makes "once" true across a crash: whoever renames the file
+ * owns the delivery. knownBy moves at the same moment, never before, so a launch
+ * that failed can never leave context recorded as though it had arrived.
+ */
+function commitDelivery(projectDir, inj) {
+  if (!inj?.deltaFile) return;
+  const deltaPath = path.join(projectDir, inj.deltaFile);
   try {
     fs.renameSync(deltaPath, deltaPath + ".consumed");
   } catch {
-    log(`${WARN} Pending delta could not be consumed (${inj.deltaFile}); starting ${agent} without it.`);
-    return null;
+    // Already renamed, or gone. Either way it is not ours to commit.
+    return;
   }
-  // The delta reached its target: record what it carried, so the next handoff
-  // to this agent starts from here instead of resending it.
+  const s = loadState(projectDir);
+  if (!s) return;
   commitKnown(s, inj);
-  s.pendingInjection = null;
+  if (s.pendingInjection?.deltaFile === inj.deltaFile) s.pendingInjection = null;
   saveState(projectDir, s);
-  return delta;
 }
 
 /**

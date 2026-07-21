@@ -8,7 +8,10 @@ import { ADAPTERS, adapterFor, AGENT_IDS } from "../src/agents/index.mjs";
 const SESSION_ID = "019f7f63-c118-7ee1-92dc-4607d08f345d";
 
 test("every adapter implements the contract", () => {
-  assert.deepEqual(AGENT_IDS, ["claude", "codex", "grok"]);
+  // Pinned on purpose: adding an agent should make this fail once, so whoever
+  // adds it is sent through the contract below rather than discovering later
+  // that half of it was never implemented.
+  assert.deepEqual(AGENT_IDS, ["claude", "codex", "grok", "antigravity"]);
   for (const [name, a] of Object.entries(ADAPTERS)) {
     assert.equal(a.id, name);
     assert.ok(a.displayName, `${name} needs a display name`);

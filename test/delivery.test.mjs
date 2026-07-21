@@ -179,3 +179,52 @@ test("an agent with no linked session is never assumed to have finished", async 
   const pending = { target: "grok", ready: true, requestedAt: new Date().toISOString() };
   assert.equal(turnHasEnded(project, state, "codex", pending), false);
 });
+
+// The bug Codex found while reviewing the fourth agent, and the worse half of it:
+// building a command used to consume the delta before the agent was spawned, so a
+// launch that failed left context recorded as delivered when nothing received it.
+test("a launch that never starts leaves the delta exactly where it was", () => {
+  const { project, deltaFile } = pendingDelta("prompt", "DELTA BODY");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "no-agent-"));
+  fs.symlinkSync(process.execPath, path.join(scratch, "node"));
+
+  spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: project,
+    encoding: "utf8",
+    env: { ...cleanEnv(), PATH: scratch }, // codex is not there, so the spawn fails
+  });
+
+  assert.ok(fs.existsSync(path.join(project, deltaFile)), "the delta must survive a failed launch");
+  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(loadState(project).pendingInjection, "and it must still be pending");
+});
+
+test("a launch that starts consumes the delta exactly once", () => {
+  const { project, deltaFile } = pendingDelta("prompt", "DELTA BODY");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "fake-agent-"));
+  fs.symlinkSync(process.execPath, path.join(scratch, "node"));
+  fs.writeFileSync(path.join(scratch, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+  spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: project,
+    encoding: "utf8",
+    env: { ...cleanEnv(), PATH: scratch },
+  });
+
+  assert.ok(fs.existsSync(path.join(project, deltaFile + ".consumed")), "the rename is the record of delivery");
+  assert.equal(loadState(project).pendingInjection, null);
+});
+
+// A first switch packs the whole conversation, and a command line is finite. On a
+// 1569-message session that came to 1.0MB against an ARG_MAX of 1048576, and the
+// agent never started: spawn refused the arguments outright.
+test("a delta too large for a command line is trimmed, not handed to spawn whole", async () => {
+  const { promptBody, PROMPT_DELTA_BYTES } = await import("../src/delivery.mjs");
+  const huge = "a line of conversation\n".repeat(60000);
+  assert.ok(Buffer.byteLength(huge) > 1024 * 1024, "the fixture has to exceed ARG_MAX or it proves nothing");
+
+  const body = promptBody(huge, ".bridge/checkpoints/x-full.md");
+  assert.ok(Buffer.byteLength(body) <= PROMPT_DELTA_BYTES);
+  assert.match(body, /x-full\.md/, "what was cut has to stay reachable");
+  assert.equal(spawnSync("/bin/echo", [body]).error, undefined, "and the result has to be spawnable");
+});

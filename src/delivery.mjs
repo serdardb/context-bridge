@@ -28,6 +28,21 @@ import { adapterFor } from "./agents/index.mjs";
  */
 export const HOOK_DELTA_BYTES = 4 * 1024;
 
+/**
+ * How much of a delta may ride as a command-line prompt.
+ *
+ * The operating system decides this one, not us. `ARG_MAX` is 1MB on macOS and
+ * covers arguments and environment together, and a first switch used to pack the
+ * whole conversation: on a 1569-message session that produced a 1.0MB delta,
+ * measured, and `spawn` refused it outright with E2BIG. The agent never started,
+ * so the failure arrived as a launch error rather than as anything about context.
+ *
+ * 128KB is far below the limit even with a large environment, and far above the
+ * bounded delta an ordinary switch produces. Whatever does not fit stays in the
+ * companion file, whose path travels with the text.
+ */
+export const PROMPT_DELTA_BYTES = 128 * 1024;
+
 /** Roughly a month. A stamp older than this says nothing about today. */
 const HOOK_SEEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -57,14 +72,23 @@ export function hookDeliveryEligible(agent, slot, now = Date.now()) {
  * with the text so the agent can open it instead of guessing what it missed.
  */
 export function hookBody(delta, companionRel) {
+  return fit(delta, companionRel, HOOK_DELTA_BYTES, "[trimmed to fit this agent's hook output]");
+}
+
+/** The same rule for the other road, against a limit the operating system sets. */
+export function promptBody(delta, companionRel) {
+  return fit(delta, companionRel, PROMPT_DELTA_BYTES, "[trimmed to fit a command-line prompt]");
+}
+
+function fit(delta, companionRel, limit, markerText) {
   const pointer = companionRel ? `\n\nThe untrimmed version of this handoff is at ${companionRel}.` : "";
-  if (Buffer.byteLength(delta) + Buffer.byteLength(pointer) <= HOOK_DELTA_BYTES) return delta + pointer;
+  if (Buffer.byteLength(delta) + Buffer.byteLength(pointer) <= limit) return delta + pointer;
 
   // Everything that will still be there after the cut has to come out of the
   // budget, or the trimmed result ends up larger than the untrimmed limit. A
   // test caught exactly that.
-  const marker = "\n\n[trimmed to fit this agent's hook output]";
-  const budget = HOOK_DELTA_BYTES - Buffer.byteLength(pointer) - Buffer.byteLength(marker);
+  const marker = `\n\n${markerText}`;
+  const budget = limit - Buffer.byteLength(pointer) - Buffer.byteLength(marker);
   // Cut on a line boundary so the text does not end mid-sentence.
   let cut = Buffer.from(delta).subarray(0, budget).toString("utf8");
   const lastBreak = cut.lastIndexOf("\n");

@@ -57,7 +57,9 @@ test("each adapter recognises its own real record shape and rejects a foreign on
     claude: { type: "user", timestamp: "2026-07-21T00:00:00Z", message: { content: "hi" } },
     codex: { type: "event_msg", timestamp: "2026-07-21T00:00:00Z", payload: { type: "user_message", message: "hi" } },
     grok: { type: "user", content: "hi" },
+    antigravity: { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>hi</USER_REQUEST>" },
   };
+  assert.deepEqual(Object.keys(samples).sort(), [...AGENT_IDS].sort(), "a new agent needs a sample here, or it is untested");
   for (const id of AGENT_IDS) {
     const own = probeOne(id, samples[id]);
     assert.equal(own.status, "readable", `${id} must recognise its own rows`);

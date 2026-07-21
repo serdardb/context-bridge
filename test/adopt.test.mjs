@@ -76,7 +76,7 @@ test("a rollout belonging to a different project directory is never adopted", ()
 
   const res = runBridge(["handoff", "claude", "--adopt"], otherProject, { CODEX_HOME: codexHome });
   assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /no linked or discoverable codex or grok session/);
+  assert.match(res.stderr, /no linked or discoverable .*codex.*session/, "the message names the agents it looked for");
   assert.ok(project); // fixture rollout exists but points at the other cwd
 });
 
@@ -166,7 +166,7 @@ test("handoff claude without any Codex session fails with guidance", () => {
   const res = runBridge(["handoff", "claude"], project, { CODEX_HOME: codexHome });
   assert.notEqual(res.status, 0);
   // With three agents the bridge cannot assume Codex; it says what it looked for.
-  assert.match(res.stderr, /no linked or discoverable codex or grok session/);
+  assert.match(res.stderr, /no linked or discoverable .*codex.*session/, "the message names the agents it looked for");
 });
 
 test("SessionStart hook delivers a sessionId=null delta to the first new Claude session", () => {

@@ -2,3 +2,4 @@ node_modules/
 .bridge/
 *.log
 .idea/
+.DS_Store

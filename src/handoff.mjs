@@ -100,8 +100,16 @@ function kb(bytes) {
  * saved, and the launcher reports the missing command clearly when it tries.
  */
 function preflight(agentId, lines = []) {
-  if (!tryExec(agentId, ["--version"])) {
-    lines.push(`${WARN} ${agentId} is not installed or not on PATH, so the switch will fail until it is. Run: bridge doctor`);
+  const adapter = adapterFor(agentId);
+  // Ask the adapter what it runs. An agent's id and its binary are not the same
+  // thing: Antigravity is launched as `agy`, and assuming otherwise reported a
+  // perfectly installed agent as missing.
+  const cmd = adapter?.startCommand?.()?.cmd ?? agentId;
+  if (!tryExec(cmd, ["--version"])) {
+    lines.push(
+      `${WARN} ${adapter?.displayName ?? agentId} is not installed or not on PATH (${cmd}), ` +
+        "so the switch will fail until it is. Run: bridge doctor"
+    );
   }
 }
 

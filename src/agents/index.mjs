@@ -12,7 +12,7 @@
 //   eventsPath     optional separate event stream (Grok); defaults to transcriptPath
 //
 // @typedef {Object} AgentAdapter
-//   id             "claude" | "codex" | "grok"
+//   id             "claude" | "codex" | "grok" | "antigravity"
 //   displayName    shown to users
 //   injection      "prompt" = delivered as an auto-submitted resume prompt
 //                  "hook"   = delivered through the agent's own session hook
@@ -39,8 +39,9 @@
 import * as claude from "./claude.mjs";
 import * as codex from "./codex.mjs";
 import * as grok from "./grok.mjs";
+import * as antigravity from "./antigravity.mjs";
 
-export const ADAPTERS = { claude, codex, grok };
+export const ADAPTERS = { claude, codex, grok, antigravity };
 
 export function adapterFor(id) {
   return ADAPTERS[id] ?? null;
