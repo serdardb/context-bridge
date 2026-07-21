@@ -337,3 +337,8 @@ function* readJsonl(p) {
     } catch {}
   }
 }
+
+/** No documented host marker, and one will not be invented. See the contract. */
+export function detectHost() {
+  return null;
+}

@@ -484,11 +484,16 @@ function waitForExit(child) {
   });
 }
 
-function childEnv() {
+export function childEnv() {
   const env = { ...process.env };
   // Never look like a nested Claude session to the child TUIs.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
+  // Codex exports its thread id into the session, so without this it inherits
+  // into whatever we spawn and makes a Grok or Antigravity session look like a
+  // Codex one. Hygiene, not the guarantee: source detection prefers this
+  // launcher's own record precisely so that a missed variable cannot mislead it.
+  delete env.CODEX_THREAD_ID;
   // Mark agent children so `bridge handoff` can tell whether the launcher is
   // actually watching (auto-switch) or the user started the agent bare (manual).
   env.CONTEXT_BRIDGE_LAUNCHER = "1";

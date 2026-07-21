@@ -36,12 +36,30 @@ function splitNotes(s) {
 }
 
 /**
- * Which agent is running this command. The env markers are exact when present;
- * otherwise the launcher's own record of the active agent is authoritative.
+ * Which agent is running this command, in descending order of certainty.
+ *
+ * The order is the fix. This used to read two hardcoded environment variables
+ * FIRST and fall back to the launcher's own record, which is precisely backwards:
+ * env vars inherit into children, so a launcher opened inside Codex handed
+ * `CODEX_THREAD_ID` to every agent it spawned and each one reported Codex as the
+ * source. The launcher knows who it started. Preferring a guess over a fact is
+ * what made the leak reachable, so when `CONTEXT_BRIDGE_LAUNCHER` marks us as its
+ * child, its record wins outright and no environment marker is consulted.
+ *
+ * Below that sits the bare-session case, where nothing started us and env is the
+ * only clue there is. It is asked through the adapters (see the contract), and
+ * most of them answer null on purpose.
+ *
+ * One hole stays open and is named rather than papered over: a bare agent started
+ * by hand from a terminal that was itself inside another agent inherits that
+ * agent's variables with no launcher marker to override them. The adapter rule
+ * keeps it narrow, since an adapter may only claim a marker its agent sets per
+ * process, and every current adapter but Claude declines.
  */
 function detectSource(s, target) {
-  const fromEnv = process.env.CODEX_THREAD_ID ? "codex" : process.env.CLAUDECODE ? "claude" : null;
-  const candidate = fromEnv ?? s.activeAgent ?? null;
+  const underLauncher = !!process.env.CONTEXT_BRIDGE_LAUNCHER;
+  const fromEnv = underLauncher ? null : hostFromEnv();
+  const candidate = (underLauncher ? s.activeAgent : (fromEnv ?? s.activeAgent)) ?? null;
   if (candidate && candidate !== target) return candidate;
 
   const others = AGENT_IDS.filter((agentId) => agentId !== target);
@@ -63,6 +81,16 @@ function detectSource(s, target) {
       `${others.join(" or ")} session in this project. ` +
       "Run this from inside an agent started in this directory."
   );
+}
+
+/**
+ * The only place an environment variable may name the running agent, and only for
+ * sessions the bridge did not start. Two adapters claiming the environment at once
+ * means the markers are ambient rather than proof, so nothing is claimed at all.
+ */
+function hostFromEnv(env = process.env) {
+  const claimed = AGENT_IDS.filter((agentId) => adapterFor(agentId).detectHost?.(env) === agentId);
+  return claimed.length === 1 ? claimed[0] : null;
 }
 
 /**

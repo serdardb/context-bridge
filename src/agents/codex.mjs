@@ -251,3 +251,15 @@ export function skillLabel(status) {
   if (status === "stale") return "$bridge skill is OUT OF DATE (~/.agents/skills/bridge) — it teaches the old instructions";
   return "$bridge skill installed and current (~/.agents/skills/bridge)";
 }
+
+/**
+ * Deliberately null, and this is the whole reason the method is documented rather
+ * than merely declared. `CODEX_THREAD_ID` is ambient session state: it inherits
+ * into every child, so it answers yes from inside a Grok or Antigravity session
+ * the bridge launched, which is exactly the bug this replaced. Codex ships no
+ * per-process host marker, so the honest answer is that we cannot tell. If one
+ * ever appears, this is where it goes, and nowhere else.
+ */
+export function detectHost() {
+  return null;
+}

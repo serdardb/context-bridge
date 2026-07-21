@@ -334,3 +334,12 @@ export function health() {
 export function smokeCommand() {
   return { cmd: "grok", args: ["-p", "Reply with exactly: bridge-ok"] };
 }
+
+/**
+ * `GROK_HOOK_EVENT` is injected per hook process rather than exported into the
+ * session, so it does not inherit and it is not evidence of a host either: it
+ * proves a hook is running, not that a Grok session is. No host marker, so null.
+ */
+export function detectHost() {
+  return null;
+}

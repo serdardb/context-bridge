@@ -130,3 +130,14 @@ export function health() {
 export function smokeCommand() {
   return { cmd: "claude", args: ["-p", "Reply with exactly: bridge-ok"] };
 }
+
+/**
+ * `CLAUDECODE` is exported into the session, so it inherits into children and on
+ * its own proves only that Claude is somewhere above us. What makes it usable is
+ * the launcher: it deletes both Claude markers before spawning any agent, so a
+ * surviving marker means no bridge-launched agent stands between us and Claude.
+ * Under the launcher this is not consulted at all.
+ */
+export function detectHost(env = process.env) {
+  return env.CLAUDECODE || env.CLAUDE_CODE_ENTRYPOINT ? "claude" : null;
+}
