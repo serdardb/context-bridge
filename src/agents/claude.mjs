@@ -203,3 +203,52 @@ export function observeAudit(ref) {
   if (!sawTool) return { commandArgs: null, exitCode: null };
   return { commandArgs: args, exitCode };
 }
+
+/**
+ * What Claude actually ran since the mark.
+ *
+ * Calls and results pair on `tool_use_id`, exactly. What Claude does not record
+ * is the shape of a result: there is no exit code and no duration, only whether
+ * the call errored, which is why `exitCode` and `durationMs` stay null here
+ * rather than being guessed at.
+ *
+ * `filesRead` comes from the `Read` tool alone and is therefore partial by
+ * construction, as its capabilities say: most reading here happens inside `Bash`
+ * through grep and sed, which cannot be seen without parsing shell.
+ */
+export function auditSince(ref, sinceIso) {
+  const uses = new Map();
+  const order = [];
+  const filesRead = new Set();
+  const filesChanged = new Set();
+  let dropped = 0;
+  let content;
+  try {
+    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+  } catch {
+    return { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
+  }
+
+  for (const line of content.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (sinceIso && row.timestamp && row.timestamp <= sinceIso) continue;
+    for (const b of row?.message?.content ?? []) {
+      if (b?.type === "tool_use") {
+        if (b.name === "Read" && b.input?.file_path) filesRead.add(b.input.file_path);
+        if ((b.name === "Edit" || b.name === "Write") && b.input?.file_path) filesChanged.add(b.input.file_path);
+        if (b.name !== "Bash") continue; // only shell commands belong in a command ledger
+        uses.set(b.id, { tool: b.name, args: b.input?.command ?? null, at: row.timestamp ?? null, ok: null, exitCode: null, durationMs: null });
+        order.push(b.id);
+      } else if (b?.type === "tool_result" && uses.has(b.tool_use_id)) {
+        uses.get(b.tool_use_id).ok = b.is_error !== true;
+      }
+    }
+  }
+  return { commands: order.map((id) => uses.get(id)).filter(Boolean), filesRead: [...filesRead], filesChanged: [...filesChanged], dropped };
+}

@@ -37,6 +37,8 @@ ${AGENT_IDS.map((a) => `${cmd(`${a} [flags]`)}Start the loop with ${adapterFor(a
 ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstraps,
 ${cont}--deep asks each agent a real one-line question )
 ${cmd("status")}Show project bridge status
+${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
+${cont}--json for the raw manifest )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
 ${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
 ${cont}--days N, --all; a pending injection is never deleted)
@@ -59,7 +61,7 @@ Inside the agents:
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "handoff", "internal-hook", "help", "version"];
+const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -147,6 +149,22 @@ export async function main(argv) {
           );
         }
       }
+      return;
+    }
+
+    case "inspect": {
+      const { latestManifest, renderManifest } = await import("./audit.mjs");
+      const found = latestManifest(projectDir);
+      if (!found) {
+        log(`${NONE} No audit manifest yet. One is written beside the delta on the next handoff.`);
+        return;
+      }
+      if (flags.has("--json")) {
+        log(JSON.stringify(found.manifest, null, 2));
+        return;
+      }
+      log(dim(found.rel));
+      log(renderManifest(found.manifest));
       return;
     }
 

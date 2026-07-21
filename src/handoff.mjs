@@ -11,6 +11,7 @@ import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
 import { hookDeliveryEligible } from "./delivery.mjs";
+import { buildManifest, writeManifest } from "./audit.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
@@ -304,6 +305,11 @@ export function handoff(
   // one handing off. Without this a chain loses history at each hop: what Claude
   // told Grok never reaches Codex, because Grok's own stream is all that travels.
   const packed = {};
+  // Kept so the manifest can be built from exactly the same sessions and marks
+  // the delta was gathered from, rather than resolving them a second time and
+  // risking a different answer.
+  const auditRefs = {};
+  const auditMarks = {};
   const streams = [];
   const work = [];
   let messageCount = 0;
@@ -316,6 +322,8 @@ export function handoff(
     if (!ref) continue;
     // An adopted source is new to everyone, so it starts from the beginning.
     const since = otherId === sourceId && adopted ? null : knownMark(s, target, otherId);
+    auditRefs[otherId] = ref;
+    auditMarks[otherId] = since;
     let activity;
     try {
       activity = adapter.activitySince(ref, since);
@@ -349,6 +357,19 @@ export function handoff(
   }
 
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
+
+  // The manifest is written beside the delta and stays out of it. It costs
+  // nothing in tokens and everything it records is ground truth taken from the
+  // agents' own files, never from what an agent says about itself: a self-report
+  // is an interpretation, and the two turns Antigravity ended without writing a
+  // word would have produced no audit trail at all under that design.
+  let auditRel = null;
+  try {
+    const manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
+    if (Object.keys(manifest.agents).length) auditRel = writeManifest(projectDir, stem, manifest);
+  } catch {
+    // Never let the convenience break the product.
+  }
   const full = composeFullContext(sections);
   const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, full);
 
@@ -377,6 +398,12 @@ export function handoff(
         "\nRead it if you need more detail than this bounded delta."
       : `\n\n[Bridge warning] The adopted ${sourceAdapter.displayName} session's history could not be read, ` +
         "so this delta carries git and decision truth only. Ask the user to fill in anything that seems missing.";
+  }
+  // One line, and only when there is something to point at. The manifest itself
+  // never enters the delta: the whole argument for it was that evidence should
+  // cost nothing until somebody actually wants it.
+  if (auditRel) {
+    delta += `\n\nAudit of what was actually run is at ${auditRel}, or run: bridge inspect`;
   }
   if (targetAdapter.injection === "prompt") {
     delta += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";

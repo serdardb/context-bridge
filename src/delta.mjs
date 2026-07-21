@@ -230,3 +230,79 @@ function looksLikeCommandNoise(text) {
     t.startsWith("[Bridge Context Update]")
   );
 }
+
+/**
+ * What Codex actually did, as opposed to what it said it did.
+ *
+ * This walks the same rollout rows `codexActivitySince` already visits, so it
+ * opens no new file and adds no parser: the tool rows were being stepped over
+ * and discarded. That was the argument that decided this design, once it was
+ * checked rather than assumed.
+ *
+ * Codex pairs a call to its output through `call_id`, which both rows carry, so
+ * pairing survives reordering. The exit code and the wall time are recovered
+ * from the output string, because that is where Codex writes them, and the
+ * adapter declares them as `parsed` for exactly that reason: they work today and
+ * they are the first thing to break when somebody rewords a sentence.
+ */
+export function codexAuditSince(rolloutPath, sinceIso) {
+  const calls = new Map();
+  const order = [];
+  const filesChanged = new Set();
+  let dropped = 0;
+
+  for (const r of readJsonl(rolloutPath)) {
+    if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
+    const p = r.payload || {};
+    // Codex issues a call two ways: function_call (exec_command) carries its args
+    // as a JSON string in `arguments`, while custom_tool_call (apply_patch) carries
+    // them in `input`. Handling only the first recorded the patch's OUTPUT but
+    // never the call, so apply_patch never appeared as a command at all. Found in
+    // review, and hidden until then by a test that prepended a synthetic call.
+    if ((p.type === "function_call" || p.type === "custom_tool_call") && p.call_id) {
+      calls.set(p.call_id, { tool: p.name ?? null, args: argsOf(p.arguments ?? p.input), at: r.timestamp, ok: null, exitCode: null, durationMs: null });
+      order.push(p.call_id);
+    } else if ((p.type === "function_call_output" || p.type === "custom_tool_call_output") && calls.has(p.call_id)) {
+      Object.assign(calls.get(p.call_id), readOutcome(p.output));
+    } else if (r.type === "event_msg" && p.type === "patch_apply_end") {
+      for (const f of extractPatchFiles(p)) filesChanged.add(f);
+    }
+  }
+
+  const commands = order.map((id) => calls.get(id)).filter(Boolean);
+  return {
+    commands,
+    filesChanged: [...filesChanged],
+    filesRead: [], // Codex runs everything through exec_command; see its capabilities
+    // Never a silent cap. A manifest that quietly stops at 200 reads as a
+    // complete account of a session that was in fact longer.
+    dropped,
+  };
+}
+
+/** Arguments arrive as a JSON string; keep the text when it is not parseable. */
+function argsOf(raw) {
+  if (typeof raw !== "string") return raw ?? null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed?.cmd ?? parsed?.command ?? parsed;
+  } catch {
+    return raw;
+  }
+}
+
+/** The two facts Codex writes as prose rather than as fields. */
+function readOutcome(output) {
+  const text = String(output ?? "");
+  // Codex writes the exit code two ways across rollout variants, measured on this
+  // machine: "Process exited with code N" in exec output and "Exit code: N" in
+  // custom tool output. Missing the second under-reported 22 real failures.
+  const code = text.match(/Process exited with code (-?\d+)/) || text.match(/Exit code:\s*(-?\d+)/);
+  const wall = text.match(/Wall time:\s*([\d.]+)\s*seconds?/);
+  const exitCode = code ? Number(code[1]) : null;
+  return {
+    exitCode,
+    ok: exitCode === null ? null : exitCode === 0,
+    durationMs: wall ? Math.round(Number(wall[1]) * 1000) : null,
+  };
+}

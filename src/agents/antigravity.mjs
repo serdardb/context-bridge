@@ -172,6 +172,13 @@ function textOf(row) {
  * cannot be less honest than text we trimmed ourselves — there is no companion
  * file to point at here, because the rest was never written down.
  */
+/** Antigravity wraps string args in an extra pair of quotes; strip them. */
+function unquote(v) {
+  if (typeof v !== "string") return null;
+  const t = v.trim().replace(/^"|"$/g, "");
+  return t || null;
+}
+
 function wasTruncated(row) {
   const t = row?.truncated_fields;
   const fields = Array.isArray(t) ? t : t && typeof t === "object" ? Object.keys(t) : [];
@@ -398,4 +405,60 @@ export function observeAudit(ref) {
   }
   if (!sawTool) return { commandArgs: null, filesRead: null, filesChanged: null };
   return { commandArgs: args, filesRead: read, filesChanged: changed };
+}
+
+/**
+ * What Antigravity actually ran since the mark.
+ *
+ * Its record is split, which is the trap: the command text is not in the
+ * `RUN_COMMAND` row but in the `tool_calls` array on the `PLANNER_RESPONSE`
+ * that issued it. Read only the RUN_COMMAND rows and Antigravity looks as blind
+ * as Grok. Outcome and duration are recovered from prose in the row content,
+ * which is what its capabilities call `parsed`.
+ */
+export function auditSince(ref, mark) {
+  const from = typeof mark === "number" ? mark : -1;
+  const commands = [];
+  const filesRead = new Set();
+  const filesChanged = new Set();
+  let pendingArgs = null;
+  let dropped = 0;
+
+  for (const row of readJsonl(ref?.transcriptPath)) {
+    if (typeof row.step_index !== "number" || row.step_index <= from) continue;
+    if (row.type === "PLANNER_RESPONSE" && (row.tool_calls ?? []).length) {
+      const call = row.tool_calls[0];
+      pendingArgs = { tool: call?.name ?? null, args: call?.args ?? null };
+      // Edits are named in tool_calls too, and the path arrives JSON-quoted.
+      // Blocker found in review: the capability declared filesChanged true while
+      // this always returned an empty list, so the manifest contradicted itself.
+      for (const c of row.tool_calls) {
+        if (/replace_file_content|write_to_file|create_file/.test(c?.name ?? "")) {
+          const f = unquote(c?.args?.TargetFile ?? c?.args?.FilePath);
+          if (f) filesChanged.add(f);
+        }
+      }
+    } else if (row.type === "VIEW_FILE") {
+      const m = String(row.content ?? "").match(/File Path:\s*`?(?:file:\/\/)?([^`\n]+)/);
+      if (m) filesRead.add(m[1].trim());
+    } else if (row.type === "RUN_COMMAND") {
+      const text = String(row.content ?? "");
+      const start = text.match(/Created At:\s*(\S+)/);
+      const end = text.match(/Completed At:\s*(\S+)/);
+      const ms = start && end ? Date.parse(end[1]) - Date.parse(start[1]) : null;
+      commands.push({
+        tool: pendingArgs?.tool ?? "run_command",
+        // The command line is inside args as a quoted string; surface it so the
+        // manifest reads like a command rather than a JSON blob. The full args
+        // object is not lost to anyone who wants it: it is in the transcript.
+        args: unquote(pendingArgs?.args?.CommandLine) ?? pendingArgs?.args ?? null,
+        at: row.created_at ?? null,
+        ok: /completed successfully/i.test(text) ? true : /fail|error/i.test(text) ? false : null,
+        exitCode: null,
+        durationMs: Number.isFinite(ms) ? ms : null,
+      });
+      pendingArgs = null;
+    }
+  }
+  return { commands, filesRead: [...filesRead], filesChanged: [...filesChanged], dropped };
 }

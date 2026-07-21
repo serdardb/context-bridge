@@ -398,3 +398,45 @@ export function observeAudit(ref) {
   if (!sawTool) return { commandArgs: null, duration: null };
   return { commandArgs: args, duration };
 }
+
+/**
+ * What Grok actually ran since the mark, within the limits it declares.
+ *
+ * Pairing is positional because neither tool row carries an id, so a start is
+ * matched to the next completion. `args` is always null and that is not an
+ * omission: `tool_started` records the tool name and nothing else, which is the
+ * finding that broke the first manifest design when somebody assumed otherwise.
+ *
+ * Against that, Grok is the only agent giving a real duration, and its
+ * `hunk_records.jsonl` is the best file-change record here, with `authorType`
+ * separating the agent's edits from the human's.
+ */
+export function auditSince(ref, mark) {
+  // Grok's mark is a compound { rows, ts }, not an ISO string. Comparing e.ts to
+  // the whole object is always false, so the watermark silently did nothing and
+  // every handoff repacked Grok's entire history. Only the ts half filters here,
+  // because tool and hunk rows are timestamped, not row-counted.
+  const { ts: since } = normaliseMark(mark);
+  const commands = [];
+  let pending = null;
+  let dropped = 0;
+  for (const e of readJsonl(ref?.eventsPath ?? ref?.transcriptPath)) {
+    if (since && e?.ts && e.ts <= since) continue;
+    if (e?.type === "tool_started") {
+      pending = { tool: e.tool_name ?? null, args: null, at: e.ts ?? null, ok: null, exitCode: null, durationMs: null };
+    } else if (e?.type === "tool_completed") {
+      const row = pending ?? { tool: e.tool_name ?? null, args: null, at: e.ts ?? null, exitCode: null };
+      row.ok = e.outcome === "success";
+      row.durationMs = typeof e.duration_ms === "number" ? e.duration_ms : null;
+      pending = null;
+      commands.push(row);
+    }
+  }
+  const filesChanged = new Set();
+  for (const h of readJsonl(path.join(path.dirname(String(ref?.transcriptPath ?? "")), "hunk_records.jsonl"))) {
+    // Hunk records name the field timestamp, not ts, unlike the event stream.
+    if (since && h?.timestamp && h.timestamp <= since) continue;
+    if (h?.filePath && h?.authorType === "agent") filesChanged.add(h.filePath);
+  }
+  return { commands, filesRead: [], filesChanged: [...filesChanged], dropped };
+}

@@ -5,7 +5,7 @@ import {
   rolloutsForProjectSince,
   rolloutHeadHealth,
 } from "../discover.mjs";
-import { codexActivitySince, rolloutIdleAfter } from "../delta.mjs";
+import { codexActivitySince, codexAuditSince, rolloutIdleAfter } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import fs from "node:fs";
 import path from "node:path";
@@ -338,4 +338,9 @@ export function observeAudit(ref) {
   }
   if (!sawTool) return { commandArgs: null, outcome: null, exitCode: null, duration: null };
   return { commandArgs: args, outcome, exitCode, duration };
+}
+
+/** What Codex actually ran since the mark, read from the rollout it already writes. */
+export function auditSince(ref, sinceIso) {
+  return codexAuditSince(ref.transcriptPath, sinceIso);
 }
