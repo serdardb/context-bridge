@@ -14,7 +14,7 @@ import {
   composeFullContext,
   composeForRoad,
 } from "./delta.mjs";
-import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
+import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
@@ -275,7 +275,7 @@ export function handoff(
 
   // FIRST switch, Claude to Codex only: the official OpenAI transfer seeds a full
   // thread. No other pair has an equivalent, so those first switches carry the
-  // bounded delta plus its full-context companion instead.
+  // bounded delta plus its full context checkpoint instead.
   //
   // The import seeds the thread and then falls through, deliberately, because it
   // answers for exactly one source. It used to return here, and that quietly cost
@@ -376,7 +376,7 @@ export function handoff(
     // Never let the convenience break the product.
   }
   const full = composeFullContext(sections);
-  const fullRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.companion}`, full);
+  const fullRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
 
   // The 8KB delta exists because the other side already knows the earlier
   // conversation. On a FIRST switch it knows nothing, so clipping would hand it
@@ -409,12 +409,17 @@ export function handoff(
       // unnoticed. Now it says what actually happened, or says nothing.
       // The path ends its line: following it with a period makes the period look
       // like part of the filename, to a reader and to the agent that has to open it.
+      // "Temporary" and "may be pruned after this agent hands off" were true
+      // while the file was deleted the moment its reader moved on. It is kept
+      // with its own checkpoint group now, so saying otherwise would tell the
+      // receiving agent to read it before a deadline that no longer exists, and
+      // would tell the next reader of this code the wrong thing about lifetime.
       out +=
-        `\n\nTemporary full context checkpoint: ${fullRel}\n` +
+        `\n\nFull context checkpoint: ${fullRel}\n` +
         (lost
-          ? "What did not fit above is whole there; read it during this receiving session. "
+          ? "What did not fit above is whole there. "
           : "Nothing above was left out, so it holds the same conversation in its original form. ") +
-        "It may be pruned after this agent hands off.";
+        "It is kept with this handoff's other checkpoints until they are pruned together.";
     }
     if (adopted) {
       out += sourceRef?.transcriptPath
@@ -474,16 +479,12 @@ export function handoff(
       `${others.length ? `, including catch-up from ${others.join(" and ")}` : ""}).`
   );
 
-  // This agent is handing off, which proves it had a live session after anything
-  // delivered to it arrived and is done reading those companions. From here the
-  // native transcripts and knownBy are the record.
-  const freed = dropDeliveredCompanions(projectDir, sourceId);
-  if (freed.files) {
-    lines.push(
-      `${OK} Cleared ${freed.files} delivered context file${freed.files === 1 ? "" : "s"} ` +
-        `for ${sourceAdapter.displayName} (${kb(freed.bytes)} freed).`
-    );
-  }
+  // The full context files delivered to this agent used to be deleted here, on
+  // the argument that handing off proved it was done reading them. That held
+  // while the file was a duplicate written for one session. It is not one now:
+  // the delivery layer names it whenever it has to trim, and closing words are
+  // appended to a delta after the handoff has already ended, so the file answers
+  // a question that can be asked later. Retention is the group rule alone.
   autoPrune(projectDir, lines);
   lines.push(...switchNote(targetAdapter, targetSlot, sourceAdapter, staleLauncher));
   if (!decisions && !nextNotes) {

@@ -37,8 +37,7 @@ test("old groups inside the newest N and fresh groups beyond N both survive (AND
 test("dry-run reports without deleting and both files of a group are counted", () => {
   const project = makeProject();
   makeGroups(project, { count: 22, ageDays: 30, startIndex: 0 });
-  // keepCompanions off: this test is about group accounting, not the backstop.
-  const res = pruneCheckpoints(project, { dryRun: true, keepCompanions: Infinity });
+  const res = pruneCheckpoints(project, { dryRun: true });
   assert.equal(res.deletedGroups, 2);
   assert.equal(res.deletedFiles, 4); // delta + full per group
   assert.equal(remainingGroups(project), 22);
@@ -104,27 +103,35 @@ function remainingGroups(project) {
   return seen.size;
 }
 
-test("the companion backstop keeps only the newest few, whatever their age", () => {
-  // Companions are ~92% of the bytes and are read at most once, by the session
-  // that received them. Their real lifetime is an event, so this only catches
-  // the case where that event never comes.
+// This used to assert the opposite: that full context files were pruned on a
+// schedule of their own, keeping only the newest few whatever their age, because
+// they were thought to be a transient duplicate and 92% of the bytes. Neither
+// held once the delta carried whole messages. The file is the same size as the
+// delta beside it, and the delivery layer names it whenever it has to trim,
+// which can happen after the handoff has ended. There is one schedule now.
+test("a full context file lives and dies with its own group, on no schedule of its own", () => {
   const project = makeProject();
   makeGroups(project, { count: 8, ageDays: 0, startIndex: 0 });
 
-  const dry = pruneCheckpoints(project, { dryRun: true, keepCompanions: 3 });
-  assert.equal(dry.deletedGroups, 0, "fresh groups are not group-pruned");
-  assert.equal(dry.deletedCompanions, 5, "8 companions, 3 kept");
-  assert.equal(countFiles(project, "-full.md"), 8, "dry run deletes nothing");
+  const dry = pruneCheckpoints(project, { dryRun: true });
+  assert.equal(dry.deletedGroups, 0, "fresh groups are not pruned");
+  assert.equal(dry.deletedFiles, 0, "and nothing inside them is pruned either");
+  assert.equal(countFiles(project, "-full.md"), 8, "all eight survive, not the newest few");
 
-  pruneCheckpoints(project, { keepCompanions: 3 });
-  assert.equal(countFiles(project, "-full.md"), 3);
-  assert.equal(countFiles(project, ".md") - countFiles(project, "-full.md"), 8, "bounded deltas are untouched");
+  pruneCheckpoints(project);
+  assert.equal(countFiles(project, "-full.md"), 8, "a second pass is not a second schedule");
+
+  // Age them past the window and they go, but as part of their group.
+  makeGroups(project, { count: 8, ageDays: 30, startIndex: 100 });
+  const res = pruneCheckpoints(project, { keep: 8 });
+  assert.equal(res.deletedGroups, 8, "the old groups go whole");
+  assert.equal(countFiles(project, "-full.md"), 8, "and take their full context files with them");
 });
 
 test("supersedePending removes delta and full even if the disk is half-consumed", () => {
   // Healthy pending points at an unconsumed .md. A crashed consume can leave
   // .md.consumed while state still names the old path; supersede must not leave
-  // the companion behind in either shape.
+  // the full context file behind in either shape.
   const project = makeProject();
   const dir = checkpointsDir(project);
   const stem = "2026-07-20T00-00-00-000Z-claude-to-codex";
@@ -209,11 +216,14 @@ test("replacing an undelivered handoff clears its manifest too", () => {
   assert.deepEqual(fs.readdirSync(dir), [], "the superseded handoff leaves nothing of itself behind");
 });
 
-// Companions and manifests look alike on disk and are opposites in kind: one is
-// a transient duplicate of a delta, the other is the only record of what was
-// actually run and what `bridge inspect` reads.
-test("handing off drops the companions written for you, and keeps the manifests", async () => {
-  const { dropDeliveredCompanions } = await import("../src/clean.mjs");
+// The inverse of what this file used to assert. Handing off deleted the full
+// context files written for you, on the argument that doing so proved you had
+// read them. What it actually proved was that nobody would need them again, and
+// that turned out to be false: the delivery layer points at the file whenever it
+// trims, and the launcher can push a delta past its budget by appending closing
+// words after the handoff has already ended.
+test("handing off does not delete the full context written for you", async () => {
+  const { handoff } = await import("../src/handoff.mjs");
   const project = makeProject();
   const dir = checkpointsDir(project);
   const stem = "2026-01-03T00-00-00-000Z-claude-to-codex";
@@ -221,11 +231,51 @@ test("handing off drops the companions written for you, and keeps the manifests"
     fs.writeFileSync(path.join(dir, name), "x");
   }
 
-  const res = dropDeliveredCompanions(project, "codex");
-  assert.equal(res.files, 1, "only the companion it has finished reading");
-  const left = fs.readdirSync(dir).sort();
-  assert.ok(left.includes(`${stem}-audit.json`), "the evidence outlives the session that produced it");
-  assert.ok(!left.includes(`${stem}-full.md`));
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(
+    rollout,
+    JSON.stringify({
+      timestamp: "2026-01-04T00:00:00.000Z",
+      type: "event_msg",
+      payload: { type: "agent_message", message: "codex is handing back" },
+    }) + "\n"
+  );
+  const s = defaultState(project);
+  s.agents.codex = { id: "019f-codex", transcriptPath: rollout, mark: null, idle: false };
+  s.agents.claude = { id: "019f-claude", transcriptPath: rollout, mark: null, idle: false };
+  s.activeAgent = "codex";
+  saveState(project, s);
+
+  handoff(project, "claude", { from: "codex", decisions: "d", next: "n", checkTarget: () => {} });
+
+  const left = fs.readdirSync(dir);
+  assert.ok(left.includes(`${stem}-full.md`), "it survives the very act that used to delete it");
+  assert.ok(left.includes(`${stem}-audit.json`), "and so does the record of what was run");
+});
+
+// The rename is the point of this phase, so it is asserted rather than trusted.
+// A name that describes a role the file no longer has is how the next reader is
+// misled, and this project has now watched a stale name outlive its meaning
+// three times. `codex-companion.mjs` is a different thing entirely, OpenAI's own
+// transfer script, so the two paths that legitimately say companion are named
+// here rather than left to be rediscovered.
+test("nothing calls the full context file a companion any more", () => {
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const allowed = new Set(["doctor.mjs", "transfer.mjs"]);
+  const offenders = [];
+  for (const file of fs.readdirSync(root, { recursive: true })) {
+    if (!String(file).endsWith(".mjs") || allowed.has(path.basename(String(file)))) continue;
+    const src = fs.readFileSync(path.join(root, String(file)), "utf8");
+    for (const [i, line] of src.split("\n").entries()) {
+      // Identifiers only. A comment saying what the file used to be called is
+      // the record of why it changed, and deleting that would lose the reason
+      // while keeping the rename.
+      const code = line.trimStart();
+      if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) continue;
+      if (/companion/i.test(line)) offenders.push(`${file}:${i + 1} ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(offenders, [], "the file is the full context checkpoint; only OpenAI's transfer script is a companion");
 });
 
 // The enforcement, rather than another comment asking the next person to
@@ -261,7 +311,7 @@ test("every file a real handoff writes is a kind retention can collect", async (
   handoff(project, "grok", { from: "codex", checkTarget: () => {} });
 
   const written = fs.readdirSync(dir);
-  assert.ok(written.length >= 3, `a handoff should write a delta, a companion and a manifest, got ${written.join(", ")}`);
+  assert.ok(written.length >= 3, `a handoff should write a delta, a full context checkpoint and a manifest, got ${written.join(", ")}`);
 
   // The handoff leaves a pending injection, and retention never deletes what
   // live state still points at — correct, and it would mask what is under test

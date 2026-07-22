@@ -351,8 +351,20 @@ export function ensureGitignore(projectDir) {
 export const CHECKPOINT_KINDS = {
   /** The bounded delta the next agent actually reads. */
   delta: ".md",
-  /** Its un-truncated twin, read at most once, dropped when its reader moves on. */
-  companion: "-full.md",
+  /**
+   * The same handoff with no budget over it.
+   *
+   * It was called the companion while it was a delivery aid: written for the
+   * receiving session, read at most once, deleted the moment that agent handed
+   * off. It is not that any more. Once the delta carries whole messages the two
+   * are nearly the same size, and this is the file the delivery layer points at
+   * when it has to trim, which can happen after the handoff has already ended.
+   * So it outlives its reader and is pruned with its own group like everything
+   * else here. The suffix does not change: renaming it on disk would drop every
+   * file already written out of the pattern that collects it, which is the bug
+   * this registry exists to prevent.
+   */
+  fullContext: "-full.md",
   /** What the departing agents actually ran; what `bridge inspect` renders. */
   audit: "-audit.json",
 };

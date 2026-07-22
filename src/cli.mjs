@@ -3,7 +3,7 @@ import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoff } from "./handoff.mjs";
 import { loadState } from "./state.mjs";
-import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS, DEFAULT_KEEP_COMPANIONS } from "./clean.mjs";
+import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
@@ -329,17 +329,13 @@ export async function main(argv) {
         dryRun: flags.has("--dry-run"),
       });
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
-      // Companions are deleted on their own schedule, so counting only whole
-      // groups reported "nothing to prune" while dozens of files were going.
-      if (res.deletedGroups === 0 && res.deletedCompanions === 0) {
+      // There is one schedule now. This used to report two, because the full
+      // context files were pruned on their own clock and counting groups alone
+      // said "nothing to prune" while dozens of files were going.
+      if (res.deletedGroups === 0) {
         log(`${NONE} Nothing to prune (${res.groups} checkpoint groups, all recent or protected).`);
       } else {
-        if (res.deletedGroups) {
-          log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
-        }
-        if (res.deletedCompanions) {
-          log(`${OK} ${verb} ${res.deletedCompanions} un-truncated context files kept beyond the newest ${DEFAULT_KEEP_COMPANIONS}.`);
-        }
+        log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
       }
       return;
     }

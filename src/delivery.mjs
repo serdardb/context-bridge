@@ -24,7 +24,7 @@ import { adapterFor } from "./agents/index.mjs";
  * Codex caps that output and degrades gracefully past it, writing the full text
  * to a file and showing the model a preview with the path. Rather than encode
  * somebody's token arithmetic, this is a deliberately smaller byte budget with
- * the companion file named alongside it, so the agent always has a way to read
+ * the full context checkpoint named alongside it, so the agent always has a way to read
  * the rest.
  */
 export const HOOK_DELTA_BYTES = 4 * 1024;
@@ -40,7 +40,7 @@ export const HOOK_DELTA_BYTES = 4 * 1024;
  *
  * 128KB is far below the limit even with a large environment, and far above the
  * bounded delta an ordinary switch produces. Whatever does not fit stays in the
- * companion file, whose path travels with the text.
+ * full context checkpoint, whose path travels with the text.
  */
 export const PROMPT_DELTA_BYTES = 128 * 1024;
 
@@ -69,20 +69,20 @@ export function hookDeliveryEligible(agent, slot, now = Date.now()) {
 
 /**
  * The delta as a hook should present it: bounded, and never the last word.
- * Whatever is trimmed stays readable in the companion file, whose path travels
+ * Whatever is trimmed stays readable in the full context checkpoint, whose path travels
  * with the text so the agent can open it instead of guessing what it missed.
  */
-export function hookBody(delta, companionRel) {
-  return fit(delta, companionRel, HOOK_DELTA_BYTES, "[trimmed to fit this agent's hook output]");
+export function hookBody(delta, fullContextRel) {
+  return fit(delta, fullContextRel, HOOK_DELTA_BYTES, "[trimmed to fit this agent's hook output]");
 }
 
 /** The same rule for the other road, against a limit the operating system sets. */
-export function promptBody(delta, companionRel) {
-  return fit(delta, companionRel, PROMPT_DELTA_BYTES, "[trimmed to fit a command-line prompt]");
+export function promptBody(delta, fullContextRel) {
+  return fit(delta, fullContextRel, PROMPT_DELTA_BYTES, "[trimmed to fit a command-line prompt]");
 }
 
-function fit(delta, companionRel, limit, markerText) {
-  const pointer = companionRel ? `\n\nThe untrimmed version of this handoff is at ${companionRel}.` : "";
+function fit(delta, fullContextRel, limit, markerText) {
+  const pointer = fullContextRel ? `\n\nThe untrimmed version of this handoff is at ${fullContextRel}.` : "";
   if (Buffer.byteLength(delta) + Buffer.byteLength(pointer) <= limit) return delta + pointer;
 
   // Everything that will still be there after the cut has to come out of the
@@ -97,11 +97,11 @@ function fit(delta, companionRel, limit, markerText) {
   return `${cut}${marker}${pointer}`;
 }
 
-/** The companion that was written beside a delta, if it is still on disk. */
-export function companionFor(projectDir, deltaRel) {
+/** The full context checkpoint written beside a delta, if it is still on disk. */
+export function fullContextFor(projectDir, deltaRel) {
   if (!deltaRel) return null;
-  const companionRel = deltaRel.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.companion);
-  return fs.existsSync(path.join(projectDir, companionRel)) ? companionRel : null;
+  const fullContextRel = deltaRel.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
+  return fs.existsSync(path.join(projectDir, fullContextRel)) ? fullContextRel : null;
 }
 
 /**

@@ -315,7 +315,7 @@ export function composeFullContext({ fromAgent, conversation, sources, decisions
   return [
     `# Bridge full context — from ${who}`,
     "",
-    "Un-truncated companion to the bounded bridge delta. Nothing here is clipped.",
+    "The same handoff with no budget over it. Nothing here is left out.",
     "",
     "## Conversation",
     "",

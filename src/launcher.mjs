@@ -11,7 +11,7 @@ import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSIO
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
-import { deltaWasConsumed, promptBody, companionFor } from "./delivery.mjs";
+import { deltaWasConsumed, promptBody, fullContextFor } from "./delivery.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 
@@ -359,7 +359,7 @@ function readDelta(projectDir, inj) {
     log(`${WARN} Pending delta could not be read (${inj.deltaFile}); the agent starts without it.`);
     return null;
   }
-  return promptBody(delta, companionFor(projectDir, inj.deltaFile));
+  return promptBody(delta, fullContextFor(projectDir, inj.deltaFile));
 }
 
 /**
@@ -420,7 +420,7 @@ export function appendFinalWords(projectDir, s, agent) {
   // The full context checkpoint holds exact wording for the receiving session, so
   // it gets the closing words too while it still exists. Skipping it would
   // quietly make the file a worse record than the delta beside it.
-  const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.companion);
+  const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
   try {
     fs.appendFileSync(fullPath, `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
   } catch {

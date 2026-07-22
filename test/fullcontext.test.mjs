@@ -61,7 +61,7 @@ test("a first switch carries the whole conversation, a later one carries only wh
   assert.match(firstDelta, /first switch to Claude Code/);
 
   // LATER switch: the target has a session now, so only new material travels and
-  // the un-truncated companion is referenced instead of inlined.
+  // the full context checkpoint is referenced instead of inlined.
   s.agents.claude.id = "linked-claude";
   // The fixture lives in the past, so pin Codex's own watermark just before the
   // message added below; otherwise "since now" would filter the fixture out.
@@ -85,15 +85,20 @@ test("a first switch carries the whole conversation, a later one carries only wh
   // defect rather than a requirement. A message that fits inside the road's
   // budget now travels whole, and this one is far inside it.
   assert.ok(laterDelta.includes("later: " + LONG_MESSAGE), "a message that fits must travel whole");
-  // The checkpoint is temporary: retention may prune it after this agent hands
-  // off. The path must not be sold as permanently available archive storage.
-  const ref = laterDelta.match(/Temporary full context checkpoint: (\S+)/);
-  assert.ok(ref, "a later delta references the temporary full context checkpoint");
+  // This assertion also used to require the opposite, and it is why the suite
+  // stayed green while the product text contradicted the change: it demanded the
+  // words "temporary" and "may be pruned after this agent hands off", which
+  // described a lifetime the file no longer has. The delta must not set a
+  // deadline that does not exist, and must not promise an archive either.
+  const ref = laterDelta.match(/Full context checkpoint: (\S+)/);
+  assert.ok(ref, "a later delta names the full context checkpoint");
+  assert.doesNotMatch(laterDelta, /Temporary full context/, "it is not deleted when its reader moves on");
+  assert.doesNotMatch(laterDelta, /after this agent hands off/, "that deadline was removed with the delivery-time deletion");
   assert.match(
     laterDelta,
-    /may be pruned after this agent hands off/,
-    "wording must not promise permanent availability"
+    /kept with this handoff's other checkpoints until they are pruned together/,
+    "the real lifetime is the group's, and the delta has to say which one it is"
   );
   const full = fs.readFileSync(path.join(project, ref[1]), "utf8");
-  assert.ok(full.includes(LONG_MESSAGE), "the companion keeps the message verbatim while it lives");
+  assert.ok(full.includes(LONG_MESSAGE), "the checkpoint keeps the message verbatim");
 });

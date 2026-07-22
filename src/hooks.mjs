@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadState, saveState, commitKnown, agentSlot, CONSUMED_SUFFIX } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
-import { hookBody, companionFor } from "./delivery.mjs";
+import { hookBody, fullContextFor } from "./delivery.mjs";
 
 /**
  * Is this hook running inside an agent that is not Claude?
@@ -221,7 +221,7 @@ function consumeForHook(projectDir, s, inj) {
   }
   commitKnown(s, inj);
   s.pendingInjection = null;
-  return hookBody(delta, companionFor(projectDir, inj.deltaFile));
+  return hookBody(delta, fullContextFor(projectDir, inj.deltaFile));
 }
 
 function hookStop(projectDir, s, input) {
