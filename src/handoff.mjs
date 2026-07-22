@@ -8,7 +8,14 @@ import path from "node:path";
 import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
-import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
+import {
+  gitDelta,
+  currentGitSha,
+  composeDelta,
+  composeFullContext,
+  conversationAccount,
+  deltaLostSomething,
+} from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
 import { hookDeliveryEligible } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
@@ -387,10 +394,19 @@ export function handoff(
       "un-clipped. Later handoffs carry only what is new.";
   } else {
     delta = composeDelta(sections);
+    // The old wording said "messages above are clipped to one line each" on every
+    // handoff, including the ones that clipped nothing. A warning that is always
+    // there is read as boilerplate, and boilerplate is how a real cut goes
+    // unnoticed. Now it says what actually happened, or says nothing.
+    const lost = deltaLostSomething(conversationAccount(sections));
+    // The path ends its line. Following it with a period makes the period look
+    // like part of the filename, to a reader and to the agent that has to open it.
     delta +=
-      `\n\nTemporary full context companion: ${fullRel}` +
-      " — messages above are clipped to one line each. Read it during this receiving session if exact wording matters; " +
-      "it may be pruned after this agent hands off.";
+      `\n\nTemporary full context companion: ${fullRel}\n` +
+      (lost
+        ? "What did not fit above is whole there; read it during this receiving session. "
+        : "Nothing above was left out or shortened, so it holds the same conversation in its original form. ") +
+      "It may be pruned after this agent hands off.";
   }
   if (adopted) {
     delta += sourceRef?.transcriptPath

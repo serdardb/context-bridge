@@ -5,6 +5,14 @@ import { tryExec, oneLine, truncateMiddle } from "./util.mjs";
 
 const MAX_DELTA_BYTES = 8 * 1024;
 const MAX_MESSAGES = 14;
+/**
+ * How much of one message survives into the delta.
+ *
+ * Named rather than written twice, because the accounting below has to describe
+ * exactly what `line` did. A count that disagrees with the text it counts is
+ * worse than no count at all: it is a second thing to be wrong.
+ */
+const MESSAGE_CHARS = 220;
 
 /** Claude transcript records (user/assistant text) newer than sinceIso. */
 export function claudeMessagesSince(transcriptPath, sinceIso) {
@@ -97,18 +105,24 @@ export function composeDelta({ fromAgent, conversation, sources, decisions, work
   const sec = (title, items, empty) =>
     `${title}\n${items.length ? items.map((i) => (i.startsWith("-") ? i : `- ${i}`)).join("\n") : `- ${empty}`}`;
 
+  // Per stream: the messages, then what was done to them. Silence about the cut
+  // is what let a clipped review read as a complete one.
+  const body = (st) => {
+    const kept = st.messages.slice(-MAX_MESSAGES).map((m) => line(m, st.label));
+    const note = omissionNote(accountOne(st));
+    return (note ? [...kept, note] : kept).join("\n");
+  };
+
   // One source needs no attribution; several do, or a chain arrives as an
   // unattributed pile and the reader cannot tell who decided what.
   const blocks = streams.filter((st) => st.messages.length);
   const conversationBlock =
     streams.length > 1
       ? blocks.length
-        ? blocks
-            .map((st) => `From ${st.label}\n${st.messages.slice(-MAX_MESSAGES).map((m) => line(m, st.label)).join("\n")}`)
-            .join("\n\n")
+        ? blocks.map((st) => `From ${st.label}\n${body(st)}`).join("\n\n")
         : "- No conversation activity since last sync."
       : streams[0].messages.length
-        ? streams[0].messages.slice(-MAX_MESSAGES).map((m) => line(m, streams[0].label)).join("\n")
+        ? body(streams[0])
         : "- No conversation activity since last sync.";
 
   const who = streams.map((st) => st.label).join(", ");
@@ -132,7 +146,61 @@ export function composeDelta({ fromAgent, conversation, sources, decisions, work
 }
 
 function line(m, label) {
-  return `- ${m.role === "user" ? "User" : label}: ${oneLine(m.text, 220)}`;
+  return `- ${m.role === "user" ? "User" : label}: ${oneLine(m.text, MESSAGE_CHARS)}`;
+}
+
+/**
+ * What a stream lost on its way into the delta.
+ *
+ * Two different losses, and they are not interchangeable. `omitted` messages are
+ * absent: nothing in the delta hints they existed. `clipped` messages are
+ * present but cut, which is the worse of the two, because a cut message does not
+ * read as incomplete. It reads as a short answer, and that is how a review that
+ * never answered its question passed as one that had.
+ */
+function accountOne(st) {
+  const candidates = st.messages.length;
+  const kept = st.messages.slice(-MAX_MESSAGES);
+  return {
+    label: st.label,
+    candidates,
+    included: kept.length,
+    omitted: candidates - kept.length,
+    // Mirrors `oneLine`, which collapses whitespace before measuring. A message
+    // reflowed onto one line is not a message that lost anything.
+    clipped: kept.filter((m) => String(m.text).replace(/\s+/g, " ").trim().length > MESSAGE_CHARS).length,
+  };
+}
+
+/** Per-stream accounting for a caller that has to describe the same delta. */
+export function conversationAccount({ fromAgent, conversation, sources }) {
+  return normaliseSources({ fromAgent, conversation, sources }).map(accountOne);
+}
+
+/** True when this delta is carrying less than it was given. */
+export function deltaLostSomething(account) {
+  return account.some((a) => a.omitted > 0 || a.clipped > 0);
+}
+
+/** The sentence a stream owes the reader, or nothing when it owes none. */
+function omissionNote({ label, candidates, included, omitted, clipped }) {
+  const parts = [];
+  if (omitted > 0) {
+    parts.push(
+      omitted === 1
+        ? `1 of ${label}'s ${candidates} new messages did not fit above`
+        : `${omitted} of ${label}'s ${candidates} new messages did not fit above`
+    );
+  }
+  if (clipped > 0) {
+    const cut = `shortened to ${clipped === 1 ? "its" : "their"} first ${MESSAGE_CHARS} characters`;
+    parts.push(
+      parts.length
+        ? `${clipped} of the ${included} that did ${clipped === 1 ? "is" : "are"} ${cut}`
+        : `${clipped} of ${label}'s ${included} messages above ${clipped === 1 ? "is" : "are"} ${cut}`
+    );
+  }
+  return parts.length ? `- ${parts.join(", and ")}.` : null;
 }
 
 /** Accepts either the single-source shape or a labelled multi-source list. */
