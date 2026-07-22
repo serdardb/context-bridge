@@ -171,3 +171,58 @@ test("every registered agent pair is prunable, including any added later", () =>
   assert.equal(res.deletedGroups, pairs.length, `all ${pairs.length} directed pairs must be recognised`);
   assert.equal(fs.readdirSync(dir).length, 0, "nothing belonging to a registered agent survives");
 });
+
+// The same mistake made twice on different axes. The group pattern was
+// generalised over AGENTS after Grok's checkpoints turned out to be invisible to
+// pruning, but it still hard-coded the file KINDS. So when handoffs started
+// writing an audit manifest beside each delta, the manifests matched nothing:
+// their deltas were pruned and they stayed behind, orphaned, with no rule that
+// would ever collect them. Measured on the repository before the fix: 24
+// manifests, 472KB, and a prune with every limit at zero deleted 161 groups and
+// not one of them.
+test("an audit manifest is pruned with the handoff it belongs to", () => {
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
+  const old = new Date(Date.now() - 60 * DAY);
+  for (const name of [`${stem}.md`, `${stem}-full.md`, `${stem}-audit.json`]) {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, "x");
+    fs.utimesSync(p, old, old);
+  }
+
+  const res = pruneCheckpoints(project, { keep: 0, days: 0 });
+  assert.equal(res.deletedGroups, 1, "the three files are one handoff, not three");
+  assert.deepEqual(fs.readdirSync(dir), [], "a manifest left behind is a leak with a schedule");
+});
+
+test("replacing an undelivered handoff clears its manifest too", () => {
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const stem = "2026-01-02T00-00-00-000Z-codex-to-grok";
+  for (const name of [`${stem}.md`, `${stem}-full.md`, `${stem}-audit.json`]) {
+    fs.writeFileSync(path.join(dir, name), "x");
+  }
+
+  supersedePending(project, { deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`) });
+  assert.deepEqual(fs.readdirSync(dir), [], "the superseded handoff leaves nothing of itself behind");
+});
+
+// Companions and manifests look alike on disk and are opposites in kind: one is
+// a transient duplicate of a delta, the other is the only record of what was
+// actually run and what `bridge inspect` reads.
+test("handing off drops the companions written for you, and keeps the manifests", async () => {
+  const { dropDeliveredCompanions } = await import("../src/clean.mjs");
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const stem = "2026-01-03T00-00-00-000Z-claude-to-codex";
+  for (const name of [`${stem}.md.consumed`, `${stem}-full.md`, `${stem}-audit.json`]) {
+    fs.writeFileSync(path.join(dir, name), "x");
+  }
+
+  const res = dropDeliveredCompanions(project, "codex");
+  assert.equal(res.files, 1, "only the companion it has finished reading");
+  const left = fs.readdirSync(dir).sort();
+  assert.ok(left.includes(`${stem}-audit.json`), "the evidence outlives the session that produced it");
+  assert.ok(!left.includes(`${stem}-full.md`));
+});

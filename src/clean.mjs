@@ -19,8 +19,16 @@ export const DEFAULT_KEEP_COMPANIONS = 5;
 
 // Built from the registry: hard-coding the pair meant Grok's checkpoints were
 // invisible to pruning, so they accumulated untouched.
+//
+// And the same mistake was made a second time on the other axis. This was
+// generalised over AGENTS but still hard-coded the file KINDS, so when handoffs
+// began writing an audit manifest beside the delta, those manifests matched
+// nothing here: their deltas were pruned and they stayed, orphaned, forever.
+// Measured before the fix on this repository: 24 manifests, 472KB, and a prune
+// with every limit set to zero deleted 161 groups without touching one of them.
+// A retention rule that knows some of the files is a leak with a schedule.
 const GROUP_RE = new RegExp(
-  `^(.+?-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")}))(?:-full)?\\.md(?:\\.consumed)?$`
+  `^(.+?-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")}))(?:-full\\.md|-audit\\.json|\\.md)(?:\\.consumed)?$`
 );
 
 /**
@@ -136,6 +144,7 @@ export function supersedePending(projectDir, injection) {
     `${base}.md.consumed`,
     `${base}-full.md`,
     `${base}-full.md.consumed`,
+    `${base}-audit.json`,
   ]);
 }
 
@@ -145,6 +154,14 @@ export function supersedePending(projectDir, injection) {
  * and is done reading them; from here the native transcripts and knownBy are the
  * canonical record. The filename already says who each one was for, so this
  * needs no bookkeeping of its own.
+ *
+ * Companions only, and audit manifests deliberately not. They look alike on disk
+ * and are opposites in kind: a companion is a transient duplicate of a delta,
+ * read at most once by the agent it was written for, so the moment that agent
+ * moves on it is dead weight. A manifest is the only record of what was actually
+ * run, it is what `bridge inspect` exists to read, and it stays useful long after
+ * the session that produced it. It is small, so it earns its keep, and it is
+ * bounded by the ordinary group retention rather than dropped on delivery.
  */
 export function dropDeliveredCompanions(projectDir, agentId) {
   const dir = checkpointsDir(projectDir);
