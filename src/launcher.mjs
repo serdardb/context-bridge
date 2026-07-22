@@ -11,7 +11,15 @@ import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSIO
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
-import { deltaWasConsumed, promptBody, fullContextFor } from "./delivery.mjs";
+import {
+  deltaWasConsumed,
+  promptBody,
+  fullContextFor,
+  deliverableBudget,
+  closingWordsNotice,
+  HOOK_DELTA_BYTES,
+  PROMPT_DELTA_BYTES,
+} from "./delivery.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 
@@ -412,19 +420,48 @@ export function appendFinalWords(projectDir, s, agent) {
   // last answer is the substantive one often enough that appending it at all was
   // a deliberate fix, and clipping it undid most of that fix in silence.
   const verbatim = tail.messages.map((m) => messageBlock(m, adapter.displayName)).join("\n\n");
-  try {
-    fs.appendFileSync(deltaPath, `\n\nClosing words from ${adapter.displayName}\n\n${verbatim}\n`);
-  } catch {
-    return; // already consumed or unwritable: the switch still stands
-  }
-  // The full context checkpoint holds exact wording for the receiving session, so
-  // it gets the closing words too while it still exists. Skipping it would
-  // quietly make the file a worse record than the delta beside it.
   const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
+
+  // The full context checkpoint takes them first and always, because it has no
+  // budget over it and because the delta may not be able to hold them.
   try {
     fs.appendFileSync(fullPath, `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
   } catch {
-    // The delta already carries them; the checkpoint missing out is not fatal.
+    // A missing checkpoint is not fatal; what follows still tells the truth.
+  }
+
+  // Whether the delta can hold them is a real question and was never asked.
+  //
+  // The delta is composed to fill its road's budget, and this appends to it
+  // afterwards with the process that decided that budget already finished. So a
+  // full delta plus closing words exceeds the limit, and `fit` cuts the tail at
+  // delivery — which is exactly these words, the last answer this whole function
+  // exists to save. Measured before the fix: 130728 bytes composed against a
+  // 131072 ceiling became 133690, and the closing words were what went.
+  //
+  // The room is known here, so it is checked here. When they fit they travel in
+  // the delta as before. When they do not, the delta says where they are instead
+  // of carrying a copy that will be cut off mid-sentence somewhere else.
+  // Delivery appends its own pointer to this file on the way out, so the room
+  // here is the road minus that line, not the road.
+  const road = deliverableBudget(
+    inj.via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
+    fullContextFor(projectDir, inj.deltaFile)
+  );
+  const block = `\n\nClosing words from ${adapter.displayName}\n\n${verbatim}\n`;
+  // Guaranteed to fit: the handoff reserved exactly this string before it
+  // composed anything, using the same function.
+  const pointer = closingWordsNotice(adapter.displayName);
+  let used = 0;
+  try {
+    used = fs.statSync(deltaPath).size;
+  } catch {
+    return; // already consumed or gone: the switch still stands
+  }
+  try {
+    fs.appendFileSync(deltaPath, used + Buffer.byteLength(block) <= road ? block : pointer);
+  } catch {
+    return; // already consumed or unwritable: the switch still stands
   }
   // The closing words are now part of the delta destined for the other agent,
   // so the packed mark has to move with them: committing the pre-handoff mark

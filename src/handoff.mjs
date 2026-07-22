@@ -15,7 +15,7 @@ import {
   composeForRoad,
 } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending } from "./clean.mjs";
-import { hookDeliveryEligible, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
+import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
 
@@ -390,7 +390,15 @@ export function handoff(
   // problems, and composing one size for both meant the hook road was built at
   // 8KB and then cut down to 4KB by a blade that landed wherever it landed.
   const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
-  const roadBudget = via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES;
+  // Minus what delivery will add on the way out. The full context file is
+  // written just above and always exists, so `fit` will always append its
+  // pointer; composing to the road itself means composing to a limit that is
+  // already spent, and the tail of a delta built to fit gets trimmed anyway.
+  const roadBudget = deliverableBudget(
+    via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
+    fullRel,
+    sourceAdapter.displayName
+  );
 
   // Everything appended after the conversation, as a function of the one thing
   // about it that is not yet known. It has to be a function rather than a string:

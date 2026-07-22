@@ -81,8 +81,57 @@ export function promptBody(delta, fullContextRel) {
   return fit(delta, fullContextRel, PROMPT_DELTA_BYTES, "[trimmed to fit a command-line prompt]");
 }
 
+/**
+ * The line delivery adds to every delta that has a full context file beside it.
+ *
+ * It is exported because nobody upstream could see it. A delta was composed to
+ * fill the road exactly, and then this was appended on the way out, so `fit`
+ * trimmed the tail of a delta that had been built to fit. Since phase 3 the file
+ * always exists, so the line is always added, and the overshoot was permanent
+ * rather than occasional. Whoever decides how much a delta may weigh has to
+ * subtract this, and asking for it beats each caller measuring a string that
+ * lives here.
+ */
+export function untrimmedPointer(fullContextRel) {
+  return fullContextRel ? `\n\nThe untrimmed version of this handoff is at ${fullContextRel}.` : "";
+}
+
+/**
+ * What the launcher writes when the departing agent's last words cannot ride in
+ * the delta.
+ *
+ * Here rather than in the launcher, because whoever composes the delta has to
+ * leave room for it. The closing words themselves cannot be reserved, since
+ * nobody knows yet what the agent will say or whether it will say anything. This
+ * sentence can be, exactly, and reserving it is what makes it a guarantee: a
+ * notice that gets trimmed away reports the loss to nobody, which is the failure
+ * it exists to prevent.
+ */
+export function closingWordsNotice(displayName) {
+  return (
+    `\n\nClosing words from ${displayName} did not fit in this delta. ` +
+    "They are whole in the full context checkpoint, and only there.\n"
+  );
+}
+
+/**
+ * How much a delta may weigh on disk and still survive delivery untouched.
+ *
+ * Two things are appended after composition and neither was subtracted before.
+ * Delivery adds the pointer above, always, since the full context file always
+ * exists now. And the launcher may add the notice above once the departing agent
+ * finishes its turn. Compose against the road itself and both overflow it.
+ */
+export function deliverableBudget(road, fullContextRel, displayName = null) {
+  return (
+    road -
+    Buffer.byteLength(untrimmedPointer(fullContextRel)) -
+    (displayName ? Buffer.byteLength(closingWordsNotice(displayName)) : 0)
+  );
+}
+
 function fit(delta, fullContextRel, limit, markerText) {
-  const pointer = fullContextRel ? `\n\nThe untrimmed version of this handoff is at ${fullContextRel}.` : "";
+  const pointer = untrimmedPointer(fullContextRel);
   if (Buffer.byteLength(delta) + Buffer.byteLength(pointer) <= limit) return delta + pointer;
 
   // Everything that will still be there after the cut has to come out of the

@@ -362,6 +362,65 @@ test("an installed skill that drifted behind the repo is reported as stale, not 
   assert.equal(installedCopyStatus(installed, source), "current");
 });
 
+// The gap this closes was found while defending a different proposal, and it had
+// survived phase 2's review: closing words were appended to a delta with no
+// budget check at all, by a process that runs after the one which decided that
+// budget has finished. A delta composed to 130728 bytes against the 131072
+// ceiling became 133690, and `fit` cut the tail at delivery, which is precisely
+// these words. The last answer was being destroyed by the code written to save it.
+test("closing words that cannot fit the delta are pointed at rather than cut off later", async () => {
+  const { appendFinalWords } = await import("../src/launcher.mjs");
+  const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
+  const { PROMPT_DELTA_BYTES } = await import("../src/delivery.mjs");
+  const { project, sessionDir } = await withGrokFixture();
+  const grok = adapterFor("grok");
+  const ref = grok.discover(project);
+
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const deltaRel = path.join(".bridge", "checkpoints", "big.md");
+  const fullRel = path.join(".bridge", "checkpoints", "big-full.md");
+  // Exactly what the composer is allowed to write, asked for rather than guessed.
+  // A round number with slack in it is why the first version of this test could
+  // not fail: removing either reservation still fitted inside the slack, so it
+  // passed on a defect. Sized this way there is none, and the notice plus the
+  // delivery pointer land on the ceiling to the byte.
+  const { deliverableBudget } = await import("../src/delivery.mjs");
+  const composerRoom = deliverableBudget(PROMPT_DELTA_BYTES, fullRel, adapterFor("grok").displayName);
+  fs.writeFileSync(path.join(project, deltaRel), "x".repeat(composerRoom));
+  fs.writeFileSync(path.join(project, fullRel), "# Bridge full context\n");
+
+  const s = defaultState(project);
+  s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, mark: grok.currentMark(ref), idle: false };
+  s.pendingInjection = { agent: "claude", id: null, via: "prompt", deltaFile: deltaRel, createdAt: "2026-01-01T00:00:00.000Z" };
+  saveState(project, s);
+
+  // No trailing whitespace: the transcript stores it trimmed, so a fixture that
+  // ends in a space would fail the comparison for a reason that is not the code's.
+  const lastWord = ("the thing worth reading, " + "said at the very end. ".repeat(40)).trim();
+  fs.appendFileSync(path.join(sessionDir, "chat_history.jsonl"), JSON.stringify({ type: "assistant", content: lastWord }) + "\n");
+
+  appendFinalWords(project, loadState(project), "grok");
+
+  // Asserted through the delivery path, not off the disk. Checking the file was
+  // how the first version of this passed while the delivered context was still
+  // wrong: delivery appends its own pointer to every delta that has a full
+  // context file beside it, and since that file always exists the line is always
+  // added, so a delta sized to the road exactly was still trimmed on the way out.
+  const { promptBody, fullContextFor } = await import("../src/delivery.mjs");
+  const onDisk = fs.readFileSync(path.join(project, deltaRel), "utf8");
+  const delivered = promptBody(onDisk, fullContextFor(project, deltaRel));
+
+  assert.ok(Buffer.byteLength(delivered) <= PROMPT_DELTA_BYTES, "what is delivered is what has to fit the road");
+  assert.doesNotMatch(delivered, /trimmed to fit/, "nothing should need trimming; the room was reserved");
+  assert.ok(!delivered.includes(lastWord), "a copy that delivery would cut mid-sentence is worse than none");
+  assert.match(delivered, /did not fit in this delta/, "and its absence has to survive delivery, not just be written");
+  assert.match(delivered, /The untrimmed version of this handoff is at/, "with the path that leads to them");
+  assert.ok(
+    fs.readFileSync(path.join(project, fullRel), "utf8").includes(lastWord),
+    "the words themselves are never lost; the checkpoint has no budget over it"
+  );
+});
+
 test("closing words written after the handoff still reach the other agent", async () => {
   // The handoff runs mid-turn, so the agent's real answer lands on disk only
   // after it exits. Without this the substantive message is dropped in silence:
