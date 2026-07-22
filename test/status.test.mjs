@@ -147,3 +147,83 @@ test("every switch says which day it happened, not just the hour", () => {
   // One column for the arrows, whatever the stamps are.
   assert.equal(lines[0].indexOf("→"), lines[1].indexOf("→"), "a ragged column is how a list stops being scannable");
 });
+
+// The two halves of this project meeting each other: status derives its history
+// from checkpoint filenames, and retention deletes those checkpoints. After a
+// prune the first version said an agent "has never handed off" — not incomplete
+// but false, about an agent that had handed off many times. Absence of evidence
+// reported as evidence of absence, which is the failure this codebase keeps
+// finding. The state knew all along: a mark is only ever set by handing off.
+test("an agent whose switch records were pruned is not called one that never switched", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pruned-")));
+  const s = defaultState(project);
+  s.activeAgent = "claude";
+  for (const id of ["claude", "codex"]) {
+    const transcript = path.join(project, `${id}.jsonl`);
+    fs.writeFileSync(transcript, "");
+    // Codex carries a mark: it has handed off, whatever the disk still shows.
+    s.agents[id] = { id: `${id}-1`, transcriptPath: transcript, mark: id === "codex" ? "2026-07-20T10:00:00.000Z" : null, idle: false };
+  }
+  saveState(project, s);
+  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true }); // pruned bare
+
+  const out = status(project);
+  assert.doesNotMatch(out, /Codex\s+has never handed off/, "that is a false statement, not a gap");
+  assert.match(out, /handed off before the kept history/, "say what is actually true: it happened, the record is gone");
+});
+
+test("a trimmed switch list says it was trimmed", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-trimmed-")));
+  const s = defaultState(project);
+  s.activeAgent = "claude";
+  for (const id of ["claude", "codex"]) {
+    const transcript = path.join(project, `${id}.jsonl`);
+    fs.writeFileSync(transcript, "");
+    s.agents[id] = { id: `${id}-1`, transcriptPath: transcript, mark: "2026-07-20T10:00:00.000Z", idle: false };
+  }
+  saveState(project, s);
+
+  // One switch survives; Codex's own are gone, so the list is bounded by
+  // retention rather than by what happened.
+  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  fs.mkdirSync(checkpoints, { recursive: true });
+  fs.writeFileSync(path.join(checkpoints, "2026-07-22T09-00-00-000Z-claude-to-codex.md"), "x");
+
+  assert.match(status(project), /no longer kept/, "a trimmed history must not read as the whole of one");
+});
+
+// Found in review, and it is the same shape as the bug it was meant to fix: the
+// notice sat inside the block that renders the switch list, so it appeared when
+// the history was partly trimmed and vanished when pruning took all of it. It
+// said least exactly where there was least to see. My own two tests missed it
+// because one checked only the agent row and the other left a checkpoint alive.
+test("a history pruned to nothing still says it was pruned", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-allgone-")));
+  const s = defaultState(project);
+  s.activeAgent = "claude";
+  for (const id of ["claude", "codex"]) {
+    const transcript = path.join(project, `${id}.jsonl`);
+    fs.writeFileSync(transcript, "");
+    s.agents[id] = { id: `${id}-1`, transcriptPath: transcript, mark: "2026-07-20T10:00:00.000Z", idle: false };
+  }
+  saveState(project, s);
+  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true }); // every one gone
+
+  const out = status(project);
+  assert.match(out, /no longer kept/, "with nothing left to show, saying why matters more, not less");
+  assert.match(out, /Recent switches/, "and the heading has to be there for the line to belong to anything");
+});
+
+test("a project that has genuinely never switched says nothing about pruning", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-virgin-")));
+  const s = defaultState(project);
+  s.activeAgent = "claude";
+  const transcript = path.join(project, "claude.jsonl");
+  fs.writeFileSync(transcript, "");
+  // Linked, but no mark: it has never handed off, so nothing was ever pruned.
+  s.agents.claude = { id: "claude-1", transcriptPath: transcript, mark: null, idle: false };
+  saveState(project, s);
+
+  const out = status(project);
+  assert.doesNotMatch(out, /no longer kept/, "nothing was lost, so claiming loss would be its own false statement");
+});

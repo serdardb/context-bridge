@@ -155,6 +155,21 @@ export async function main(argv) {
         }
       }
 
+      // Outside the block on purpose. The list is only as long as the
+      // checkpoints that survive, and when pruning takes all of them there is no
+      // list at all — which is precisely when saying so matters most. Keeping
+      // this inside the branch meant the notice appeared for a partly-trimmed
+      // history and vanished for a completely erased one, telling the least
+      // where there was least to see. Found in review.
+      const forgotten = AGENT_IDS.some((id) => s.agents?.[id]?.mark && !lastOut.has(id));
+      if (forgotten) {
+        if (!history.length) {
+          log("");
+          log("  Recent switches");
+        }
+        log(dim("    older switches are no longer kept: their checkpoints have been pruned"));
+      }
+
       log("");
       log("  Agents");
       const width = Math.max(...AGENT_IDS.map((a) => (adapterFor(a)?.displayName ?? a).length)) + 3;
@@ -166,12 +181,19 @@ export async function main(argv) {
           continue;
         }
         const when = lastOut.get(agentId);
+        // A mark is only ever set by handing off, so an agent that carries one
+        // has handed off whether or not a checkpoint still proves it. Retention
+        // deletes those checkpoints, and the first version of this read their
+        // absence as "has never handed off" — not incomplete but false, about an
+        // agent that had handed off many times. The state knew all along.
         const state =
           agentId === s.activeAgent
             ? "you are here"
             : when
               ? `handed off ${ago(when)}`
-              : dim("has never handed off");
+              : slot.mark
+                ? dim("handed off before the kept history")
+                : dim("has never handed off");
         log(`    ${name}${state}${debug ? dim(`   ${slot.id}  mark ${JSON.stringify(slot.mark)}`) : ""}`);
       }
 
