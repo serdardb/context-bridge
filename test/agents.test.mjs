@@ -48,7 +48,7 @@ test("grok marks by row count because its chat rows have no timestamps", async (
   const grok = adapterFor("grok");
   const ref = grok.discover(project);
 
-  assert.deepEqual(grok.currentMark(ref), { rows: 12, ts: "2026-07-20T11:58:13.932Z" });
+  assert.deepEqual(grok.currentMark(ref), { rows: 14, ts: "2026-07-20T11:58:13.932Z" });
 
   const all = grok.activitySince(ref, 0).messages;
   assert.deepEqual(
@@ -58,12 +58,53 @@ test("grok marks by row count because its chat rows have no timestamps", async (
       "assistant:bridge-smoke-ok",
       "user:Reply with exactly: bridge-resume-ok",
       "assistant:bridge-resume-ok",
+      "assistant:$bridge codex",
     ],
-    "user_query wrappers are stripped and harness noise is dropped"
+    "user_query wrappers are stripped, harness noise is dropped, and assistant text is not treated as protocol"
   );
 
-  assert.equal(grok.activitySince(ref, 7).messages.length, 2, "mid-session mark returns only new rows");
+  assert.deepEqual(
+    grok.activitySince(ref, 7).messages.map((m) => `${m.role}:${m.text}`),
+    ["user:Reply with exactly: bridge-resume-ok", "assistant:bridge-resume-ok", "assistant:$bridge codex"],
+    "mid-session mark returns only real new rows, not protocol noise"
+  );
   assert.equal(grok.activitySince(ref, grok.currentMark(ref)).messages.length, 0, "a fresh mark returns nothing");
+});
+
+// Two kinds of noise get confused here, and narrowing both to user rows let the
+// worse one through. The handoff skill's instructions are a user turn, so an
+// assistant repeating them is discussing the protocol and is real content. What
+// the harness wraps around the conversation is never content on any row, and
+// `[Bridge Context Update]` on an assistant row is our own previous delta coming
+// back to be packed into the next one.
+test("grok drops harness noise from either role, and protocol text only from the user", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-grok-roles-")));
+  const transcript = path.join(dir, "chat_history.jsonl");
+  fs.writeFileSync(
+    transcript,
+    [
+      { type: "user", content: "the real question" },
+      { type: "user", content: "$bridge codex" },
+      { type: "assistant", content: "<system-reminder>injected around the turn</system-reminder>" },
+      { type: "assistant", content: "[Bridge Context Update]\n\nan earlier delta of our own" },
+      { type: "assistant", content: "you asked me about $bridge codex, here is why it failed" },
+      { type: "assistant", content: "the real answer" },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n") + "\n"
+  );
+
+  assert.deepEqual(
+    adapterFor("grok")
+      .activitySince({ transcriptPath: transcript }, null)
+      .messages.map((m) => `${m.role}:${m.text}`),
+    [
+      "user:the real question",
+      "assistant:you asked me about $bridge codex, here is why it failed",
+      "assistant:the real answer",
+    ],
+    "the invocation goes, the harness wrappers go on any row, and the agent talking about them stays"
+  );
 });
 
 test("grok events are marked by instant, so turns and files are not recounted", async () => {
@@ -116,7 +157,7 @@ async function withGrokFixture() {
       info: { id: SESSION_ID, cwd: project },
       created_at: "2026-07-20T11:57:50.000000Z",
       updated_at: "2026-07-20T11:58:13.934137Z",
-      num_chat_messages: 12,
+      num_chat_messages: 14,
       current_model_id: "grok-4.5",
     })
   );
@@ -135,6 +176,15 @@ async function withGrokFixture() {
     { type: "user", content: wrap("<system-reminder>\nnoise\n</system-reminder>") },
     { type: "reasoning", content: null, status: "completed" },
     { type: "assistant", content: "bridge-resume-ok" },
+    {
+      type: "user",
+      content: wrap(
+        "Base directory for this skill: <bridge-skill-dir>\n\n" +
+          "The user wants to hand this session off to another coding agent via context-bridge.\n" +
+          "Follow these steps exactly:\nbridge handoff <target>"
+      ),
+    },
+    { type: "assistant", content: "$bridge codex" },
   ];
   writeJsonl(path.join(sessionDir, "chat_history.jsonl"), rows);
 
@@ -333,17 +383,25 @@ test("closing words written after the handoff still reach the other agent", asyn
   s.pendingInjection = { agent: "claude", id: null, deltaFile: deltaRel, createdAt: "2026-01-01T00:00:00.000Z" };
   saveState(project, s);
 
-  // The turn ends: the closing answer appears in the transcript afterwards.
+  // The turn ends: the closing answer appears in the transcript afterwards. It is
+  // deliberately long, because this used to be cut to its first 220 characters by
+  // a second hand-written clip in launcher.mjs. The departing agent's last answer
+  // is the substantive one often enough that appending it at all was a deliberate
+  // fix, and clipping it undid most of that fix without saying so.
+  const assessment =
+    "the assessment nobody would have seen. " + "and here is the reasoning behind it. ".repeat(20) + "THE WARNING AT THE END.";
   fs.appendFileSync(
     path.join(sessionDir, "chat_history.jsonl"),
-    JSON.stringify({ type: "assistant", content: "the assessment nobody would have seen" }) + "\n"
+    JSON.stringify({ type: "assistant", content: assessment }) + "\n"
   );
 
   appendFinalWords(project, loadState(project), "grok");
 
-  assert.match(fs.readFileSync(path.join(project, deltaRel), "utf8"), /Closing words from Grok/);
-  assert.match(fs.readFileSync(path.join(project, deltaRel), "utf8"), /the assessment nobody would have seen/);
-  assert.match(fs.readFileSync(path.join(project, fullRel), "utf8"), /the assessment nobody would have seen/);
+  const closedDelta = fs.readFileSync(path.join(project, deltaRel), "utf8");
+  assert.match(closedDelta, /Closing words from Grok/);
+  assert.ok(closedDelta.includes(assessment), "the last answer travels whole, warning and all");
+  assert.doesNotMatch(closedDelta, /…/, "the clip character is the signature of the rule that was removed");
+  assert.ok(fs.readFileSync(path.join(project, fullRel), "utf8").includes(assessment));
   // The mark moves with it, so the next handoff does not send it a second time.
   assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
 });

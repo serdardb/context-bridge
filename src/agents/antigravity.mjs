@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { tryExec, fileExists, HOME } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
+import { isBridgeProtocolNoise } from "../delta.mjs";
 
 export const id = "antigravity";
 export const displayName = "Antigravity";
@@ -205,7 +206,8 @@ export function activitySince(ref, mark) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (!isConversationRow(row)) continue;
     const text = textOf(row);
-    if (text) messages.push({ role: roleFor(row), text, at: row.created_at ?? null });
+    const role = roleFor(row);
+    if (text && !(role === "user" && isBridgeProtocolNoise(text))) messages.push({ role, text, at: row.created_at ?? null });
   }
   return { messages, patchedFiles: [], turnsCompleted: 0 };
 }

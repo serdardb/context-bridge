@@ -196,6 +196,34 @@ test("text the agent truncated itself does not travel as though it were whole", 
   assert.doesNotMatch(messages[2].text, /cut short/, "a whole message must not be announced as clipped");
 });
 
+test("bridge handoff skill instructions are protocol noise, not conversation", async () => {
+  const adapter = await import("../src/agents/antigravity.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-bridge-noise-"));
+  const transcript = path.join(dir, "transcript.jsonl");
+  fs.writeFileSync(
+    transcript,
+    [
+      {
+        step_index: 0,
+        type: "USER_INPUT",
+        status: "DONE",
+        content:
+          "<USER_REQUEST>Base directory for this skill: <bridge-skill-dir>\n\n" +
+          "The user wants to hand this session off to another coding agent via context-bridge.\n" +
+          "Follow these steps exactly:\nbridge handoff <target></USER_REQUEST>",
+      },
+      { step_index: 1, type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>$bridge claude</USER_REQUEST>" },
+      { step_index: 2, type: "PLANNER_RESPONSE", status: "DONE", content: "$bridge claude" },
+      { step_index: 3, type: "PLANNER_RESPONSE", status: "DONE", content: "real answer" },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n")
+  );
+
+  const { messages } = adapter.activitySince({ transcriptPath: transcript }, null);
+  assert.deepEqual(messages.map((m) => `${m.role}:${m.text}`), ["assistant:$bridge claude", "assistant:real answer"]);
+});
+
 test("a row that reports no truncation is passed through untouched", async () => {
   const adapter = await import("../src/agents/antigravity.mjs");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-whole-"));

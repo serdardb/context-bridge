@@ -80,11 +80,15 @@ test("a first switch carries the whole conversation, a later one carries only wh
   assert.equal(second.status, 0, second.stderr);
   s = loadState(project);
   const laterDelta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
-  assert.ok(!laterDelta.includes(LONG_MESSAGE), "a later delta clips long messages");
-  // Companion is temporary: retention may prune it after this agent hands off.
-  // The path must not be sold as permanently available archive storage.
-  const ref = laterDelta.match(/Temporary full context companion: (\S+)/);
-  assert.ok(ref, "a later delta references the temporary full-context companion");
+  // This assertion used to be its opposite: it required the later delta to clip
+  // the long message, because clipping was what the code did. It was proving the
+  // defect rather than a requirement. A message that fits inside the road's
+  // budget now travels whole, and this one is far inside it.
+  assert.ok(laterDelta.includes("later: " + LONG_MESSAGE), "a message that fits must travel whole");
+  // The checkpoint is temporary: retention may prune it after this agent hands
+  // off. The path must not be sold as permanently available archive storage.
+  const ref = laterDelta.match(/Temporary full context checkpoint: (\S+)/);
+  assert.ok(ref, "a later delta references the temporary full context checkpoint");
   assert.match(
     laterDelta,
     /may be pruned after this agent hands off/,

@@ -11,13 +11,11 @@ import { transferClaudeSession } from "./transfer.mjs";
 import {
   gitDelta,
   currentGitSha,
-  composeDelta,
   composeFullContext,
-  conversationAccount,
-  deltaLostSomething,
+  composeForRoad,
 } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending, dropDeliveredCompanions } from "./clean.mjs";
-import { hookDeliveryEligible } from "./delivery.mjs";
+import { hookDeliveryEligible, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
 
@@ -386,44 +384,63 @@ export function handoff(
   // the second-class treatment Grok objected to. Send everything instead: the
   // limit was never the channel, only the assumption of shared history.
   const firstSwitch = !targetSlot.id;
-  let delta;
-  if (firstSwitch) {
-    delta =
-      full +
+
+  // The road is decided here rather than after composing, because it decides how
+  // much the delta may carry. A hook's 4KB and a prompt's 128KB are different
+  // problems, and composing one size for both meant the hook road was built at
+  // 8KB and then cut down to 4KB by a blade that landed wherever it landed.
+  const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
+  const roadBudget = via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES;
+
+  // Everything appended after the conversation, as a function of the one thing
+  // about it that is not yet known. It has to be a function rather than a string:
+  // the wording depends on whether anything was left out, and what is left out
+  // depends on how many bytes this text takes, so `composeForRoad` asks for both
+  // wordings, charges the longer, and settles it with a single budget and a
+  // single plan. Building it as a string first, as this did until review, meant
+  // the sentence describing the delta and the delta itself were measured against
+  // different budgets, and it could say nothing was dropped while something was.
+  const trailingFor = (lost) => {
+    let out = "";
+    if (!firstSwitch) {
+      // The old wording said "messages above are clipped to one line each" on every
+      // handoff, including the ones that clipped nothing. A warning that is always
+      // there is read as boilerplate, and boilerplate is how a real cut goes
+      // unnoticed. Now it says what actually happened, or says nothing.
+      // The path ends its line: following it with a period makes the period look
+      // like part of the filename, to a reader and to the agent that has to open it.
+      out +=
+        `\n\nTemporary full context checkpoint: ${fullRel}\n` +
+        (lost
+          ? "What did not fit above is whole there; read it during this receiving session. "
+          : "Nothing above was left out, so it holds the same conversation in its original form. ") +
+        "It may be pruned after this agent hands off.";
+    }
+    if (adopted) {
+      out += sourceRef?.transcriptPath
+        ? `\n\nFull transcript of the adopted ${sourceAdapter.displayName} session: ${sourceRef.transcriptPath}` +
+          "\nRead it if you need more detail than this bounded delta."
+        : `\n\n[Bridge warning] The adopted ${sourceAdapter.displayName} session's history could not be read, ` +
+          "so this delta carries git and decision truth only. Ask the user to fill in anything that seems missing.";
+    }
+    // One line, and only when there is something to point at. The manifest itself
+    // never enters the delta: the whole argument for it was that evidence should
+    // cost nothing until somebody actually wants it.
+    if (auditRel) {
+      out += `\n\nAudit of what was actually run is at ${auditRel}, or run: bridge inspect`;
+    }
+    if (targetAdapter.injection === "prompt") {
+      out += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
+    }
+    return out;
+  };
+
+  const delta = firstSwitch
+    ? full +
       `\nThis is the first switch to ${targetAdapter.displayName} in this project, so the whole conversation is above, ` +
-      "un-clipped. Later handoffs carry only what is new.";
-  } else {
-    delta = composeDelta(sections);
-    // The old wording said "messages above are clipped to one line each" on every
-    // handoff, including the ones that clipped nothing. A warning that is always
-    // there is read as boilerplate, and boilerplate is how a real cut goes
-    // unnoticed. Now it says what actually happened, or says nothing.
-    const lost = deltaLostSomething(conversationAccount(sections));
-    // The path ends its line. Following it with a period makes the period look
-    // like part of the filename, to a reader and to the agent that has to open it.
-    delta +=
-      `\n\nTemporary full context companion: ${fullRel}\n` +
-      (lost
-        ? "What did not fit above is whole there; read it during this receiving session. "
-        : "Nothing above was left out or shortened, so it holds the same conversation in its original form. ") +
-      "It may be pruned after this agent hands off.";
-  }
-  if (adopted) {
-    delta += sourceRef?.transcriptPath
-      ? `\n\nFull transcript of the adopted ${sourceAdapter.displayName} session: ${sourceRef.transcriptPath}` +
-        "\nRead it if you need more detail than this bounded delta."
-      : `\n\n[Bridge warning] The adopted ${sourceAdapter.displayName} session's history could not be read, ` +
-        "so this delta carries git and decision truth only. Ask the user to fill in anything that seems missing.";
-  }
-  // One line, and only when there is something to point at. The manifest itself
-  // never enters the delta: the whole argument for it was that evidence should
-  // cost nothing until somebody actually wants it.
-  if (auditRel) {
-    delta += `\n\nAudit of what was actually run is at ${auditRel}, or run: bridge inspect`;
-  }
-  if (targetAdapter.injection === "prompt") {
-    delta += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
-  }
+      "un-clipped. Later handoffs carry only what is new." +
+      trailingFor(false)
+    : composeForRoad(sections, roadBudget, trailingFor);
   const deltaRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
 
   s.pendingInjection = {
@@ -433,7 +450,7 @@ export function handoff(
     // tempting and is fragile: seeding a first session, resuming one, and
     // resuming one whose hooks are live are three different cases that would
     // have to be told apart from the same field.
-    via: hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt",
+    via,
     // null = nothing to resume on that side: the delta seeds the first session
     // the target opens in this project.
     id: targetSlot.id ?? null,

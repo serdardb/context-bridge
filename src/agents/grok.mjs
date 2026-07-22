@@ -11,6 +11,7 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
+import { isBridgeProtocolNoise } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import {
   grokHome,
@@ -137,7 +138,13 @@ export function activitySince(ref, mark) {
     const role = r.type === "user" ? "user" : r.type === "assistant" ? "assistant" : null;
     if (!role) continue; // system, reasoning and tool_result never reach the delta
     const text = extractText(r.content);
-    if (!text || isNoise(text)) continue;
+    // Two different kinds of noise, and only one of them is about who wrote it.
+    // What Grok wraps around the conversation is never conversation, whichever
+    // role it lands on: a `[Bridge Context Update]` echoed back from an assistant
+    // row is our own previous delta being fed into the next one. The handoff
+    // skill's instructions are different: they arrive as a user turn, and an
+    // assistant quoting them is discussing the protocol, which is real content.
+    if (!text || isNoise(text) || (role === "user" && isBridgeProtocolNoise(text))) continue;
     messages.push({ role, text, at: null });
   }
   const patchedFiles = new Set();

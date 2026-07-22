@@ -12,7 +12,8 @@ import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
 import { deltaWasConsumed, promptBody, companionFor } from "./delivery.mjs";
-import { log, dim, bold, OK, WARN, BAD, oneLine, nowIso, processAlive } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
+import { messageBlock } from "./delta.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -406,23 +407,24 @@ export function appendFinalWords(projectDir, s, agent) {
   if (!tail.messages.length) return;
 
   const deltaPath = path.join(projectDir, inj.deltaFile);
-  const oneLiners = tail.messages.map((m) => `- ${m.role === "user" ? "User" : adapter.displayName}: ${oneLine(m.text, 220)}`);
+  // These used to be cut to their first 220 characters, by a second copy of a
+  // rule written by hand in a file nobody was looking at. The departing agent's
+  // last answer is the substantive one often enough that appending it at all was
+  // a deliberate fix, and clipping it undid most of that fix in silence.
+  const verbatim = tail.messages.map((m) => messageBlock(m, adapter.displayName)).join("\n\n");
   try {
-    fs.appendFileSync(deltaPath, `\n\nClosing words from ${adapter.displayName}\n${oneLiners.join("\n")}\n`);
+    fs.appendFileSync(deltaPath, `\n\nClosing words from ${adapter.displayName}\n\n${verbatim}\n`);
   } catch {
     return; // already consumed or unwritable: the switch still stands
   }
-  // The companion holds exact wording for the receiving session, so it gets the
-  // closing words in full while it still exists.
-  // Skipping it would quietly make the file a worse record than the summary.
+  // The full context checkpoint holds exact wording for the receiving session, so
+  // it gets the closing words too while it still exists. Skipping it would
+  // quietly make the file a worse record than the delta beside it.
   const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.companion);
-  const verbatim = tail.messages
-    .map((m) => `### ${m.role === "user" ? "User" : adapter.displayName}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`)
-    .join("\n\n");
   try {
     fs.appendFileSync(fullPath, `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
   } catch {
-    // The delta already carries them; the companion missing out is not fatal.
+    // The delta already carries them; the checkpoint missing out is not fatal.
   }
   // The closing words are now part of the delta destined for the other agent,
   // so the packed mark has to move with them: committing the pre-handoff mark
