@@ -113,17 +113,67 @@ export async function main(argv) {
         log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
         return;
       }
+      // What this used to print was true and unreadable. Every agent's progress
+      // was shown as its raw watermark, and a watermark is opaque by design:
+      // Claude's is an ISO instant, Grok's a {rows, ts} object printed as JSON,
+      // Antigravity's a bare step number. Three agents, three shapes, one column
+      // labelled "synced", and nobody could say synced from what, to whom, or
+      // when. The fix is not to format the watermark better. It is to stop
+      // showing it: what a person wants is who handed to whom and how recently,
+      // and that was already on disk in the checkpoint filenames, unread.
       const debug = flags.has("--debug");
-      const mask = (id) => (id ? (debug ? id : id.slice(0, 8) + "…") : dim("not linked"));
-      log(bold("context-bridge status"));
-      log(`  project        ${s.project}`);
-      log(`  active agent   ${s.activeAgent ?? dim("none")}`);
+      const history = switchHistory(projectDir);
+      const lastOut = new Map(); // agent -> when it last handed its work onward
+      for (const h of history) if (!lastOut.has(h.source)) lastOut.set(h.source, h.at);
+
+      log(bold("context-bridge") + dim(` · ${s.project}`));
+      log("");
+      const here = s.activeAgent ? (adapterFor(s.activeAgent)?.displayName ?? s.activeAgent) : dim("nobody yet");
+      log(`  You are in     ${here}`);
+      const pending = s.pendingHandoff
+        ? `handoff → ${adapterFor(s.pendingHandoff.target)?.displayName ?? s.pendingHandoff.target}`
+        : s.pendingInjection
+          ? `context waiting for ${adapterFor(s.pendingInjection.agent)?.displayName ?? s.pendingInjection.agent}`
+          : dim("nothing");
+      log(`  Pending        ${pending}`);
+
+      if (history.length) {
+        log("");
+        log("  Recent switches");
+        // Both columns are padded, not just the timestamp: agent names differ in
+        // length, so aligning only the stamp leaves the arrows staggered and the
+        // list stops being scannable at a glance, which was the whole complaint.
+        const recent = history.slice(0, 5).map((h) => ({
+          when: clock(h.at),
+          from: adapterFor(h.source)?.displayName ?? h.source,
+          to: adapterFor(h.target)?.displayName ?? h.target,
+        }));
+        const stampW = Math.max(...recent.map((h) => h.when.length));
+        const fromW = Math.max(...recent.map((h) => h.from.length));
+        for (const h of recent) {
+          log(`    ${dim(h.when.padEnd(stampW))}  ${h.from.padEnd(fromW)} → ${h.to}`);
+        }
+      }
+
+      log("");
+      log("  Agents");
+      const width = Math.max(...AGENT_IDS.map((a) => (adapterFor(a)?.displayName ?? a).length)) + 3;
       for (const agentId of AGENT_IDS) {
         const slot = s.agents?.[agentId] ?? {};
-        const synced = slot.mark ? (typeof slot.mark === "string" ? slot.mark : JSON.stringify(slot.mark)) : dim("never");
-        log(`  ${agentId.padEnd(14)} ${mask(slot.id)}   synced ${synced}`);
+        const name = (adapterFor(agentId)?.displayName ?? agentId).padEnd(width);
+        if (!slot.id) {
+          log(`    ${name}${dim("not linked")}`);
+          continue;
+        }
+        const when = lastOut.get(agentId);
+        const state =
+          agentId === s.activeAgent
+            ? "you are here"
+            : when
+              ? `handed off ${ago(when)}`
+              : dim("has never handed off");
+        log(`    ${name}${state}${debug ? dim(`   ${slot.id}  mark ${JSON.stringify(slot.mark)}`) : ""}`);
       }
-      log(`  pending        ${s.pendingHandoff ? `handoff → ${s.pendingHandoff.target}` : s.pendingInjection ? `injection → ${s.pendingInjection.agent}` : dim("none")}`);
 
       // Saved launch flags. Listed even when empty for the agents that have them,
       // because a saved permission bypass that nobody can find is one nobody can
@@ -173,22 +223,30 @@ export async function main(argv) {
         const target = AGENT_IDS.find((id) => id !== agentId && s.agents?.[id]?.id) ?? "<target>";
         log("");
         log(`  ${adapterFor(agentId).displayName} has work that was never handed off. It is saved, not lost:`);
-        log(dim(`  bridge handoff ${target} --from ${agentId}`));
+        log(dim(`    bridge handoff ${target} --from ${agentId}`));
       }
 
-      // Which agents each one has been caught up with. Free: it is already state.
+      // Only the gaps. This was a full matrix of who had caught up with whom,
+      // which is exact and unreadable: on a healthy project every cell says the
+      // same thing and the one cell that matters is buried among them. A pair
+      // that has never exchanged anything is worth a sentence; a pair that is up
+      // to date is worth nothing, and printing it anyway is how the one real line
+      // gets skipped.
       const linked = AGENT_IDS.filter((a) => s.agents?.[a]?.id);
-      if (linked.length > 1) {
-        log("");
-        log("  caught up with");
-        for (const target of linked) {
-          const seen = linked.filter((src) => src !== target && s.knownBy?.[target]?.[src]);
-          const missing = linked.filter((src) => src !== target && !s.knownBy?.[target]?.[src]);
-          log(
-            `  ${target.padEnd(14)} ${seen.length ? seen.join(", ") : dim("nobody")}` +
-              `${missing.length ? dim(`   (never synced: ${missing.join(", ")})`) : ""}`
+      const gaps = [];
+      for (const target of linked) {
+        for (const src of linked) {
+          if (src === target || s.knownBy?.[target]?.[src]) continue;
+          gaps.push(
+            `${adapterFor(target)?.displayName ?? target} has never received ` +
+              `${adapterFor(src)?.displayName ?? src}'s work`
           );
         }
+      }
+      if (gaps.length) {
+        log("");
+        log("  Not yet shared");
+        for (const g of gaps) log(`    ${g}`);
       }
       return;
     }
@@ -302,6 +360,64 @@ function intFlag(argv, name) {
   const v = valueOf(argv, name);
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+
+/**
+ * Every switch this project has made, newest first, read from the names of the
+ * checkpoints themselves.
+ *
+ * The history was always on disk and never shown: each checkpoint is written as
+ * `<when>-<source>-to-<target>`, so the sequence of who handed to whom is
+ * recoverable without storing anything new. Status used to answer "how far is
+ * each agent synced" with a raw watermark, which told nobody anything, while the
+ * question people actually ask — what happened, in what order — sat unread in a
+ * directory listing.
+ */
+function switchHistory(projectDir) {
+  let names;
+  try {
+    names = fs.readdirSync(path.join(projectDir, ".bridge", "checkpoints"));
+  } catch {
+    return [];
+  }
+  const seen = new Map();
+  for (const name of names) {
+    const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-([a-z]+)-to-([a-z]+)/);
+    if (!m) continue;
+    const [, day, hh, mm, ss, ms, source, target] = m;
+    const at = new Date(`${day}T${hh}:${mm}:${ss}.${ms}Z`);
+    if (Number.isNaN(at.getTime())) continue;
+    // A handoff writes several files under one stem; count the switch once.
+    seen.set(`${at.toISOString()}-${source}-${target}`, { at, source, target });
+  }
+  return [...seen.values()].sort((a, b) => b.at - a.at);
+}
+
+/** "2m ago", "20h ago", "3d ago" — a duration people read without doing arithmetic. */
+function ago(date, now = Date.now()) {
+  const s = Math.max(0, Math.round((now - date.getTime()) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+/**
+ * When a switch happened: always the date, always the clock.
+ *
+ * The first version printed only the time, and dropped the date for anything
+ * from today on the theory that the hour is enough within your own day. It is
+ * not, because you do not read this only on the day you made the switch: come
+ * back after two days and a line saying 10:31 is indistinguishable from this
+ * morning. A timestamp that cannot be placed is worse than none, because it
+ * gets believed. Serdar caught it by asking the obvious question nobody had.
+ */
+function clock(date) {
+  const day = date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  return `${day} ${date.toTimeString().slice(0, 5)}`;
 }
 
 function valueOf(argv, name) {

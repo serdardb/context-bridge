@@ -119,7 +119,7 @@ bridge               # starts Claude; the SessionStart hook records the session
 
 Useful inspection points during all of this:
 
-- `bridge status` — link state and pending markers (IDs are masked; `--debug` shows them).
+- `bridge status` — where you are, the recent switches, and what each agent is holding. Session ids and raw watermarks are not shown at all; `--debug` adds them.
 - `.bridge/state.json` — the ground truth the launcher polls.
 - `.bridge/checkpoints/` — delta files; delivered ones are renamed `*.consumed`.
 
