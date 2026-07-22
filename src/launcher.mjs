@@ -153,10 +153,50 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 
     if (exit.code !== 0 && exit.code !== 143 && exit.signal !== "SIGTERM") {
       log(`${WARN} ${agent} exited with status ${exit.code ?? exit.signal}. Bridge state is preserved — run 'bridge' to continue.`);
+      // The switch is normally driven by the departing agent running the handoff
+      // itself. An agent that died — a quota 429, a crash — never got to, so its
+      // work would sit stranded in its own session with nothing pointing at it.
+      // The whole loop used to wait blind for a handoff that could never arrive.
+      // Say plainly that the work survived and exactly how to carry it forward.
+      warnStrandedWork(projectDir, agent);
       return exit.code ?? 1;
     }
     log(`${OK} Bridge session ended. Run 'bridge' anytime to continue where you left off.`);
     return 0;
+  }
+}
+
+/**
+ * After an agent dies without handing off, tell the user its work is not lost.
+ *
+ * The recovery already works, it was just never reachable: the delta is built
+ * from the agent's own transcript, not from the live process, so a dead agent's
+ * work is still on disk. This names the one command that carries it forward and
+ * the agents it can go to, so nobody has to know the incantation to avoid losing
+ * a session. Silent about a clean exit with nothing pending, because then there
+ * is nothing stranded to recover.
+ */
+export function warnStrandedWork(projectDir, agent) {
+  let hasWork = false;
+  try {
+    const s = loadState(projectDir);
+    const slot = agentSlot(s, agent);
+    if (!slot.id) return;
+    const adapter = adapterFor(agent);
+    const ref = adapter.hydrate(projectDir, slot);
+    if (!ref) return;
+    // Messages OR files. An agent that spent its last turn editing and said
+    // nothing has left work worth recovering just the same, and counting only
+    // what it SAID would stay silent on exactly that session. Found in review.
+    const activity = adapter.activitySince(ref, slot.mark);
+    hasWork = (activity.messages?.length ?? 0) > 0 || (activity.patchedFiles?.length ?? 0) > 0;
+    if (!hasWork) return;
+    const targets = AGENT_IDS.filter((id) => id !== agent && agentSlot(s, id).id);
+    const pick = targets[0] ?? "<target>";
+    log(`${OK} ${adapter.displayName}'s work is saved, not lost. Carry it forward from any terminal:`);
+    log(dim(`  bridge handoff ${pick} --from ${agent}`));
+  } catch {
+    // Best-effort help. Never let a recovery hint fail the exit path.
   }
 }
 

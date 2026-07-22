@@ -242,6 +242,35 @@ Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributin
 
 Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.106** on macOS (Node 23). Each vendor's session format is internal; the bridge parses them defensively, but a future CLI release could require an update — pin these versions if you need stability.
 
+## When something goes wrong
+
+**An agent ran out of quota or crashed before it could hand off.** Its work is
+not lost. The bridge builds a delta from the agent's own session files on disk,
+not from the running process, so the agent being alive was never what a handoff
+actually needed. Run `bridge status`: it names any agent holding work that never
+made it out, along with the exact command to free it.
+
+```
+Antigravity has work that was never handed off. It is saved, not lost:
+bridge handoff claude --from antigravity
+```
+
+That command works from any terminal, with the stuck agent still open, closed,
+or hours in the past. `--from` names the departing agent explicitly instead of
+inferring it, which is the whole point: the agent that would normally announce
+itself is the one that cannot.
+
+**A delta was routed to a hook that never fired.** The launcher says so when the
+session ends and names the file the context is still sitting in. Nothing is lost
+and the next handoff carries it again. For Codex this usually means its hooks
+have not been trusted yet — review them once with `/hooks`.
+
+**You want to know what the previous agent actually did.** `bridge inspect`
+renders the audit written beside the last delta: commands with their outcomes,
+failures first, files changed and read. Each agent contributes what its own
+record can yield, and the output says plainly where an agent is blind rather
+than leaving an empty column to be misread as nothing happened.
+
 ## Known limitations
 
 - Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.

@@ -155,7 +155,7 @@ function fixture() {
     { timestamp: "2026-07-21T10:00:01.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: "Wall time: 2.5 seconds\nProcess exited with code 0\n" } },
     { timestamp: "2026-07-21T10:00:02.000Z", type: "response_item", payload: { type: "function_call", call_id: "c2", name: "exec_command", arguments: JSON.stringify({ cmd: "git status" }) } },
     { timestamp: "2026-07-21T10:00:03.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "c2", output: "Process exited with code 128\n" } },
-    { timestamp: "2026-07-21T10:00:04.000Z", type: "event_msg", payload: { type: "agent_message", message: "done" } },
+    { timestamp: "2026-07-21T10:00:04.000Z", type: "event_msg", payload: { type: "agent_message", message: "from-codex-fixture-message" } },
   ];
   fs.writeFileSync(rollout, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
@@ -306,4 +306,114 @@ test("an agent that read nothing prints no read line at all", () => {
     },
   });
   assert.doesNotMatch(out, /^ {2}read /m, "an empty read set is silence, not an empty row");
+});
+
+// The gap the user hit live: an agent died on a quota 429 mid-switch, so it
+// could not run the handoff itself, and its work was stranded with no CLI way
+// to carry it forward. The recovery was always possible from the transcript on
+// disk; there was simply no command that did not require the dead agent alive.
+test("a dead agent's work is recovered from disk by naming it as the source", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
+  const { project } = fixture(); // a project whose codex session is a real rollout
+
+  // No agent is "active" as the source here: we are recovering codex's work from
+  // a bare terminal, exactly as you would when the agent that produced it is gone.
+  const res = spawnSync(process.execPath, [BRIDGE, "handoff", "grok", "--from", "codex"], {
+    cwd: project,
+    encoding: "utf8",
+    env: { ...process.env, CONTEXT_BRIDGE_LAUNCHER: "", CODEX_THREAD_ID: "" },
+  });
+  assert.match(res.stdout, /Prepared Codex/, `recovery did not run: ${res.stderr || res.stdout}`);
+
+  const state = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+  const delta = fs.readFileSync(path.join(project, state.pendingInjection.deltaFile), "utf8");
+  assert.match(delta, /Codex/, "the recovered delta must attribute the dead agent");
+  assert.match(delta, /from-codex-fixture-message/, "and carry what that agent actually said");
+});
+
+test("an unknown --from agent is refused with a clear message, not a crash", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
+  const { project } = fixture();
+  const res = spawnSync(process.execPath, [BRIDGE, "handoff", "grok", "--from", "nonesuch"], { cwd: project, encoding: "utf8" });
+  assert.notEqual(res.status, 0);
+  assert.match(res.stdout + res.stderr, /Unknown --from agent/);
+});
+
+// Found by Codex in review. The hint decided there was stranded work by counting
+// messages alone, so an agent whose last turn was file edits and no prose would
+// die silently with real work behind it and no recovery command offered. What
+// makes it stranded is that the work exists, not that the agent narrated it.
+test("an agent that only touched files, and said nothing, still gets the recovery hint", async () => {
+  const { warnStrandedWork } = await import("../src/launcher.mjs");
+  const { project } = fixture();
+
+  // Grok's events stream carries tool outcomes and file changes with no messages.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "stranded-grok-"));
+  const sessionDir = path.join(home, "sessions", encodeURIComponent(project), "019f-stranded");
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, "chat_history.jsonl"), ""); // said nothing at all
+  fs.writeFileSync(
+    path.join(sessionDir, "events.jsonl"),
+    JSON.stringify({ ts: "2026-07-21T10:00:00Z", type: "tool_completed", tool_name: "edit_file", outcome: "success", path: "src/x.mjs" }) + "\n"
+  );
+  fs.writeFileSync(
+    path.join(sessionDir, "summary.json"),
+    JSON.stringify({ info: { id: "019f-stranded", cwd: project }, updated_at: "2026-07-21T10:00:00Z" })
+  );
+
+  const state = loadState(project);
+  state.agents.grok = { id: "019f-stranded", transcriptPath: path.join(sessionDir, "chat_history.jsonl"), mark: null, idle: false };
+  saveState(project, state);
+
+  const said = [];
+  const previous = process.env.GROK_HOME;
+  process.env.GROK_HOME = home;
+  const write = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => (said.push(String(chunk)), true);
+  try {
+    warnStrandedWork(project, "grok");
+  } finally {
+    process.stdout.write = write;
+    if (previous === undefined) delete process.env.GROK_HOME;
+    else process.env.GROK_HOME = previous;
+  }
+  const out = said.join("");
+  assert.match(out, /--from grok/, `a file-only session left no hint: ${JSON.stringify(out)}`);
+});
+
+// Where the recovery actually becomes findable. The launcher can only speak at
+// the moment an agent exits, and the case this exists for never produces one:
+// an agent out of quota does not die, it sits there and eventually says so. So
+// status reads the disk instead and answers the same however the session ended.
+test("status names work an agent never handed off, with the command that frees it", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
+  const { project, rollout } = fixture();
+
+  const state = loadState(project);
+  state.activeAgent = "claude"; // we are elsewhere; codex is the one left behind
+  state.agents.claude = { id: "claude-1", transcriptPath: path.join(project, "c.jsonl"), mark: null, idle: false };
+  fs.writeFileSync(path.join(project, "c.jsonl"), "");
+  state.agents.codex = { id: "019f-codex", transcriptPath: rollout, mark: null, idle: false };
+  saveState(project, state);
+
+  const out = spawnSync(process.execPath, [BRIDGE, "status"], { cwd: project, encoding: "utf8" }).stdout;
+  assert.match(out, /never handed off/, "stranded work has to be named, or nobody knows it survived");
+  assert.match(out, /--from codex/, "and the exact command has to be there, not a hint to go read the help");
+});
+
+test("the agent you are working in is not reported as stranded", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
+  const { project, rollout } = fixture();
+
+  const state = loadState(project);
+  state.activeAgent = "codex"; // the same unsynced work, but this is where you are
+  state.agents.codex = { id: "019f-codex", transcriptPath: rollout, mark: null, idle: false };
+  saveState(project, state);
+
+  const out = spawnSync(process.execPath, [BRIDGE, "status"], { cwd: project, encoding: "utf8" }).stdout;
+  assert.doesNotMatch(out, /never handed off/, "unsent work in the active agent is normal, and saying so every time is how a real warning gets ignored");
 });

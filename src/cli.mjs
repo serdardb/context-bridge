@@ -7,7 +7,7 @@ import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS, DEFAULT_KE
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { log, bold, dim, OK, NONE } from "./util.mjs";
+import { log, bold, dim, OK, BAD, NONE } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,12 @@ Agent flags:
   --cb-save-args         Keep the flags typed with this launch in .bridge/config.json
                          and use them every time this agent opens in this project
   --cb-clear-args        Forget them again
+
+Recovering a dead agent:
+  If an agent hits a quota limit or crashes mid-switch, it cannot run the handoff
+  itself and its work is left in its own session. From any healthy terminal:
+    bridge handoff <target> --from <the-dead-agent>
+  rebuilds the delta straight from that agent's transcript on disk.
 
 Inside the agents:
   ${adapterFor("claude").displayName}:  /bridge <agent>   hand off to another agent
@@ -135,6 +141,41 @@ export async function main(argv) {
         }
         log(dim(`  forget them with: bridge <agent> --cb-clear-args`));
       }
+      // Work that never made it out of an agent, and the command that frees it.
+      //
+      // This lives here rather than only in the launcher because the launcher can
+      // only speak at the moment an agent exits, and the case it was written for
+      // never produces one: an agent out of quota does not die, it sits in its
+      // own interface and eventually says the quota is gone. Nothing exits,
+      // nothing fires, and the work waits with nobody mentioning it. Status reads
+      // the disk instead, so it answers the same whether the agent crashed, hung,
+      // stalled on a limit, or was closed days ago — and status is where a
+      // confused person actually looks.
+      //
+      // Only agents that are NOT the active one count. The one you are working in
+      // is supposed to have unsent work; saying so every time would be noise, and
+      // noise is how a real warning gets ignored.
+      for (const agentId of AGENT_IDS) {
+        if (agentId === s.activeAgent) continue;
+        const slot = s.agents?.[agentId];
+        if (!slot?.id) continue;
+        let stranded = false;
+        try {
+          const adapter = adapterFor(agentId);
+          const ref = adapter.hydrate(projectDir, slot);
+          if (!ref) continue;
+          const activity = adapter.activitySince(ref, slot.mark);
+          stranded = (activity.messages?.length ?? 0) > 0 || (activity.patchedFiles?.length ?? 0) > 0;
+        } catch {
+          continue; // an unreadable session is doctor's problem, not this line's
+        }
+        if (!stranded) continue;
+        const target = AGENT_IDS.find((id) => id !== agentId && s.agents?.[id]?.id) ?? "<target>";
+        log("");
+        log(`  ${adapterFor(agentId).displayName} has work that was never handed off. It is saved, not lost:`);
+        log(dim(`  bridge handoff ${target} --from ${agentId}`));
+      }
+
       // Which agents each one has been caught up with. Free: it is already state.
       const linked = AGENT_IDS.filter((a) => s.agents?.[a]?.id);
       if (linked.length > 1) {
@@ -170,17 +211,33 @@ export async function main(argv) {
 
     case "handoff": {
       const target = args[1];
+      // `--from` names the departing agent explicitly instead of inferring it.
+      // The whole normal flow runs inside the departing agent, so it never needs
+      // to say who it is. But when that agent has died — a quota 429, a crash —
+      // it cannot run the command at all, and its work is stranded in its own
+      // session with no way to carry it forward. This is the escape hatch: from
+      // any healthy terminal, `bridge handoff codex --from antigravity` rebuilds
+      // the delta straight from the dead agent's transcript on disk, because the
+      // agent being alive was never what the handoff actually needed.
+      const from = valueOf(argv, "--from") || null;
       const opts = {
         decisions: valueOf(argv, "--decisions"),
         next: valueOf(argv, "--next"),
         adopt: flags.has("--adopt"),
+        from,
       };
-      if (AGENT_IDS.includes(target)) {
-        log(handoff(projectDir, target, opts));
-      } else {
-        log(`Usage: bridge handoff <${AGENT_IDS.join("|")}> [--decisions "…"] [--next "…"] [--adopt]`);
+      const usage = `Usage: bridge handoff <${AGENT_IDS.join("|")}> [--from <agent>] [--decisions "…"] [--next "…"] [--adopt]`;
+      if (!AGENT_IDS.includes(target)) {
+        log(usage);
         process.exitCode = 1;
+        return;
       }
+      if (from && !AGENT_IDS.includes(from)) {
+        log(`${BAD} Unknown --from agent '${from}'. Known: ${AGENT_IDS.join(", ")}.`);
+        process.exitCode = 1;
+        return;
+      }
+      log(handoff(projectDir, target, opts));
       return;
     }
 
