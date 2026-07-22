@@ -326,7 +326,8 @@ test("a dead agent's work is recovered from disk by naming it as the source", as
   });
   assert.match(res.stdout, /Prepared Codex/, `recovery did not run: ${res.stderr || res.stdout}`);
 
-  const state = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+  // Read through loadState: tests must not be coupled to the on-disk shape.
+  const state = loadState(project);
   const delta = fs.readFileSync(path.join(project, state.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /Codex/, "the recovered delta must attribute the dead agent");
   assert.match(delta, /from-codex-fixture-message/, "and carry what that agent actually said");

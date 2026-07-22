@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
-import { defaultState, saveState } from "../src/state.mjs";
+import { defaultState, saveState, loadState } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -95,7 +95,8 @@ function detectVia(project, target, env) {
     encoding: "utf8",
     env: { ...clean(), ...env },
   });
-  const state = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+  // Read through loadState: tests must not be coupled to the on-disk shape.
+  const state = loadState(project);
   const rel = state.pendingInjection?.deltaFile;
   assert.ok(rel, `no handoff was prepared: ${res.stderr || res.stdout}`);
   const pairing = path.basename(rel, ".md").match(new RegExp(`(${AGENT_IDS.join("|")})-to-${target}$`));

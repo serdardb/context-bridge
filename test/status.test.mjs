@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState } from "../src/state.mjs";
+import { defaultState, saveState, loadState } from "../src/state.mjs";
 
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
@@ -64,12 +64,14 @@ test("only pairs that have never exchanged anything are mentioned", () => {
 
 test("a project where everyone is up to date says nothing about sharing", () => {
   const project = fixture();
-  const s = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+  // Through loadState and saveState: a test that hand-writes the file is a test
+  // coupled to where the fields happen to live today.
+  const s = loadState(project);
   // Everyone has seen everyone: there is no gap left to report.
   s.knownBy = { claude: { codex: "x" }, codex: { claude: "x" } };
   delete s.agents.grok;
   delete s.agents.antigravity;
-  fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(s));
+  saveState(project, s);
   assert.doesNotMatch(status(project), /Not yet shared/, "silence is the right report when there is nothing missing");
 });
 

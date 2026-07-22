@@ -6,7 +6,19 @@ import path from "node:path";
 import { writeJsonAtomic, readJson, nowIso, fileExists } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
-export const STATE_VERSION = 4;
+export const STATE_VERSION = 5;
+
+/**
+ * The lane a project has before anyone has thought about lanes.
+ *
+ * Every project starts with one line of work and most will never have a second,
+ * so this one is created without being asked for and, while it is the only one,
+ * never mentioned. Migration folds an existing project into it.
+ */
+export const DEFAULT_LANE = "main";
+
+/** The fields that belong to a line of work rather than to the project. */
+const LANE_FIELDS = ["activeAgent", "agents", "pendingHandoff", "pendingInjection", "knownBy", "git"];
 
 export function bridgeDir(projectDir) {
   return path.join(projectDir, ".bridge");
@@ -38,31 +50,47 @@ export function emptyAgent() {
   };
 }
 
-export function defaultState(projectDir) {
+/**
+ * A lane owns everything that describes work in progress. What stays at project
+ * level is what is true whichever line you are working on: the saved launch
+ * flags, the launcher process record, and which lane is active.
+ *
+ * `title` is a user override and nothing else. When it is null the label is read
+ * from the agents' own session titles, because every agent already names its
+ * sessions and does it better than a scheme invented here would.
+ */
+export function emptyLane() {
   return {
-    version: STATE_VERSION,
-    project: projectDir,
+    title: null,
     activeAgent: null,
     agents: Object.fromEntries(AGENT_IDS.map((agentId) => [agentId, emptyAgent()])),
-    // {"target":<agent>,"ready":true,"requestedAt":iso}
     pendingHandoff: null,
-    // {"agent":<agent>,"id":<session id|null>,"deltaFile":relpath,"createdAt":iso,
-    //  "sources":{<source>:<mark>}}  — what went into the delta, committed to
-    //  knownBy once that delta is finalised.
     pendingInjection: null,
+    knownBy: {},
+    git: { sha: null, recordedAt: null },
+  };
+}
+
+export function defaultState(projectDir) {
+  return withActiveLaneView({
+    version: STATE_VERSION,
+    project: projectDir,
+    // Which line of work is active. Everything a line owns lives under it.
+    activeLane: DEFAULT_LANE,
+    lanes: { [DEFAULT_LANE]: emptyLane() },
     // Last launcher process that opened an agent for this project. This is not
     // required to resume state; it only lets handoff warn when an old launcher is
-    // still running after a bridge upgrade.
+    // still running after a bridge upgrade. It is project-level because there is
+    // one launcher per terminal, not one per lane.
+    //
+    // It does NOT yet record which lane it opened. With one lane there is nothing
+    // to confuse, but once lanes can be switched a launcher holding a different
+    // one will look stale when it is merely elsewhere, so that field belongs with
+    // the lane commands rather than here. Said plainly because a comment
+    // describing behaviour the code does not have is how a reader is misled.
     launcher: null,
-    // knownBy[target][source] = how far into SOURCE's own stream the bridge has
-    // packed material for TARGET. This is what makes a chain work: a handoff to
-    // an agent carries everything it has not seen, from every agent, not just
-    // from whoever is handing off.
-    knownBy: {},
-    // git checkpoint recorded at each handoff, used for "commits since"
-    git: { sha: null, recordedAt: null },
     updatedAt: null,
-  };
+  });
 }
 
 /** The agent's slot, created on first use so a new agent needs no migration. */
@@ -149,7 +177,80 @@ function migrateV3ToV4(s) {
   return { ...s, version: 4, knownBy: {} };
 }
 
-const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4 };
+/**
+ * Fold a single-line project into its first lane.
+ *
+ * Everything that described work in progress moves down one level and nothing is
+ * dropped: the same objects are carried across by reference, so a project that
+ * has been running for weeks keeps every link, watermark and pending marker
+ * exactly as it was. What stays at the root is what was never about one line of
+ * work — the launcher record and the project path.
+ *
+ * This is one-way. A project migrated here cannot be read by an older bridge,
+ * which is what the version bump exists to announce: a launcher still running
+ * from before the upgrade says it must be restarted rather than quietly reading
+ * fields that have moved.
+ */
+function migrateV4ToV5(s) {
+  const lane = emptyLane();
+  for (const field of LANE_FIELDS) {
+    if (s[field] !== undefined) lane[field] = s[field];
+  }
+  const next = {
+    version: 5,
+    project: s.project,
+    activeLane: DEFAULT_LANE,
+    lanes: { [DEFAULT_LANE]: lane },
+    launcher: s.launcher ?? null,
+    updatedAt: s.updatedAt ?? null,
+  };
+  return next;
+}
+
+const MIGRATIONS = { 1: migrateV1ToV2, 2: migrateV2ToV3, 3: migrateV3ToV4, 4: migrateV4ToV5 };
+
+/**
+ * The active lane's fields, presented where they have always been.
+ *
+ * Callers ask for `s.agents` or `s.pendingInjection` in sixty-odd places, and
+ * every one of them means "for the work I am doing now". Rewriting them all in
+ * the same change that moves the data is how a migration goes wrong: the shape
+ * shifts, one reader is missed, and it silently reads a field that no longer
+ * holds anything.
+ *
+ * So the fields stay exactly where callers expect and point at the active lane.
+ * They are live: assigning `s.pendingHandoff = null` clears it in the lane, and
+ * mutating `s.agents` mutates the lane's own object, because it IS the lane's
+ * own object. Code that needs a lane it is not standing in asks for one by name
+ * instead, which is the only case that has to be written deliberately.
+ */
+function withActiveLaneView(s) {
+  if (!s || !s.lanes) return s;
+  if (!s.lanes[s.activeLane]) s.lanes[s.activeLane ?? DEFAULT_LANE] = emptyLane();
+  const lane = () => s.lanes[s.activeLane];
+  for (const field of LANE_FIELDS) {
+    Object.defineProperty(s, field, {
+      configurable: true,
+      enumerable: false, // it is the lane's, and must not be written back at the root
+      get: () => lane()[field],
+      set: (value) => {
+        lane()[field] = value;
+      },
+    });
+  }
+  return s;
+}
+
+/** The lane a caller is standing in, or another one by name. */
+export function laneOf(s, name = null) {
+  const key = name ?? s?.activeLane ?? DEFAULT_LANE;
+  return s?.lanes?.[key] ?? null;
+}
+
+/** Every lane in the project, as [name, lane] pairs. */
+export function lanes(s) {
+  return Object.entries(s?.lanes ?? {});
+}
 
 /**
  * Load state; returns null when no .bridge/state.json exists.
@@ -160,7 +261,7 @@ export function loadState(projectDir) {
   const p = statePath(projectDir);
   let s = readJson(p);
   if (!s) return null;
-  if (s.version === STATE_VERSION) return s;
+  if (s.version === STATE_VERSION) return withActiveLaneView(s);
   if (s.version > STATE_VERSION) {
     throw new Error(
       `.bridge/state.json is version ${s.version}, newer than this bridge understands (${STATE_VERSION}). Update context-bridge.`
@@ -187,7 +288,7 @@ export function loadState(projectDir) {
   } catch {
     // Read-only project or a race: the migrated state is still correct in memory.
   }
-  return s;
+  return withActiveLaneView(s);
 }
 
 /** Load or create state (creates .bridge/ layout on first use). */
