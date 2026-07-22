@@ -3,7 +3,7 @@
 // have no .bridge/ state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, saveState, commitKnown, agentSlot } from "./state.mjs";
+import { loadState, saveState, commitKnown, agentSlot, CONSUMED_SUFFIX } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, companionFor } from "./delivery.mjs";
@@ -164,7 +164,7 @@ function hookSessionStart(projectDir, s, input) {
     } catch {}
     if (delta) {
       try {
-        fs.renameSync(deltaPath, deltaPath + ".consumed");
+        fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
       } catch {
         return 0;
       }
@@ -215,7 +215,7 @@ function consumeForHook(projectDir, s, inj) {
     return null; // already taken, or never written; either way not ours to deliver
   }
   try {
-    fs.renameSync(deltaPath, deltaPath + ".consumed");
+    fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
   } catch {
     return null;
   }

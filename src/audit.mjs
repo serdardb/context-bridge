@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { adapterFor } from "./agents/index.mjs";
-import { checkpointsDir } from "./state.mjs";
+import { checkpointsDir, CHECKPOINT_KINDS } from "./state.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -84,7 +84,7 @@ function withinProject(projectDir, paths) {
 
 /** Write it beside its delta, sharing the stem so the pair is obvious on disk. */
 export function writeManifest(projectDir, stem, manifest) {
-  const rel = path.join(".bridge", "checkpoints", `${stem}-audit.json`);
+  const rel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.audit}`);
   fs.mkdirSync(checkpointsDir(projectDir), { recursive: true });
   fs.writeFileSync(path.join(projectDir, rel), JSON.stringify(manifest, null, 2));
   return rel;
@@ -94,7 +94,7 @@ export function writeManifest(projectDir, stem, manifest) {
 export function latestManifest(projectDir) {
   let names;
   try {
-    names = fs.readdirSync(checkpointsDir(projectDir)).filter((n) => n.endsWith("-audit.json"));
+    names = fs.readdirSync(checkpointsDir(projectDir)).filter((n) => n.endsWith(CHECKPOINT_KINDS.audit));
   } catch {
     return null;
   }

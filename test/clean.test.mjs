@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { pruneCheckpoints, supersedePending } from "../src/clean.mjs";
 import { AGENT_IDS } from "../src/agents/index.mjs";
-import { defaultState, saveState, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, checkpointsDir } from "../src/state.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -225,4 +226,131 @@ test("handing off drops the companions written for you, and keeps the manifests"
   const left = fs.readdirSync(dir).sort();
   assert.ok(left.includes(`${stem}-audit.json`), "the evidence outlives the session that produced it");
   assert.ok(!left.includes(`${stem}-full.md`));
+});
+
+// The enforcement, rather than another comment asking the next person to
+// remember. Twice a file kind has shipped that retention could not see: Grok's
+// checkpoints, because the pattern named one agent pair, and the audit
+// manifests, because it named the file kinds. Both times a comment was left.
+// Neither time did it work.
+//
+// This does not read the registry, it reads the disk: it performs a real handoff
+// and asserts that every file that appears is a kind retention can group. A new
+// kind added anywhere, by anyone, fails here even if they never touch this file.
+test("every file a real handoff writes is a kind retention can collect", async () => {
+  const { handoff } = await import("../src/handoff.mjs");
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+
+  const rollout = path.join(project, "rollout.jsonl");
+  fs.writeFileSync(
+    rollout,
+    [
+      { timestamp: "2026-01-01T00:00:00.000Z", type: "event_msg", payload: { type: "agent_message", message: "did the work" } },
+      { timestamp: "2026-01-01T00:00:01.000Z", type: "response_item", payload: { type: "function_call", call_id: "c1", name: "exec_command", arguments: '{"cmd":"npm test"}' } },
+      { timestamp: "2026-01-01T00:00:02.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "c1", output: "Process exited with code 0\n" } },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join("\n")
+  );
+  const s = defaultState(project);
+  s.agents.codex = { id: "019f-codex", transcriptPath: rollout, mark: null, idle: false };
+  s.activeAgent = "codex";
+  saveState(project, s);
+
+  handoff(project, "grok", { from: "codex", checkTarget: () => {} });
+
+  const written = fs.readdirSync(dir);
+  assert.ok(written.length >= 3, `a handoff should write a delta, a companion and a manifest, got ${written.join(", ")}`);
+
+  // The handoff leaves a pending injection, and retention never deletes what
+  // live state still points at — correct, and it would mask what is under test
+  // here. Clear it to stand in for a delta that has since been delivered.
+  const after = loadState(project);
+  after.pendingInjection = null;
+  after.pendingHandoff = null;
+  saveState(project, after);
+
+  // Age everything past the limits so a full prune has to account for each file.
+  const old = new Date(Date.now() - 60 * DAY);
+  for (const f of written) fs.utimesSync(path.join(dir, f), old, old);
+
+  const res = pruneCheckpoints(project, { keep: 0, days: 0 });
+  const left = fs.readdirSync(dir);
+  assert.deepEqual(
+    left,
+    [],
+    `retention does not recognise ${left.join(", ")} — a new checkpoint kind was added without a rule that collects it`
+  );
+  assert.ok(res.deletedGroups >= 1);
+});
+
+// Found in review, after the registry had already landed: the replacement path
+// was still counting the kinds on its own fingers. It was written when there
+// were two, a third arrived, and nobody came back here. So this asserts the
+// derivation rather than today's three names — it builds the file set from the
+// registry, so a kind added later is covered without touching this test.
+test("superseding a handoff removes every kind of file it wrote, whatever they are", async () => {
+  const { CHECKPOINT_KINDS, CONSUMED_SUFFIX } = await import("../src/state.mjs");
+  const project = makeProject();
+  const dir = checkpointsDir(project);
+  const stem = "2026-01-04T00-00-00-000Z-claude-to-grok";
+
+  // Every kind, and the consumed variant of each, exactly as disk can hold them.
+  const written = [];
+  for (const suffix of Object.values(CHECKPOINT_KINDS)) {
+    for (const name of [`${stem}${suffix}`, `${stem}${suffix}${CONSUMED_SUFFIX}`]) {
+      fs.writeFileSync(path.join(dir, name), "x");
+      written.push(name);
+    }
+  }
+  assert.ok(written.length >= 6, "the fixture must cover every registered kind");
+
+  supersedePending(project, { deltaFile: path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.delta}`) });
+  const left = fs.readdirSync(dir);
+  assert.deepEqual(left, [], `superseding left ${left.join(", ")} behind, which nothing else will ever collect`);
+});
+
+// Three rounds of this patch declared the kinds centralised and three times it
+// was untrue, each for a different reason: the first check looked only at the
+// files that WRITE checkpoints and missed the ones that delete them, and the
+// second was a grep for quoted strings that walked straight past a suffix built
+// inside a template literal. The claim kept resting on how good my search was.
+//
+// So the search is the test now. It reads the source and fails on any literal
+// suffix outside the registry, which is a claim that checks itself rather than
+// one somebody has to re-earn by hand every time.
+test("no source file spells a checkpoint suffix out by hand", async () => {
+  const { CHECKPOINT_KINDS, CONSUMED_SUFFIX } = await import("../src/state.mjs");
+  const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const files = [];
+  (function walk(dir) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".mjs")) files.push(p);
+    }
+  })(srcDir);
+
+  const suffixes = [...Object.values(CHECKPOINT_KINDS), CONSUMED_SUFFIX];
+  const offences = [];
+  for (const file of files) {
+    if (path.basename(file) === "state.mjs") continue; // the registry itself
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      // Comments explain these suffixes on purpose; only code may not repeat them.
+      const code = line.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, "");
+      for (const suffix of suffixes) {
+        if (code.includes(`"${suffix}"`) || code.includes(`'${suffix}'`) || code.includes(`}${suffix}\``) || code.includes(`${suffix}\``)) {
+          offences.push(`${path.basename(file)}:${i + 1}  ${line.trim()}`);
+          break;
+        }
+      }
+    });
+  }
+  assert.deepEqual(
+    offences,
+    [],
+    `these lines spell a checkpoint suffix by hand instead of naming it from the registry:\n  ${offences.join("\n  ")}`
+  );
 });

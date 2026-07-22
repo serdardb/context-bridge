@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION } from "./state.mjs";
+import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
@@ -371,7 +371,7 @@ function commitDelivery(projectDir, inj) {
   if (!inj?.deltaFile) return;
   const deltaPath = path.join(projectDir, inj.deltaFile);
   try {
-    fs.renameSync(deltaPath, deltaPath + ".consumed");
+    fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
   } catch {
     // Already renamed, or gone. Either way it is not ours to commit.
     return;
@@ -415,7 +415,7 @@ export function appendFinalWords(projectDir, s, agent) {
   // The companion holds exact wording for the receiving session, so it gets the
   // closing words in full while it still exists.
   // Skipping it would quietly make the file a worse record than the summary.
-  const fullPath = deltaPath.replace(/\.md$/, "-full.md");
+  const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.companion);
   const verbatim = tail.messages
     .map((m) => `### ${m.role === "user" ? "User" : adapter.displayName}${m.at ? ` — ${m.at}` : ""}\n\n${m.text}`)
     .join("\n\n");

@@ -231,6 +231,34 @@ export function ensureGitignore(projectDir) {
   return { action: "added" };
 }
 
+/**
+ * Every kind of file a handoff writes into `.bridge/checkpoints/`, in one place.
+ *
+ * They all share a stem — `<when>-<source>-to-<target>` — and retention deletes
+ * that whole group as a unit. The list lives here, beside the writer, because
+ * this project has twice shipped a file kind that nothing ever collected: first
+ * Grok's checkpoints, invisible because the pattern hard-coded one agent pair,
+ * and then the audit manifests, invisible because the pattern was generalised
+ * over agents but still hard-coded the kinds. Both times a comment asked the
+ * next person to remember. Both times they did not.
+ *
+ * So producers name a kind from here rather than writing a suffix by hand, and
+ * retention builds its matcher from the same object. A test walks the files a
+ * real handoff produces and fails when one of them is a kind retention does not
+ * know, which is the only version of this rule that has ever held.
+ */
+export const CHECKPOINT_KINDS = {
+  /** The bounded delta the next agent actually reads. */
+  delta: ".md",
+  /** Its un-truncated twin, read at most once, dropped when its reader moves on. */
+  companion: "-full.md",
+  /** What the departing agents actually ran; what `bridge inspect` renders. */
+  audit: "-audit.json",
+};
+
+/** A delivered delta is renamed rather than deleted, so the rename is the record. */
+export const CONSUMED_SUFFIX = ".consumed";
+
 /** Write a delta checkpoint file; returns path relative to project. */
 export function writeCheckpoint(projectDir, name, content) {
   const dir = checkpointsDir(projectDir);

@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, STATE_VERSION } from "./state.mjs";
+import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import { gitDelta, currentGitSha, composeDelta, composeFullContext } from "./delta.mjs";
@@ -371,7 +371,7 @@ export function handoff(
     // Never let the convenience break the product.
   }
   const full = composeFullContext(sections);
-  const fullRel = writeCheckpoint(projectDir, `${stem}-full.md`, full);
+  const fullRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.companion}`, full);
 
   // The 8KB delta exists because the other side already knows the earlier
   // conversation. On a FIRST switch it knows nothing, so clipping would hand it
@@ -408,7 +408,7 @@ export function handoff(
   if (targetAdapter.injection === "prompt") {
     delta += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
   }
-  const deltaRel = writeCheckpoint(projectDir, `${stem}.md`, delta);
+  const deltaRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
 
   s.pendingInjection = {
     agent: target,

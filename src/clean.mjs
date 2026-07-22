@@ -6,7 +6,7 @@
 // (a pending injection's delta) are never deleted, under any flag.
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, checkpointsDir } from "./state.mjs";
+import { loadState, checkpointsDir, CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
 export const DEFAULT_KEEP_GROUPS = 20;
@@ -17,18 +17,25 @@ export const DEFAULT_MAX_AGE_DAYS = 7;
 // hands off again.
 export const DEFAULT_KEEP_COMPANIONS = 5;
 
-// Built from the registry: hard-coding the pair meant Grok's checkpoints were
-// invisible to pruning, so they accumulated untouched.
+// Built from two registries, and it took two separate bugs to get here. Hard
+// coding the agent pair made Grok's checkpoints invisible to pruning, so they
+// accumulated untouched. Generalising over agents but hard-coding the file kinds
+// then did the same to the audit manifests: 24 files, 472KB, and a prune with
+// every limit at zero deleted 161 groups and not one of them.
 //
-// And the same mistake was made a second time on the other axis. This was
-// generalised over AGENTS but still hard-coded the file KINDS, so when handoffs
-// began writing an audit manifest beside the delta, those manifests matched
-// nothing here: their deltas were pruned and they stayed, orphaned, forever.
-// Measured before the fix on this repository: 24 manifests, 472KB, and a prune
-// with every limit set to zero deleted 161 groups without touching one of them.
-// A retention rule that knows some of the files is a leak with a schedule.
+// Neither was prevented by the comment left behind after the first one. So the
+// kinds come from `CHECKPOINT_KINDS` and the agents from `AGENT_IDS`, and a test
+// walks what a real handoff writes and fails on any file this cannot group.
+// Longest suffix first, so `-full.md` is never matched as a bare `.md` with the
+// rest swallowed into the stem.
+const KIND_ALTERNATIVES = Object.values(CHECKPOINT_KINDS)
+  .sort((a, b) => b.length - a.length)
+  .map((suffix) => suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  .join("|");
+
 const GROUP_RE = new RegExp(
-  `^(.+?-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")}))(?:-full\\.md|-audit\\.json|\\.md)(?:\\.consumed)?$`
+  `^(.+?-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")}))(?:${KIND_ALTERNATIVES})` +
+    `(?:${CONSUMED_SUFFIX.replace(".", "\\.")})?$`
 );
 
 /**
@@ -109,7 +116,7 @@ export function pruneCheckpoints(projectDir, opts = {}) {
   // scope, so nothing is counted twice.
   const companions = sorted
     .filter((g) => !removedStems.has(g.stem) && !protectedStems.has(g.stem))
-    .flatMap((g) => g.files.filter((p) => p.endsWith("-full.md")).map((p) => ({ p, mtime: g.mtime })))
+    .flatMap((g) => g.files.filter((p) => p.endsWith(CHECKPOINT_KINDS.companion)).map((p) => ({ p, mtime: g.mtime })))
     .sort((a, b) => b.mtime - a.mtime)
     .slice(all ? 0 : (opts.keepCompanions ?? DEFAULT_KEEP_COMPANIONS));
   if (!dryRun) removeFiles(companions.map((c) => c.p));
@@ -137,15 +144,20 @@ export function pruneCheckpoints(projectDir, opts = {}) {
 export function supersedePending(projectDir, injection) {
   if (!injection?.deltaFile) return { files: 0, bytes: 0 };
   const delta = path.join(projectDir, injection.deltaFile);
-  const base = delta.replace(/\.md(\.consumed)?$/, "");
-  return removeFiles([
-    delta,
-    `${base}.md`,
-    `${base}.md.consumed`,
-    `${base}-full.md`,
-    `${base}-full.md.consumed`,
-    `${base}-audit.json`,
-  ]);
+  const base = delta.replace(
+    new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}(${CONSUMED_SUFFIX.replace(".", "\\.")})?$`),
+    ""
+  );
+  // Derived, not listed. The hand-written version of this list is exactly how a
+  // file kind goes uncollected: it was written when there were two kinds, a
+  // third arrived, and nobody thought to come back here. Found in review, after
+  // the same patch had already centralised the producers and the retention
+  // pattern and left this one path still counting on its own.
+  const variants = [delta];
+  for (const suffix of Object.values(CHECKPOINT_KINDS)) {
+    variants.push(`${base}${suffix}`, `${base}${suffix}${CONSUMED_SUFFIX}`);
+  }
+  return removeFiles(variants);
 }
 
 /**
@@ -171,7 +183,7 @@ export function dropDeliveredCompanions(projectDir, agentId) {
   } catch {
     return { files: 0, bytes: 0 };
   }
-  const suffix = `-to-${agentId}-full.md`;
+  const suffix = `-to-${agentId}${CHECKPOINT_KINDS.companion}`;
   const targets = entries.filter((f) => f.endsWith(suffix)).map((f) => path.join(dir, f));
   return removeFiles(targets);
 }

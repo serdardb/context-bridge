@@ -15,6 +15,7 @@
 // and says so plainly when it was not.
 import fs from "node:fs";
 import path from "node:path";
+import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
 import { adapterFor } from "./agents/index.mjs";
 
 /**
@@ -99,7 +100,7 @@ function fit(delta, companionRel, limit, markerText) {
 /** The companion that was written beside a delta, if it is still on disk. */
 export function companionFor(projectDir, deltaRel) {
   if (!deltaRel) return null;
-  const companionRel = deltaRel.replace(/\.md$/, "-full.md");
+  const companionRel = deltaRel.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.companion);
   return fs.existsSync(path.join(projectDir, companionRel)) ? companionRel : null;
 }
 
@@ -110,6 +111,6 @@ export function companionFor(projectDir, deltaRel) {
 export function deltaWasConsumed(projectDir, injection) {
   if (!injection?.deltaFile) return true;
   const delta = path.join(projectDir, injection.deltaFile);
-  if (fs.existsSync(`${delta}.consumed`)) return true;
+  if (fs.existsSync(`${delta}${CONSUMED_SUFFIX}`)) return true;
   return !fs.existsSync(delta);
 }
