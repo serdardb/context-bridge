@@ -13,6 +13,9 @@ import {
   currentGitSha,
   composeFullContext,
   composeForRoad,
+  checkSummaryFits,
+  summaryBudgetFor,
+  budgetAfterTrailing,
 } from "./delta.mjs";
 import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
@@ -242,6 +245,7 @@ export function handoff(
   // `transfer` and `checkTarget` are injectable so the official-import path can be
   // exercised without shelling out to the OpenAI plugin or a real login.
   {
+    summary = "",
     decisions = "",
     next: nextNotes = "",
     adopt = false,
@@ -252,6 +256,22 @@ export function handoff(
 ) {
   const targetAdapter = adapterFor(target);
   if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
+
+  // Before anything at all, including reading state off disk.
+  //
+  // The exact budget is not knowable this early, because it depends on the road
+  // and on how much of the delta the rest of the sections take. The ceiling is,
+  // and checking it here costs nothing. What it buys is the case that made this
+  // necessary: on a first Claude to Codex switch the official import runs above
+  // the exact check and creates a real thread through the OpenAI plugin, so an
+  // oversized summary was refused only after an import that cannot be undone.
+  //
+  // The two checks cannot disagree on that path. The import only happens when the
+  // target is unlinked, a freshly imported thread has no `hookSeen`, and without
+  // one the road is always the prompt's 128KB, on which `summaryBudgetFor`
+  // returns this same ceiling. A test holds that co-occurrence, because the
+  // argument is only as good as the day someone changes one of its halves.
+  checkSummaryFits(summary);
 
   const s = ensureState(projectDir);
   const lines = [];
@@ -344,61 +364,48 @@ export function handoff(
   const sourceRef = sourceAdapter.hydrate(projectDir, sourceSlot);
   const git = gitDelta(projectDir, s.git.sha);
   const sections = {
+    summary,
     sources: streams.length ? streams : [{ id: sourceId, label: sourceAdapter.displayName, messages: [] }],
     decisions: splitNotes(decisions),
     work: [...work, ...git.lines],
     next: splitNotes(nextNotes),
   };
 
-  // Re-issuing a handoff to the same target replaces the undelivered one instead
-  // of leaving it behind: those orphans were pure waste, and two pending packages
-  // for one agent is a state nobody can reason about.
-  if (s.pendingInjection?.agent === target) {
-    const dropped = supersedePending(projectDir, s.pendingInjection);
-    if (dropped.files) {
-      lines.push(`${OK} Replaced the previous undelivered handoff to ${targetAdapter.displayName} (${kb(dropped.bytes)} freed).`);
-    }
-    s.pendingInjection = null;
-  }
-
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
-
-  // The manifest is written beside the delta and stays out of it. It costs
-  // nothing in tokens and everything it records is ground truth taken from the
-  // agents' own files, never from what an agent says about itself: a self-report
-  // is an interpretation, and the two turns Antigravity ended without writing a
-  // word would have produced no audit trail at all under that design.
-  let auditRel = null;
-  try {
-    const manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
-    if (Object.keys(manifest.agents).length) auditRel = writeManifest(projectDir, stem, manifest);
-  } catch {
-    // Never let the convenience break the product.
-  }
-  const full = composeFullContext(sections);
-  const fullRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
-
-  // The 8KB delta exists because the other side already knows the earlier
-  // conversation. On a FIRST switch it knows nothing, so clipping would hand it
-  // a worse start than the official Claude→Codex import gives — which is exactly
-  // the second-class treatment Grok objected to. Send everything instead: the
-  // limit was never the channel, only the assumption of shared history.
+  const fullRel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.fullContext}`);
   const firstSwitch = !targetSlot.id;
 
-  // The road is decided here rather than after composing, because it decides how
-  // much the delta may carry. A hook's 4KB and a prompt's 128KB are different
-  // problems, and composing one size for both meant the hook road was built at
-  // 8KB and then cut down to 4KB by a blade that landed wherever it landed.
+  // The road is decided before anything happens to the disk, because it decides
+  // how much the delta may carry and therefore how much of it the summary may
+  // take. A hook's 4KB and a prompt's 128KB are different problems, and composing
+  // one size for both meant the hook road was built at 8KB and then cut down by a
+  // blade that landed wherever it landed.
   const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
-  // Minus what delivery will add on the way out. The full context file is
-  // written just above and always exists, so `fit` will always append its
-  // pointer; composing to the road itself means composing to a limit that is
-  // already spent, and the tail of a delta built to fit gets trimmed anyway.
+  // Minus what delivery will add on the way out. The full context file always
+  // exists, so `fit` will always append its pointer; composing to the road
+  // itself means composing to a limit that is already spent.
   const roadBudget = deliverableBudget(
     via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
     fullRel,
     sourceAdapter.displayName
   );
+
+  // Build the manifest now, but do not write it yet. Its path is part of the
+  // footer, and the footer is part of the summary's budget; writing it before the
+  // check would leave a file behind for a handoff that may still be refused.
+  let manifest = null;
+  let auditRel = null;
+  try {
+    manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
+    if (Object.keys(manifest.agents).length) auditRel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.audit}`);
+  } catch {
+    manifest = null;
+    auditRel = null;
+  }
+
+  // On a FIRST switch the other side knows nothing, so the whole conversation
+  // goes rather than a bounded delta: the limit was never the channel, only the
+  // assumption of shared history.
 
   // Everything appended after the conversation, as a function of the one thing
   // about it that is not yet known. It has to be a function rather than a string:
@@ -447,6 +454,48 @@ export function handoff(
     }
     return out;
   };
+
+  // The exact budget, now that the road, the rest of the delta and every footer
+  // line are known.
+  //
+  // The comment that used to sit here claimed everything above it only reads. It
+  // was written rather than checked, and three things above it change something:
+  // `ensureState` creates the state file, `ensureSourceLinked` sets a slot in
+  // memory, and the official import creates a Codex thread that cannot be undone.
+  // The gross case is refused at the top of this function for that reason. What
+  // is left here is the narrow-road case, which is unreachable on the import path.
+  //
+  // This must also stay above `supersedePending`: refusing a handoff must not
+  // delete the one that was already waiting.
+  const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
+  checkSummaryFits(summary, summaryBudget);
+  sections.summaryBudget = summaryBudget;
+
+  // Re-issuing a handoff to the same target replaces the undelivered one instead
+  // of leaving it behind: those orphans were pure waste, and two pending packages
+  // for one agent is a state nobody can reason about.
+  if (s.pendingInjection?.agent === target) {
+    const dropped = supersedePending(projectDir, s.pendingInjection);
+    if (dropped.files) {
+      lines.push(`${OK} Replaced the previous undelivered handoff to ${targetAdapter.displayName} (${kb(dropped.bytes)} freed).`);
+    }
+    s.pendingInjection = null;
+  }
+
+  // The manifest is written beside the delta and stays out of it. It costs
+  // nothing in tokens and everything it records is ground truth taken from the
+  // agents' own files, never from what an agent says about itself: a self-report
+  // is an interpretation, and the two turns Antigravity ended without writing a
+  // word would have produced no audit trail at all under that design.
+  if (manifest && auditRel) {
+    try {
+      auditRel = writeManifest(projectDir, stem, manifest);
+    } catch {
+      auditRel = null;
+    }
+  }
+  const full = composeFullContext(sections);
+  writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
 
   const delta = firstSwitch
     ? full +

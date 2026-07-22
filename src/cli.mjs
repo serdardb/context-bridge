@@ -301,12 +301,15 @@ export async function main(argv) {
       // agent being alive was never what the handoff actually needed.
       const from = valueOf(argv, "--from") || null;
       const opts = {
+        summary: valueOf(argv, "--summary"),
         decisions: valueOf(argv, "--decisions"),
         next: valueOf(argv, "--next"),
         adopt: flags.has("--adopt"),
         from,
       };
-      const usage = `Usage: bridge handoff <${AGENT_IDS.join("|")}> [--from <agent>] [--decisions "…"] [--next "…"] [--adopt]`;
+      const usage =
+        `Usage: bridge handoff <${AGENT_IDS.join("|")}> [--summary "…"] [--decisions "…"] [--next "…"]` +
+        " [--from <agent>] [--adopt]";
       if (!AGENT_IDS.includes(target)) {
         log(usage);
         process.exitCode = 1;

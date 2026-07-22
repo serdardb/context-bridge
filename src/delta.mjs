@@ -1,7 +1,7 @@
 // Deterministic context-delta extraction. No LLM summarization calls in v0.1:
 // conversation truth comes from native session files, work truth from git.
 import fs from "node:fs";
-import { tryExec } from "./util.mjs";
+import { tryExec, BridgeError } from "./util.mjs";
 
 // There is no message cap and no per-message length here, deliberately, and this
 // comment is the guard against one coming back. Every number that used to live
@@ -115,6 +115,98 @@ export function composeDelta(sections, budget) {
   return shell(sections, streams, conversationBlock);
 }
 
+/**
+ * How much of a delta the departing agent's own account may take.
+ *
+ * Provisional, and named so it does not claim otherwise. It is larger than the
+ * 8KB cap a whole delta used to live under and far below the 128KB the operating
+ * system allows, which is the entire argument for it so far. The real
+ * distribution is being recorded by the deltas themselves, one file per handoff,
+ * and this moves when there is a week of them to read. What it must never become
+ * again is a number of bullet points: the skill used to ask for at most three
+ * short sentences, and that instruction cost more than every byte cap in this
+ * file put together.
+ */
+export const DEFAULT_SUMMARY_BYTES = 12 * 1024;
+
+/**
+ * Raised when an agent's summary is larger than the delta can carry.
+ *
+ * Loud, and never a silent trim. Cutting it here would take the first characters
+ * and drop the reasoning, which is the defect this whole line of work exists to
+ * remove; the agent that wrote it is the only thing that knows what it can
+ * afford to lose. An expected error rather than a crash, so the agent reads a
+ * sentence and not a stack trace.
+ */
+export class SummaryTooLarge extends BridgeError {
+  constructor(bytes, budget) {
+    super(
+      `The summary is ${bytes} bytes and this handoff allows ${budget}. ` +
+        "Shorten it yourself and run the same command again, once. " +
+        "Nothing has been written, and the bridge will not cut it for you: " +
+        "it would keep your opening and drop your reasoning."
+    );
+    this.name = "SummaryTooLarge";
+    this.bytes = bytes;
+    this.budget = budget;
+  }
+}
+
+/**
+ * How much of THIS delta the summary may take.
+ *
+ * Derived, never a constant. The first version of this checked a flat 12KB at
+ * the door before the road was known, which is two budgets that cannot see each
+ * other: a 5KB summary passed the door and produced a 5333-byte delta on a
+ * 4096-byte hook road, so the claim that the summary was charged to the delta's
+ * budget was false on exactly the narrow road where it mattered.
+ *
+ * So the room is the road minus everything in the delta that is not the summary
+ * and cannot be trimmed, and `DEFAULT_SUMMARY_BYTES` is only a ceiling on top of
+ * that. On a wide road the ceiling binds; on a narrow one the road does.
+ */
+export function summaryBudgetFor(sections, roadBudget) {
+  const streams = normaliseSources(sections);
+  const withoutSummary = Buffer.byteLength(shell({ ...sections, summary: "" }, streams, ""));
+  return Math.max(0, Math.min(DEFAULT_SUMMARY_BYTES, roadBudget - withoutSummary));
+}
+
+/**
+ * Check before anything is written.
+ *
+ * `handoff` writes the audit manifest and the full context checkpoint before it
+ * composes the delta, so failing at composition time would leave those two files
+ * behind for a handoff that never happened.
+ */
+export function checkSummaryFits(summary, budget = DEFAULT_SUMMARY_BYTES) {
+  const bytes = Buffer.byteLength(String(summary ?? "").trim());
+  if (bytes > budget) throw new SummaryTooLarge(bytes, budget);
+  return bytes;
+}
+
+/**
+ * The departing agent's account of the work, checked against its own budget.
+ *
+ * Absence is not failure. Recovery exists for an agent that could not speak: a
+ * quota, a crash, a turn that never ended. Refusing to produce a handoff then
+ * would mean the feature built for the moment you are stuck refuses to run when
+ * you are stuck. So a missing summary produces a delta that says it is missing,
+ * and the mechanical extract underneath stops being presented as a reading.
+ */
+function summaryBlock(summary, budget) {
+  const text = String(summary ?? "").trim();
+  if (!text) {
+    return (
+      "Summary\n\n" +
+      "[No agent-written summary was available for this handoff. What follows is " +
+      "extracted from the transcript, git and the audit manifest, and is a record " +
+      "rather than a reading: nobody has said which parts of it matter.]"
+    );
+  }
+  checkSummaryFits(text, budget);
+  return `Summary\n\n${text}`;
+}
+
 /** Everything but the conversation, which is the part with a budget. */
 function shell(sections, streams, conversationBlock) {
   const sec = (title, items, empty) =>
@@ -123,6 +215,8 @@ function shell(sections, streams, conversationBlock) {
     "[Bridge Context Update]",
     "",
     `While you were away, work continued in ${streams.map((st) => st.label).join(", ")}.`,
+    "",
+    summaryBlock(sections.summary, sections.summaryBudget ?? DEFAULT_SUMMARY_BYTES),
     "",
     `Conversation\n\n${conversationBlock}`,
     "",
@@ -263,10 +357,23 @@ export function deltaLostSomething(plan) {
  * function pure is the kind of guard that has already failed three times here.
  */
 export function composeForRoad(sections, budget, trailing) {
-  const wordings = { true: trailing(true), false: trailing(false) };
-  const effective = budget - Math.max(Buffer.byteLength(wordings.true), Buffer.byteLength(wordings.false));
+  const { effective, wordings } = budgetAfterTrailing(budget, trailing);
   const lost = deltaLostSomething(planDelta(sections, effective));
   return composeDelta(sections, effective) + wordings[lost];
+}
+
+/**
+ * The part of the road left for the delta body after the caller's own footer.
+ *
+ * Exported so the caller that validates a summary before writing anything can
+ * validate against the same reservation `composeForRoad` will later make. Without
+ * this, a summary could pass the door and still force delivery to trim the delta
+ * after the full-context pointer was appended.
+ */
+export function budgetAfterTrailing(budget, trailing) {
+  const wordings = { true: trailing(true), false: trailing(false) };
+  const effective = budget - Math.max(Buffer.byteLength(wordings.true), Buffer.byteLength(wordings.false));
+  return { effective, wordings };
 }
 
 /**
@@ -302,9 +409,13 @@ function normaliseSources({ fromAgent, conversation, sources }) {
   return [{ label: cap(fromAgent ?? "agent"), messages: conversation ?? [] }];
 }
 
-export function composeFullContext({ fromAgent, conversation, sources, decisions, work, next }) {
+export function composeFullContext({ fromAgent, conversation, sources, decisions, work, next, summary }) {
   const streams = normaliseSources({ fromAgent, conversation, sources });
   const list = (items, empty) => (items.length ? items.map((i) => `- ${i}`).join("\n") : `- ${empty}`);
+  // The summary belongs here as well. This file is what the delta points at when
+  // the road was too narrow, and arriving to find the evidence without the
+  // reading of it would be a worse record than the delta it replaces.
+  const summaryText = String(summary ?? "").trim();
   const blocks = streams
     .filter((st) => st.messages.length)
     .map((st) => {
@@ -316,6 +427,10 @@ export function composeFullContext({ fromAgent, conversation, sources, decisions
     `# Bridge full context — from ${who}`,
     "",
     "The same handoff with no budget over it. Nothing here is left out.",
+    "",
+    "## Summary",
+    "",
+    summaryText || "_No agent-written summary was available for this handoff._",
     "",
     "## Conversation",
     "",
