@@ -105,7 +105,7 @@ export function composeDelta(sections, budget) {
       ? "No conversation activity since last sync."
       : plan
           .map((p) => {
-            const body = [...p.kept.map((m) => messageBlock(m, p.label)), omissionNote(p)].filter(Boolean).join("\n\n");
+            const body = [omissionNote(p), ...p.kept.map((m) => messageBlock(m, p.label))].filter(Boolean).join("\n\n");
             // One source needs no attribution; several do, or a chain arrives as
             // an unattributed pile and the reader cannot tell who decided what.
             return streams.length > 1 ? `## From ${p.label}\n\n${body}` : body;
@@ -394,7 +394,7 @@ function omissionNote({ label, candidates, kept, omitted, newestTooLarge, noRoom
         : "none of them fit";
     return `[None of ${label}'s ${candidates} new ${plural(candidates, "message")} could be carried: ${why}. All of them are whole in the full context checkpoint.]`;
   }
-  return `[${omitted} earlier ${plural(omitted, "message")} from ${label} did not fit above, out of ${candidates} new ${plural(candidates, "message")}. They are whole in the full context checkpoint.]`;
+  return `[${omitted} earlier ${plural(omitted, "message")} from ${label} are not included in this delta preview, out of ${candidates} new ${plural(candidates, "message")}. They are whole in the full context checkpoint.]`;
 }
 
 function plural(n, word) {

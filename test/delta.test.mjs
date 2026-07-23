@@ -190,7 +190,11 @@ test("what did not fit is counted, and the count matches what is there", () => {
   assert.ok(plan.omitted > 0, "the fixture must overflow the budget or it proves nothing");
   assert.equal(plan.kept.length + plan.omitted, 30);
   assert.equal((delta.match(/^### /gm) ?? []).length, plan.kept.length, "the plan and the text must agree");
-  assert.match(delta, new RegExp(`${plan.omitted} earlier messages? from Codex did not fit above, out of 30`));
+  assert.match(delta, new RegExp(`${plan.omitted} earlier messages? from Codex are not included in this delta preview, out of 30`));
+  assert.ok(
+    delta.indexOf("are not included in this delta preview") < delta.indexOf("### Codex"),
+    "the reader should know what is missing before reading the preview"
+  );
 });
 
 test("the delta stays inside the budget it was given, multi-byte characters included", () => {
@@ -354,7 +358,7 @@ test("a message pushed out by the trailing text cannot be reported as nothing le
   assert.ok(out.includes("SOMETHING DID NOT FIT"), "the trailing text ate the room, so the delta has to admit it");
   assert.ok(!out.includes("NOTHING was left out"), "this is the sentence the bug produced");
   // And the count in the body has to agree with the sentence at the foot of it.
-  assert.match(out, /did not fit above/);
+  assert.match(out, /not included in this delta preview/);
 });
 
 test("a trailing text that answers differently each time still cannot break the budget", () => {
