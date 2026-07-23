@@ -21,13 +21,15 @@ import { adapterFor } from "./agents/index.mjs";
 /**
  * How much of a delta may ride inside a hook's model-visible output.
  *
- * Codex caps that output and degrades gracefully past it, writing the full text
- * to a file and showing the model a preview with the path. Rather than encode
- * somebody's token arithmetic, this is a deliberately smaller byte budget with
- * the full context checkpoint named alongside it, so the agent always has a way to read
- * the rest.
+ * Codex caps that output around 2,500 model-visible tokens and degrades
+ * gracefully past it, writing the full text to a file and showing the model a
+ * preview with the path. That cap was measured when hook delivery was first
+ * proven live, with an 8KB bounded delta recorded as right at the edge. Token to
+ * byte conversion is content-dependent, so this is a measured operating point,
+ * not proof that every 8KB body is under the cap. The full context checkpoint is
+ * still named alongside any trim, so the agent always has a way to read the rest.
  */
-export const HOOK_DELTA_BYTES = 4 * 1024;
+export const HOOK_DELTA_BYTES = 8 * 1024;
 
 /**
  * How much of a delta may ride as a command-line prompt.

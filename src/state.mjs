@@ -110,6 +110,9 @@ export function agentSlot(s, agentId) {
     get idle() {
       return slot.idle === true;
     },
+    get hookSeen() {
+      return slot.hookSeen ?? null;
+    },
     set(values) {
       Object.assign(slot, values);
       return slot;

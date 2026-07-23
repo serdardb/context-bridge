@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultState, saveState, loadState, checkpointsDir } from "../src/state.mjs";
-import { hookBody, HOOK_DELTA_BYTES, deltaWasConsumed, hookDeliveryEligible } from "../src/delivery.mjs";
+import { hookBody, HOOK_DELTA_BYTES, deltaWasConsumed, hookDeliveryEligible, fullContextFor } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -79,6 +79,63 @@ test("hook delivery is only considered when hooks are installed and have run rec
   assert.equal(ancient, false, "a stamp from years ago says nothing about today");
 
   assert.equal(hookDeliveryEligible("grok", { hookSeen: new Date().toISOString() }), false, "Grok has no hook delivery at all");
+});
+
+test("a handoff to a Codex session whose hook has run takes the measured hook road", async () => {
+  const { handoff } = await import("../src/handoff.mjs");
+  const { installHooks } = await import("../src/agents/codex.mjs");
+
+  const previous = process.env.CODEX_HOME;
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hook-road-"));
+  const codexHome = path.join(project, "codex-home");
+  process.env.CODEX_HOME = codexHome;
+  try {
+    installHooks();
+    fs.mkdirSync(checkpointsDir(project), { recursive: true });
+    const claudeTranscript = path.join(project, "claude.jsonl");
+    const codexRollout = path.join(project, "rollout.jsonl");
+    fs.writeFileSync(
+      claudeTranscript,
+      JSON.stringify({
+        timestamp: "2026-01-01T00:00:00.000Z",
+        type: "assistant",
+        message: { content: "Claude did the work and left enough detail for Codex." },
+      }) + "\n"
+    );
+    fs.writeFileSync(codexRollout, "");
+
+    const state = defaultState(project);
+    state.agents.claude = { id: "claude-session", transcriptPath: claudeTranscript, mark: null, idle: false };
+    state.agents.codex = {
+      id: "codex-session",
+      transcriptPath: codexRollout,
+      mark: null,
+      idle: false,
+      hookSeen: new Date().toISOString(),
+    };
+    state.activeAgent = "claude";
+    saveState(project, state);
+
+    handoff(project, "codex", {
+      from: "claude",
+      summary: "s".repeat(HOOK_DELTA_BYTES - 1500),
+      decisions: "the hook road is live",
+      next: "deliver it through the hook",
+      checkTarget: () => {},
+    });
+
+    const after = loadState(project);
+    const inj = after.pendingInjection;
+    assert.equal(inj?.via, "hook", "hookSeen on the stored slot has to survive the agentSlot facade");
+    const delta = fs.readFileSync(path.join(project, inj.deltaFile), "utf8");
+    const delivered = hookBody(delta, fullContextFor(project, inj.deltaFile));
+    assert.ok(Buffer.byteLength(delivered) <= HOOK_DELTA_BYTES, "the real hook body must fit the hook road");
+    assert.doesNotMatch(delivered, /trimmed to fit/, "a delta composed for the hook road should not be cut again by delivery");
+    assert.match(delivered, /Summary/);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previous;
+  }
 });
 
 // Whatever is trimmed has to stay reachable, or the trim becomes a quiet loss.

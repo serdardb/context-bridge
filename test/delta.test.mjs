@@ -445,13 +445,13 @@ test("the summary's room comes from the road, not from a number", async () => {
   assert.ok(onHook < DEFAULT_SUMMARY_BYTES);
   assert.equal(onPrompt, DEFAULT_SUMMARY_BYTES, "and on a wide road the ceiling is what binds");
 
-  // The exact summary that broke it: under the 12KB ceiling, over the hook road.
-  // A test using something larger than both would pass with the defect in place,
-  // which is how the first version of this got through.
-  const between = "s".repeat(5000);
+  // Under the 12KB ceiling, one byte over the hook road. A test using something
+  // larger than both would pass with the defect in place, which is how the first
+  // version of this got through.
+  const between = "s".repeat(onHook + 1);
   assert.ok(between.length < DEFAULT_SUMMARY_BYTES, "the fixture must clear the ceiling or it proves nothing");
   assert.throws(() => checkSummaryFits(between, onHook), /Shorten it yourself/, "refused on the road that cannot carry it");
-  assert.equal(checkSummaryFits(between, onPrompt), 5000, "and accepted on the road that can");
+  assert.equal(checkSummaryFits(between, onPrompt), between.length, "and accepted on the road that can");
 
   // And what it produces when accepted still fits, which is the claim the whole
   // derivation exists to make true.

@@ -377,9 +377,9 @@ export function handoff(
 
   // The road is decided before anything happens to the disk, because it decides
   // how much the delta may carry and therefore how much of it the summary may
-  // take. A hook's 4KB and a prompt's 128KB are different problems, and composing
-  // one size for both meant the hook road was built at 8KB and then cut down by a
-  // blade that landed wherever it landed.
+  // take. A hook's measured budget and a prompt's 128KB are different problems,
+  // and composing one size for both meant the hook road was built at 8KB and then
+  // cut down by a blade that landed wherever it landed.
   const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
   // Minus what delivery will add on the way out. The full context file always
   // exists, so `fit` will always append its pointer; composing to the road
