@@ -3,7 +3,7 @@
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, readJson, nowIso, fileExists } from "./util.mjs";
+import { writeJsonAtomic, readJson, nowIso, fileExists, log, dim, OK } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
 export const STATE_VERSION = 5;
@@ -279,15 +279,30 @@ export function loadState(projectDir) {
     }
     s = migrate(s);
   }
+  let backup = null;
   try {
     try {
       // COPYFILE_EXCL: the first backup is the real original, so never overwrite
       // it — a later restore-and-remigrate must not clobber the good copy.
       fs.copyFileSync(p, `${p}.v${from}.backup`, fs.constants.COPYFILE_EXCL);
+      backup = `${p}.v${from}.backup`;
     } catch {
       // Backup already exists: keep it.
     }
     writeJsonAtomic(p, s);
+    // Said once, here, because this is the only moment it is true and the only
+    // moment the user can act on it. A migration is one-way: an older bridge
+    // refuses a newer file outright rather than guessing at it, so somebody who
+    // downgrades after this needs to know the original is still on disk. The
+    // backup has always been written and nothing has ever mentioned it, which
+    // made rolling back look impossible when it is a copy away.
+    if (backup) {
+      log(
+        `${OK} Upgraded .bridge/state.json from v${from} to v${STATE_VERSION}. ` +
+          `The original is kept at ${path.basename(backup)}.`
+      );
+      log(dim("  Older versions of context-bridge cannot read the new file; restore that copy to go back."));
+    }
   } catch {
     // Read-only project or a race: the migrated state is still correct in memory.
   }

@@ -90,3 +90,36 @@ test("nothing a lane owns is written back at the project root", async () => {
     assert.equal(raw[field], undefined, `${field} written twice means two truths and one of them goes stale`);
   }
 });
+
+// The rollback path was silent. The backup has always been written and nothing
+// ever mentioned it, so going back looked impossible when it is a copy away, and
+// an older bridge refuses a v5 file outright rather than guessing. Said once, at
+// the only moment it is true and the only moment anyone can act on it.
+test("a migration says what it did and where the original went, exactly once", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-migsay-"));
+  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  fs.writeFileSync(
+    path.join(project, ".bridge", "state.json"),
+    JSON.stringify({ version: 4, project, activeAgent: "claude", agents: {}, knownBy: {}, git: {} })
+  );
+
+  const said = [];
+  const original = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, ...rest) => {
+    said.push(String(chunk));
+    return original(chunk, ...rest);
+  };
+  try {
+    loadState(project);
+    loadState(project);
+  } finally {
+    process.stdout.write = original;
+  }
+
+  const spoke = said.join("").split("\n").filter((l) => l.trim());
+  assert.equal(spoke.length, 2, "one migration, one two-line notice, and nothing on the second read");
+  assert.match(spoke[0], /from v4 to v5/, "it has to name both versions or it is not actionable");
+  assert.match(spoke[0], /state\.json\.v4\.backup/, "and the file that makes going back possible");
+  assert.match(spoke[1], /cannot read the new file/, "one way is the part nobody would guess");
+  assert.ok(fs.existsSync(path.join(project, ".bridge", "state.json.v4.backup")));
+});

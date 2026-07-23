@@ -220,7 +220,7 @@ Each delta costs the receiving agent one short acknowledgment sentence — that 
 | Piece | What it is |
 |---|---|
 | `bridge` CLI | Zero-dependency Node CLI: launcher loop, state, deltas, doctor |
-| `.bridge/state.json` | Versioned per-project state: session references, sync watermarks, git checkpoint, pending markers. Migrated forward automatically, with a backup. Never transcripts. Auto-gitignored. |
+| `.bridge/state.json` | Versioned per-project state: session references, sync watermarks, git checkpoint, pending markers. Migrated forward automatically, keeping the original as `state.json.v<n>.backup` and saying so once. Never transcripts. Auto-gitignored. |
 | `src/agents/` | One adapter per agent: discovery, resume command, activity parsing, idle signal, conflicting flags, health. Adding an agent is one file. |
 | `knownBy` matrix | Per pair, how far into each agent's own stream has been packed for each other agent. This is what makes chains keep their history. |
 | Claude plugin | `/bridge` skill + `SessionStart` / `Stop` / `UserPromptSubmit` hooks (session recording, delta injection, idle marking) |
@@ -280,7 +280,8 @@ than leaving an empty column to be misread as nothing happened.
 - Grok cannot receive a delta through a hook at all: its hooks fire but their output is ignored for passive events, so Grok stays on prompt delivery.
 - An agent's own dialogs (folder trust, update prompts) can appear before a resumed session; answer them once and the flow continues.
 - A launcher left running across a bridge upgrade cannot read the newer state file. It says so and asks to be restarted; the pending handoff is preserved.
-- Decision/Next quality depends on the departing agent following its handoff instructions; Conversation/Work sections are deterministic from session files and git regardless.
+- Upgrading the state file is one way. An older bridge refuses a newer one rather than guessing at it, so downgrading means restoring the backup the migration keeps beside it (`state.json.v<n>.backup`). The upgrade says both of these once, when it happens.
+- The summary is written by the departing agent, so its quality depends on that agent following its handoff instructions. When one is missing, from a crash or a recovery, the delta says so and falls back to the deterministic Conversation and Work sections rather than presenting an extract as a reading.
 - If you run `claude`/`codex` outside the `bridge` launcher, handoffs still record state, but the actual switch is manual (the handoff message tells you exactly what to run).
 - Codex stores its sessions by date rather than by project, so the discovery check for it is measured across the machine rather than for one project.
 - **This is an early developer preview — not production-ready.**
