@@ -6,6 +6,107 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.10.0] — 2026-07-23
+
+The delta was carrying a tenth of what it was allowed to. This release is mostly
+about finding that out and fixing it, and the reasoning is the interesting half.
+
+### Changed
+
+- **A handoff carries whole messages now.** Six numbers decided what survived a
+  switch and not one had been chosen against a real constraint: at most fourteen
+  messages per agent, each cut to its first 220 characters, an 8KB cap on the
+  result, a second copy of the character limit hidden in the launcher, and the
+  skill asking the departing agent for "max ~3 items". Measured on a real
+  project, that carried 21KB of a 105KB conversation into a 128KB budget. What
+  decides now is the road's own limit. A message travels whole or does not
+  travel, because a message cut at 220 characters keeps the claim and drops the
+  evidence: the review that started this arrived reading "no blockers,
+  commit-ready" with its verification list and its warning cut off, which reads
+  like a short answer rather than a truncated one.
+- **The departing agent writes the handoff.** A transcript says what was said,
+  never which of it mattered, and the only thing that knows that is the agent
+  leaving. It is now asked for an account rather than three bullet points, with
+  a byte budget instead of an item count, and told to mark its own uncertainty
+  and say what the next agent should verify first. A summary over budget fails
+  the command with both numbers and is never trimmed. A missing one never fails
+  at all, because recovery is exactly when an agent could not speak, and the
+  delta then says the extract is a record rather than a reading.
+- **The full context file outlives the session it was written for.** It used to
+  be deleted the moment its reader handed off, on the argument that it was a
+  transient duplicate. Once the delta carries whole messages the two are the
+  same size, and it is what delivery names whenever it has to trim, which can
+  happen after a handoff has ended. One retention rule now, the same group rule
+  as everything else. `CHECKPOINT_KINDS.companion` is `fullContext`; the on-disk
+  suffix is unchanged, because renaming it would drop every existing file out of
+  the pattern that collects them.
+- **The hook road's budget is 8KB rather than 4KB.** The cap was measured when
+  hook delivery was first proven live, around 2,500 model-visible tokens, and
+  4KB was roughly a thousand of them: deliberately below a known limit, out of
+  caution that made sense when a delta was a handful of one-line stubs. On the
+  deltas written since whole messages arrived, 4KB carries 15% of them intact
+  and 8KB carries 73%. It is an operating point rather than proof, since the cap
+  is in tokens and the budget is in bytes.
+
+### Added
+
+- **`bridge inspect`** renders what the departing agents actually ran, from an
+  audit manifest written beside each delta: commands, exit codes, files changed
+  and files read, failures first. It is ground truth from the agents' own files
+  rather than anything an agent says about itself, and it costs nothing in
+  tokens because the manifest never enters the delta.
+- **`bridge handoff <target> --from <agent>`** rebuilds a handoff from a dead
+  agent's transcript. When an agent hits a quota or crashes mid-switch it cannot
+  run the command itself and its work is stranded; being alive was never what
+  the handoff actually needed.
+- **Each agent declares what its own record can and cannot yield.** Codex runs
+  everything through one exec channel, so it can report commands and never
+  reads; Claude names its tools, so it can report both. `bridge inspect` says
+  which absences are real and which are simply unknowable for that agent.
+- **A project holds lines of work.** The state file now keeps its agents,
+  watermarks and pending markers under a lane called `main`, folded there from
+  the old shape without losing a byte. Nothing is user-visible yet; the commands
+  that use it come next.
+
+### Fixed
+
+- **The hook road had never once been taken.** `hookDeliveryEligible` reads a
+  slot's `hookSeen` stamp, and the handoff passed it a facade that exposed four
+  fields and not that one. Every handoff this project ever made went by prompt,
+  and everything built for the narrow road had only ever run in tests that set
+  the route by hand.
+- **A delta carried the bridge's own instruction manual.** The handoff skill's
+  text was arriving as conversation: on one real delta, 5,587 of 7,670 bytes,
+  sent to the agent that already has it.
+- **Closing words were appended outside the budget.** The departing agent's last
+  message is written after the handoff command runs, so it is added to the delta
+  afterwards, and nothing checked whether it still fit. A delta at 130,728 bytes
+  against a 131,072 ceiling became 133,690, and what delivery cut was exactly
+  those closing words: the message the feature exists to save.
+- **A delta said nothing about what it left behind.** Omitted messages left no
+  trace at all, and every delta claimed its contents were clipped whether or not
+  anything had been. Each source now accounts for itself, before the preview
+  rather than after it, so a reader learns what is missing before forming a
+  picture from what is not.
+- **Audit manifests were written where nothing collected them.** Retention had
+  been generalised over agent pairs but still named the file kinds by hand, so
+  the manifests accumulated untouched: 24 files, 472KB, invisible to a prune
+  with every limit set to zero. The kinds come from one registry now and a test
+  walks what a real handoff writes, failing on any kind retention cannot group.
+- **A pruned switch history was reported as one that never happened.** `bridge
+  status` said an agent had never handed off when its checkpoints had simply
+  been cleaned up. Absence of evidence is not evidence of absence, and the
+  distinction is the whole point of a status line.
+- **A state migration was silent about the way back.** The original has always
+  been kept beside the new file and nothing mentioned it, which made a downgrade
+  look impossible when it is a copy away. The upgrade now says so once, along
+  with the fact that an older bridge refuses the newer file rather than guessing.
+- **`bridge status` answered a question nobody asked.** It printed each agent's
+  raw watermark under one column labelled "synced": an ISO instant for Claude, a
+  JSON object for Grok, a bare step number for Antigravity. What a person wants
+  is who handed to whom and how recently, and that was already on disk in the
+  checkpoint filenames, unread.
+
 ## [0.9.0] — 2026-07-21
 
 ### Added
