@@ -320,6 +320,28 @@ function allocate(streams, room) {
  * a conversation is harder to read than a shorter tail, and a message larger
  * than the whole budget is 0.24% of the messages measured here. The output stays
  * in the order it happened; only the filling walks backwards.
+ *
+ * **This rule is biased against long messages and that is a known cost, chosen
+ * rather than overlooked.** Measured across another project's paired deltas, the
+ * messages it drops have a median length of 632 characters against 256 for the
+ * ones it keeps: a long message costs more budget, so it is likelier to be the
+ * one the walk stops at. Length is not importance, but the messages this project
+ * most regretted losing were all long ones, so the bias runs the wrong way.
+ *
+ * Two alternatives were measured and neither earned its place. Keeping the head
+ * of the span alongside the tail was proposed on the theory that decisions live
+ * at the start; in the first third of a span, dropped and kept messages carry
+ * decision language at 54% and 56%, which is the same, so the rule would not aim
+ * at what it was built for. And the finding that dropped messages carry more
+ * decision language at all does not survive a length control: hold length
+ * constant and the gap mostly closes, because longer text matches any keyword
+ * more often while also being likelier to be dropped.
+ *
+ * So this stays until there is an importance measure that is not a proxy. What
+ * actually reduces the risk is the summary, which is instructed to carry the
+ * reasoning that a long message would otherwise be the only home for. That makes
+ * summary coverage across every agent the real mitigation, and this allocator a
+ * fallback whose bias matters most exactly when no summary was written.
  */
 function fillNewestFirst(st, share) {
   const kept = [];
