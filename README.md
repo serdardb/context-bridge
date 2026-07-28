@@ -73,6 +73,43 @@ One direction already exists officially: OpenAI ships a Claude Code plugin and C
 
 The knowledge is equal in all four. The session shape is not, and the prompt-seeded cases are limits in those agents rather than something waiting to be built here.
 
+## Alternatives
+
+Other tools solve adjacent problems. The differences are in *what* moves between
+agents, not in tool count.
+
+| | **context-bridge** | [can-bridge](https://github.com/ddoong10/can-bridge) | [ai-context-bridge](https://github.com/himanshuskukla/ai-context-bridge) |
+|---|---|---|---|
+| Agents | 4 — Claude Code, Codex, Grok, Antigravity | 2 — Claude Code, Codex CLI | 11 (resume-prompt targets) |
+| Directions | 12 | 2 (bidirectional pair) | n/a |
+| What moves | the delta the target is missing | the full session transcript, normalized | a generated resume prompt file |
+| Session on the target | the agent's own native session, resumed | injected into a native session | a new session, seeded by the prompt file |
+| Repeat switching | same sessions, delta only | re-extract and re-inject | prompt files regenerated |
+| Chains (A → B → C) | C receives B's work *and* the A context B was given, labelled by source | pair only | not modelled |
+| Trigger | `/bridge <agent>` | command | git commit / checkout / merge hook |
+| Tool calls | left in the source session | translated `tool_use` ↔ `function_call` | not applicable |
+| Language / deps | Node, zero deps | TypeScript | TypeScript, zero deps |
+| License | MIT | MIT | MIT |
+| Last commit | 2026-07-28 | 2026-06-03 | 2026-03-02 |
+
+Every tool here reads session formats that no vendor documents — `can-bridge`
+says so in its own README and pins the date it verified them. That makes the
+last-commit row a functional detail rather than a scoreboard: when an agent ships
+a format change, whichever bridge is still being maintained is the one that keeps
+working.
+
+**How to read this.** `ai-context-bridge` reaches more tools because it writes a
+markdown resume prompt for each one — the target starts a fresh session from that
+file. `can-bridge` moves a real transcript between two agents and translates tool
+calls at the adapter boundary. context-bridge keeps a *live* native session on
+every side and sends only what the target has not been told yet, which is what
+makes repeated switching and multi-agent chains cheap.
+
+Pick `can-bridge` if you want a faithful two-agent transcript copy with tool-call
+translation. Pick `ai-context-bridge` if commit-triggered context files across many
+tools fits your workflow. Pick context-bridge if you switch often, in more than two
+directions, and want the agent you return to to still be the session you left.
+
 ## How it works
 
 ```
