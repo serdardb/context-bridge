@@ -2,6 +2,17 @@
 // so this round only gives it the shared shape. Injection is the one asymmetry
 // that survives — Claude has no auto-submitted resume prompt, so context arrives
 // through the official SessionStart hook instead.
+//
+// That asymmetry had a consequence nobody designed: a hook injects *context*, not
+// a *turn*. Codex is handed the delta as a message and answers it; Claude was
+// handed the same delta as background and had nothing to answer, so it sat idle
+// until a human typed something — every single handoff. The instruction "don't
+// wait for a trigger" could never fix it either, because that instruction also
+// only arrives with a trigger.
+//
+// `kickoffArgs` is the missing half: the hook keeps delivering the content, and a
+// one-line prompt opens the turn. Deliberately carrying no delta, so the handoff
+// cannot land in the conversation twice.
 import fs from "node:fs";
 import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
@@ -89,6 +100,22 @@ export function idleAfter() {
 /** Claude filters by transcript timestamp, so its mark is an ISO instant. */
 export function currentMark() {
   return nowIso();
+}
+
+/**
+ * The turn the hook cannot open.
+ *
+ * Not `promptArgs`: that name means "deliver this delta as the prompt", and an
+ * implementation here would have to ignore its own argument to be correct. The
+ * jobs are different, so the names are.
+ *
+ * The wording stays generic on purpose. Any standing instruction about *how* to
+ * work — review adversarially, don't merely approve — belongs in the project's own
+ * agent configuration, where it applies to every session rather than only to the
+ * ones the bridge starts.
+ */
+export function kickoffArgs() {
+  return ["A context-bridge handoff has been delivered into this session. Read it and continue the work it describes."];
 }
 
 /** A brand new session. Claude receives context through its hook, not a prompt. */

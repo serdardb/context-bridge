@@ -169,7 +169,7 @@ test("the fixtures are real rows, not hand-written approximations", () => {
 });
 
 test("every registered adapter is covered by a fixture, including any added later", () => {
-  const covered = new Set(["claude", "codex", "grok", "antigravity"]);
+  const covered = new Set(["claude", "codex", "grok", "antigravity", "opencode"]);
   for (const id of AGENT_IDS) {
     assert.ok(covered.has(id), `${id} declares capabilities that no real transcript pins`);
     assert.ok(ADAPTERS[id].capabilities, `${id} must declare capabilities`);

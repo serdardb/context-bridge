@@ -93,6 +93,17 @@ export function promptArgs(delta) {
   return ["--", delta];
 }
 
+/**
+ * Open a turn after SessionStart has delivered context through the hook.
+ *
+ * The prompt is deliberately only a nudge. The delta must not appear here as
+ * well, or Codex would receive the same handoff once as developer context and
+ * once as a user message.
+ */
+export function kickoffArgs() {
+  return ["--", "A context-bridge handoff has been delivered into this session. Read it and continue the work it describes."];
+}
+
 export function activitySince(ref, sinceIso) {
   return codexActivitySince(ref.transcriptPath, sinceIso);
 }

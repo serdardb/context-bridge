@@ -10,6 +10,7 @@ export const SHARED_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", 
 export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".claude");
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, ".codex");
 export const GROK_HOME = process.env.GROK_HOME || path.join(HOME, ".grok");
+export const OPENCODE_HOME = process.env.OPENCODE_HOME || path.join(HOME, ".local", "share", "opencode");
 
 // Resolved per call, so tests (and a changed env) are honoured without a reload.
 // The module-level constants above are kept for callers that read them once at
@@ -20,6 +21,10 @@ export function grokHome() {
 
 export function codexHome() {
   return process.env.CODEX_HOME || path.join(process.env.HOME || HOME, ".codex");
+}
+
+export function opencodeHome() {
+  return process.env.OPENCODE_HOME || path.join(process.env.HOME || HOME, ".local", "share", "opencode");
 }
 
 export function sharedSkillPath() {

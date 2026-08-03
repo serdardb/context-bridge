@@ -256,10 +256,23 @@ test("a launch that never starts leaves the delta exactly where it was", () => {
   assert.ok(loadState(project).pendingInjection, "and it must still be pending");
 });
 
-test("a launch that starts consumes the delta exactly once", () => {
+// This test used to assert the opposite, and the assertion it made was the bug.
+//
+// It said a launch that *starts* consumes the delta — "the rename is the record of
+// delivery" — and a start is not a delivery. A CLI that ignores the prompt it was
+// handed produces exactly the same successful spawn as one that reads it, so the
+// old rule marked a handoff delivered on an event that cannot tell those apart.
+// A real Claude→Codex handoff was lost that way, and the only trace afterwards was
+// a checkpoint that never appeared.
+//
+// The rule is now: a launch that starts and says nothing leaves the delta pending.
+// Being wrong in this direction costs a handoff delivered twice, which is visible
+// and recoverable. The other direction costs one delivered never, which is neither.
+test("a launch that starts but says nothing leaves the delta pending", () => {
   const { project, deltaFile } = pendingDelta("prompt", "DELTA BODY");
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "fake-agent-"));
   fs.symlinkSync(process.execPath, path.join(scratch, "node"));
+  // Starts cleanly, writes no transcript, answers nothing — the silent-swallow case.
   fs.writeFileSync(path.join(scratch, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
   spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
@@ -268,8 +281,78 @@ test("a launch that starts consumes the delta exactly once", () => {
     env: { ...cleanEnv(), PATH: scratch },
   });
 
-  assert.ok(fs.existsSync(path.join(project, deltaFile + ".consumed")), "the rename is the record of delivery");
+  assert.ok(fs.existsSync(path.join(project, deltaFile)), "a silent agent must not consume the handoff");
+  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(loadState(project).pendingInjection, "so the next launch can hand it over again");
+});
+
+// The complementary risk, and it is the reason the fix needed two tests rather than
+// one. If activity is never observed, the delta never commits and the same handoff
+// is delivered again at every launch — a loop that is quieter than the loss it
+// replaced but no more correct. So: an agent that answers commits, exactly once.
+test("an agent that answers consumes the delta, and only once", () => {
+  const { project, deltaFile } = pendingDelta("prompt", "DELTA BODY");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "talking-agent-"));
+  fs.symlinkSync(process.execPath, path.join(scratch, "node"));
+  // Writes one assistant message into its rollout, which is what "it answered"
+  // looks like from the outside — the same evidence the adapter reads in real use.
+  const rollout = path.join(project, "rollout.jsonl");
+  const row = JSON.stringify({
+    timestamp: new Date(Date.now() + 60_000).toISOString(),
+    type: "event_msg",
+    payload: { type: "agent_message", message: "on it" },
+  });
+  fs.writeFileSync(
+    path.join(scratch, "codex"),
+    `#!/bin/sh\nprintf '%s\\n' '${row}' >> ${JSON.stringify(rollout)}\nsleep 0.2\nexit 0\n`,
+    { mode: 0o755 },
+  );
+
+  spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: project,
+    encoding: "utf8",
+    env: { ...cleanEnv(), PATH: scratch },
+  });
+
+  assert.ok(fs.existsSync(path.join(project, deltaFile + ".consumed")), "an answered handoff is a delivered one");
+  assert.ok(!fs.existsSync(path.join(project, deltaFile)), "and it must not still be pending, or it ships twice");
   assert.equal(loadState(project).pendingInjection, null);
+});
+
+// The evidence of delivery is the model *answering*, never the delta *echoing*.
+// A prompt-road agent writes the auto-submitted delta into its transcript as a
+// user turn, and if that counted as activity the watcher would commit the instant
+// the prompt landed, before the model read it: the commit-on-spawn bug on a slower
+// clock, and a review flagged exactly this risk. It does not happen, because every
+// prompt-road adapter filters its own `[Bridge Context Update]` out of activity.
+// This pins that protection, since nothing else would notice if a header rename or
+// an edit to the filter quietly broke it.
+test("the echoed delta prompt is not mistaken for the agent answering", () => {
+  const { project, deltaFile } = pendingDelta("prompt", "[Bridge Context Update]\n\nSummary\n\nthe handoff body");
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "echo-agent-"));
+  fs.symlinkSync(process.execPath, path.join(scratch, "node"));
+  const rollout = path.join(project, "rollout.jsonl");
+  // Records the auto-submitted delta as its user turn, then exits with no reply.
+  const row = JSON.stringify({
+    timestamp: new Date(Date.now() + 60_000).toISOString(),
+    type: "event_msg",
+    payload: { type: "user_message", message: "[Bridge Context Update]\n\nSummary\n\nthe handoff body" },
+  });
+  fs.writeFileSync(
+    path.join(scratch, "codex"),
+    `#!/bin/sh\nprintf '%s\\n' '${row}' >> ${JSON.stringify(rollout)}\nsleep 0.2\nexit 0\n`,
+    { mode: 0o755 },
+  );
+
+  spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: project,
+    encoding: "utf8",
+    env: { ...cleanEnv(), PATH: scratch },
+  });
+
+  assert.ok(fs.existsSync(path.join(project, deltaFile)), "the delta prompt is not its own delivery; it stays pending");
+  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(loadState(project).pendingInjection, "so a session the model never answered can be handed over again");
 });
 
 // A first switch packs the whole conversation, and a command line is finite. On a

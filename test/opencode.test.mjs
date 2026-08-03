@@ -1,0 +1,264 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  injectionSql,
+  preResume,
+  parseExportMessages,
+  parseAudit,
+} from "../src/agents/opencode.mjs";
+import { buildCommand } from "../src/launcher.mjs";
+import { defaultState, saveState, checkpointsDir, writeCheckpoint } from "../src/state.mjs";
+
+// OpenCode stores its sessions in SQLite, so the bridge injects a delta by
+// writing a message and its text part directly into that database — authless,
+// because the alternative, `opencode run`, is a paid model call that stalled a
+// live switch on auth. Writing into a real app's store is where this has to be
+// most careful, so the SQL is a pure, tested function.
+
+const SCHEMA =
+  "CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer, time_updated integer, data text NOT NULL);" +
+  "CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer, time_updated integer, data text NOT NULL);";
+
+function freshDb() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-db-"));
+  const db = path.join(dir, "opencode.db");
+  execFileSync("sqlite3", [db, SCHEMA]);
+  return { dir, db };
+}
+
+test("the injection writes one message and its text part, together", () => {
+  const { dir, db } = freshDb();
+  try {
+    execFileSync("sqlite3", [db, injectionSql("ses_a", "the delta", 1000)]);
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM message;"]).toString().trim(), "1");
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM part;"]).toString().trim(), "1");
+    // The part points at the message it belongs to, or the TUI renders an orphan.
+    const linked = execFileSync("sqlite3", [db, "SELECT p.message_id = m.id FROM part p, message m;"]).toString().trim();
+    assert.equal(linked, "1", "the part must reference its message");
+    const data = execFileSync("sqlite3", [db, "SELECT data FROM part;"]).toString();
+    assert.ok(data.includes("the delta"), "the delta text is in the part's data");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("injecting the same delta twice is a no-op, not a duplicate", () => {
+  // The launcher can recompute the command before delivery is committed, so the
+  // write has to be idempotent or the session fills with repeated context. The
+  // id is derived from the delta's content and the inserts are OR IGNORE.
+  const { dir, db } = freshDb();
+  try {
+    const sql = injectionSql("ses_a", "same delta", 1000);
+    execFileSync("sqlite3", [db, sql]);
+    execFileSync("sqlite3", [db, sql]);
+    execFileSync("sqlite3", [db, sql]);
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM message;"]).toString().trim(), "1");
+    // A different delta is a different message, not ignored.
+    execFileSync("sqlite3", [db, injectionSql("ses_a", "a different delta", 2000)]);
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM message;"]).toString().trim(), "2");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the two inserts are one transaction, so a failure leaves no orphan message", () => {
+  const sql = injectionSql("ses_a", "x", 1000);
+  assert.match(sql, /^BEGIN;/, "opens a transaction");
+  assert.match(sql, /COMMIT;$/, "closes it");
+  // If the part insert fails, the message insert must roll back with it. Force a
+  // failure by dropping the part table, and assert the message did not land.
+  const { dir, db } = freshDb();
+  try {
+    execFileSync("sqlite3", [db, "DROP TABLE part;"]);
+    assert.throws(() => execFileSync("sqlite3", [db, sql], { stdio: "ignore" }));
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM message;"]).toString().trim(), "0", "no orphan");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a delta full of quotes and SQL is stored verbatim, not executed", () => {
+  const { dir, db } = freshDb();
+  try {
+    const nasty = "it's a trap'); DROP TABLE message;-- and more '' quotes";
+    execFileSync("sqlite3", [db, injectionSql("ses_a", nasty, 1000)]);
+    assert.equal(execFileSync("sqlite3", [db, "SELECT count(*) FROM message;"]).toString().trim(), "1", "table survives");
+    const data = execFileSync("sqlite3", [db, "SELECT data FROM part;"]).toString();
+    assert.ok(data.includes("DROP TABLE message"), "the text is stored as data, harmlessly");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preResume returns a runnable write when the store exists, and nothing when it does not", () => {
+  const prev = process.env.OPENCODE_HOME;
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-home-none-"));
+  try {
+    process.env.OPENCODE_HOME = empty;
+    assert.equal(preResume({ id: "ses_a" }, "delta"), null, "no db, nothing to run, delta stays pending");
+
+    const { dir, db } = freshDb();
+    process.env.OPENCODE_HOME = path.dirname(db);
+    const pre = preResume({ id: "ses_a" }, "delta");
+    assert.equal(pre.cmd, "sqlite3", "the launcher runs the write, so the write is not a side effect of building it");
+    assert.equal(pre.args[0], db);
+    assert.match(pre.args[1], /INSERT OR IGNORE INTO message/);
+    assert.equal(preResume({ id: null }, "delta"), null);
+    assert.equal(preResume({ id: "ses_a" }, ""), null, "no delta, nothing to inject");
+    fs.rmSync(dir, { recursive: true, force: true });
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("the export parser keeps user and assistant text and drops everything else", () => {
+  const raw = JSON.stringify({
+    messages: [
+      { info: { role: "user", time: { created: 1000 } }, parts: [{ type: "text", text: "hello" }] },
+      { info: { role: "assistant", time: { created: 2000 } }, parts: [{ type: "reasoning", text: "hmm" }, { type: "text", text: "hi back" }] },
+      { info: { role: "assistant", time: { created: 3000 } }, parts: [{ type: "tool", tool: "bash" }] },
+      { info: { role: "system", time: { created: 4000 } }, parts: [{ type: "text", text: "ignore me" }] },
+    ],
+  });
+  const msgs = parseExportMessages(raw);
+  assert.deepEqual(
+    msgs.map((m) => `${m.role}:${m.text}`),
+    ["user:hello", "assistant:hi back"],
+    "reasoning and tool parts and system messages are not conversation"
+  );
+  assert.equal(msgs[0].at, new Date(1000).toISOString(), "timestamps come through as ISO");
+  assert.deepEqual(parseExportMessages("not json at all"), [], "garbage in, empty out, no throw");
+});
+
+test("the audit parser pulls commands, reads and changes from tool parts, honouring the mark", () => {
+  const raw = JSON.stringify({
+    messages: [
+      {
+        info: { role: "assistant", time: { created: 1000 } },
+        parts: [
+          { type: "tool", tool: "bash", state: { status: "completed", input: { command: "npm test" }, metadata: { exit: 0 }, time: { start: 1000, end: 1200 } } },
+          { type: "tool", tool: "read", state: { input: { filePath: "/a.js" } } },
+        ],
+      },
+      {
+        info: { role: "assistant", time: { created: 5000 } },
+        parts: [{ type: "tool", tool: "edit", state: { input: { filePath: "/b.js" } } }],
+      },
+    ],
+  });
+  const before = parseAudit(raw, null);
+  assert.equal(before.commands.length, 1);
+  assert.equal(before.commands[0].args, "npm test");
+  assert.equal(before.commands[0].ok, true);
+  assert.equal(before.commands[0].exitCode, 0);
+  assert.equal(before.commands[0].durationMs, 200);
+  assert.deepEqual(before.filesRead, ["/a.js"]);
+  assert.deepEqual(before.filesChanged, ["/b.js"]);
+
+  // A mark after the first message drops its commands and reads, keeps the later edit.
+  const after = parseAudit(raw, new Date(3000).toISOString());
+  assert.equal(after.commands.length, 0);
+  assert.deepEqual(after.filesRead, []);
+  assert.deepEqual(after.filesChanged, ["/b.js"]);
+});
+
+// The delivery model, at the branch level. OpenCode is the case the launcher's
+// "delivered = new activity after start" rule does not fit: its context is a
+// message pre-inserted before the session opens, which produces no after-start
+// activity. So buildCommand routes it through preResume and never claims the
+// delta is carried on a path that would let it be marked delivered without being.
+function linkedOpencode(dbPresent) {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-build-")));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const rel = writeCheckpoint(project, "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nthe reading\n");
+  const s = defaultState(project);
+  s.agents.opencode = { id: "ses_live", transcriptPath: null, mark: null, idle: false };
+  s.pendingInjection = { agent: "opencode", id: "ses_live", via: "prompt", deltaFile: rel, createdAt: "2026-01-01T00:00:00.000Z" };
+  saveState(project, s);
+  let home;
+  if (dbPresent) {
+    const { dir, db } = freshDb();
+    home = { dir, path: path.dirname(db) };
+  }
+  return { project, s, home };
+}
+
+test("a resume with the store present routes delivery through preResume", () => {
+  const prev = process.env.OPENCODE_HOME;
+  const { project, s, home } = linkedOpencode(true);
+  try {
+    process.env.OPENCODE_HOME = home.path;
+    const built = buildCommand(project, s, "opencode", []);
+    assert.ok(built.preResume, "the delta is delivered by injection, not by the command line");
+    assert.equal(built.preResume.cmd, "sqlite3");
+    assert.ok(built.carries, "and it is carried, so the launcher commits it once the injection succeeds");
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(home.dir, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("resuming a linked OpenCode session opens the plain TUI, not a run turn", () => {
+  // OpenCode has no clean auto-start (see the note in the adapter): its TUI
+  // cannot submit an opening message, so delivery is the injection and the
+  // person opens the turn. This pins that the resume command stays the plain
+  // `opencode --session <id>` and never became an `opencode run` turn.
+  const prev = process.env.OPENCODE_HOME;
+  const { project, s, home } = linkedOpencode(true);
+  try {
+    process.env.OPENCODE_HOME = home.path;
+    const built = buildCommand(project, s, "opencode", []);
+    assert.ok(built.preResume, "delivery is the injection");
+    assert.equal(built.cmd, "opencode");
+    assert.deepEqual(built.args, ["--session", "ses_live"], "plain resume, no run subcommand and no opening message");
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(home.dir, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("a resume with no store leaves the delta pending rather than falsely delivered", () => {
+  const prev = process.env.OPENCODE_HOME;
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-home-none-"));
+  const { project, s } = linkedOpencode(false);
+  try {
+    process.env.OPENCODE_HOME = empty;
+    const built = buildCommand(project, s, "opencode", []);
+    assert.equal(built.preResume, undefined, "injection could not be built");
+    assert.equal(built.carries, undefined, "so nothing is carried; the delta stays pending and retries next launch");
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(empty, { recursive: true, force: true });
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("a first switch to a fresh OpenCode session does not claim delivery", () => {
+  // No session exists yet, so there is nothing to inject into and promptArgs is
+  // empty. Carrying the delta here would let a blank session mark it delivered;
+  // instead it stays pending until the session is created and linked.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-first-")));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const rel = writeCheckpoint(project, "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nfirst\n");
+  const s = defaultState(project);
+  s.agents.opencode = { id: null, transcriptPath: null, mark: null, idle: false };
+  s.pendingInjection = { agent: "opencode", id: null, via: "prompt", deltaFile: rel, createdAt: "2026-01-01T00:00:00.000Z" };
+  saveState(project, s);
+  try {
+    const built = buildCommand(project, s, "opencode", []);
+    assert.equal(built.carries, null, "a blank first session must not be credited with the handoff");
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+  }
+});

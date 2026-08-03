@@ -115,10 +115,20 @@ function warnIfSourceUnreadable(projectDir, sourceId, sourceSlot) {
     ref = adapter?.hydrate?.(projectDir, sourceSlot) ?? null;
   } catch {}
   const transcriptPath = ref?.transcriptPath ?? sourceSlot.transcriptPath ?? null;
-  if (transcriptPath && fileExists(transcriptPath)) return;
+  // Two kinds of readable. Most agents keep a transcript file, and readable means
+  // the file is there. OpenCode keeps its session in a database and is read
+  // through `opencode export`, so it has no transcript file by design; warning
+  // that it has "no transcript on disk" was wrong on every OpenCode handoff.
+  // For those, readability is whether the export parses, which parseProbe answers.
+  if (transcriptPath) {
+    if (fileExists(transcriptPath)) return;
+  } else if (typeof adapter?.parseProbe === "function" && ref) {
+    const probe = adapter.parseProbe(ref);
+    if (probe?.status === "readable" || probe?.status === "partial") return;
+  }
   log(
-    `${WARN} The linked ${adapter?.displayName ?? sourceId} session has no transcript on disk yet` +
-      `${transcriptPath ? ` (${path.basename(transcriptPath)})` : ""}; ` +
+    `${WARN} The linked ${adapter?.displayName ?? sourceId} session could not be read` +
+      `${transcriptPath ? ` (no transcript at ${path.basename(transcriptPath)})` : ""}; ` +
       "this handoff can only carry your notes and the git delta."
   );
 }
@@ -417,25 +427,25 @@ export function handoff(
   // different budgets, and it could say nothing was dropped while something was.
   const trailingFor = (lost) => {
     let out = "";
-    if (!firstSwitch) {
-      // The old wording said "messages above are clipped to one line each" on every
-      // handoff, including the ones that clipped nothing. A warning that is always
-      // there is read as boilerplate, and boilerplate is how a real cut goes
-      // unnoticed. Now it says what actually happened, or says nothing.
-      // The path ends its line: following it with a period makes the period look
-      // like part of the filename, to a reader and to the agent that has to open it.
-      // "Temporary" and "may be pruned after this agent hands off" were true
-      // while the file was deleted the moment its reader moved on. It is kept
-      // with its own checkpoint group now, so saying otherwise would tell the
-      // receiving agent to read it before a deadline that no longer exists, and
-      // would tell the next reader of this code the wrong thing about lifetime.
-      out +=
-        `\n\nFull context checkpoint: ${fullRel}\n` +
-        (lost
+    // Always name the full context checkpoint. This used to be skipped on a first
+    // switch, because a first switch inlined the entire conversation un-clipped
+    // and had nothing to point at. That was the E2BIG waiting to happen: a large
+    // enough first conversation became a multi-megabyte delta, and a prompt agent
+    // receives its delta as a single command-line argument, so it blew past
+    // ARG_MAX and the agent never started. A first switch is bounded like every
+    // other now, and the checkpoint is where its overflow lives, so the pointer
+    // matters most exactly there.
+    //
+    // The path ends its line: following it with a period makes the period look
+    // like part of the filename, to a reader and to the agent that has to open it.
+    out +=
+      `\n\nFull context checkpoint: ${fullRel}\n` +
+      (firstSwitch
+        ? "This is the first switch, so the summary above is your entry point and the whole conversation to date is in that file. "
+        : lost
           ? "What did not fit above is whole there. "
           : "Nothing above was left out, so it holds the same conversation in its original form. ") +
-        "It is kept with this handoff's other checkpoints until they are pruned together.";
-    }
+      "It is kept with this handoff's other checkpoints until they are pruned together.";
     if (adopted) {
       out += sourceRef?.transcriptPath
         ? `\n\nFull transcript of the adopted ${sourceAdapter.displayName} session: ${sourceRef.transcriptPath}` +
@@ -497,12 +507,15 @@ export function handoff(
   const full = composeFullContext(sections);
   writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
 
-  const delta = firstSwitch
-    ? full +
-      `\nThis is the first switch to ${targetAdapter.displayName} in this project, so the whole conversation is above, ` +
-      "un-clipped. Later handoffs carry only what is new." +
-      trailingFor(false)
-    : composeForRoad(sections, roadBudget, trailingFor);
+  // A first switch is composed exactly like a repeat one. It used to dump the
+  // whole conversation inline on the theory that a new agent knows nothing, so
+  // clipping it would be a worse start. Two things made that wrong: the delta now
+  // leads with the departing agent's summary, which is a better entry point than
+  // raw scrollback, and the full context checkpoint survives to hold everything
+  // the bounded delta could not. So the new agent gets the reading weighted
+  // toward what is recent, as much conversation as the road allows, and a pointer
+  // to the rest, instead of a payload too large for its own delivery channel.
+  const delta = composeForRoad(sections, roadBudget, trailingFor);
   const deltaRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
 
   s.pendingInjection = {

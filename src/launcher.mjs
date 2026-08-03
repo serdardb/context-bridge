@@ -6,7 +6,7 @@
 // user instead of terminating.
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
@@ -73,7 +73,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 
   for (;;) {
     s = ensureState(projectDir);
-    const { cmd, args, note, carries } = buildCommand(projectDir, s, agent, agentArgs[agent]);
+    const { cmd, args, note, carries, preResume } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
       const armed = agentArgs[agent].filter(isDangerous);
       // Dim for ordinary flags, plain for the ones that change what the agent may
@@ -97,6 +97,34 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     saveState(projectDir, s);
 
     if (note) log(dim(`→ ${note}`));
+    // Pre-resume: agents like OpenCode cannot take a delta on the command line
+    // and cannot receive one through a hook, so the launcher injects it into
+    // their own store before the interactive session opens.
+    //
+    // For these agents the injection IS the delivery. `watchForDelivery` commits
+    // when the target produces new activity after start, and a pre-inserted
+    // message never produces any, so a successful injection would otherwise sit
+    // pending forever and be re-injected on the next launch. So this commits on
+    // success, right here, and leaves the delta pending on failure — never
+    // renamed, so the next launch delivers it again, and the write is idempotent
+    // so a retry cannot duplicate it. `watchForDelivery` is skipped entirely for
+    // preResume agents below.
+    if (preResume) {
+      let injected = false;
+      try {
+        log(dim(`→ ${preResume.note}`));
+        execFileSync(preResume.cmd, preResume.args, {
+          stdio: "ignore",
+          cwd: projectDir,
+          env: childEnv(),
+          timeout: 15000,
+        });
+        injected = true;
+      } catch {
+        log(`${WARN} Could not inject context into ${agent}; it stays pending and the next launch will deliver it.`);
+      }
+      if (injected && carries) commitDelivery(projectDir, carries);
+    }
     // A session we are about to create belongs to this project, and until it is
     // written into state it cannot be resumed: `bridge <agent>` would refuse and
     // the next handoff would mint yet another session. Claude records itself via
@@ -104,9 +132,22 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     const startedAt = nowIso();
     const needsLink = !agentSlot(s, agent).id;
     const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv() });
-    // The delta is only delivered once something is actually carrying it. A spawn
-    // that fails must leave the pending delta exactly where it was.
-    child.once("spawn", () => carries && commitDelivery(projectDir, carries));
+    // **A spawn is not a delivery.** This committed here, on the reasoning that a
+    // process which started is a process carrying the delta — and a started process
+    // only proves the CLI launched, not that the prompt reached the model. When it
+    // does not, the delta has already been renamed `.consumed` and the pending item
+    // cleared, so the handoff is gone with nothing to retry and no way to tell.
+    // That is not hypothetical: a Claude→Codex handoff was lost exactly this way,
+    // and the only evidence afterwards was a checkpoint that never appeared.
+    //
+    // Delivery is now committed when the target actually says something. If it
+    // never does, the pending item survives and `bridge` can hand it over again.
+    // The cost of being wrong in this direction is a handoff delivered twice,
+    // which is visible and recoverable; the cost in the other direction is one
+    // delivered never, which is neither.
+    // preResume agents committed above, at injection time; watching them for
+    // after-start activity would never fire and would leave the delta pending.
+    const delivery = carries && !preResume ? watchForDelivery(projectDir, agent, carries, startedAt) : null;
     const linker = needsLink ? watchForNewSession(projectDir, agent, startedAt, child.pid) : null;
 
     const termHandler = () => {
@@ -121,6 +162,12 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     const exit = await waitForExit(child);
     watcher.stop();
     linker?.stop();
+    // One last look before giving up on it. A short session — an agent that answered
+    // and exited quickly — can finish between polls, and an uncommitted delta there
+    // would be re-delivered on the next launch for no reason. If it still shows no
+    // activity the delta stays pending on purpose: retryable beats lost.
+    delivery?.settle();
+    delivery?.stop();
     // Linking runs while the child is alive so status, doctor and the next
     // handoff tell the truth DURING the session, and once more after it exits
     // because a killed terminal, a sleeping machine or a SIGKILL would
@@ -257,6 +304,54 @@ function watchForNewSession(projectDir, agent, startedAt, childPid) {
 }
 
 /**
+ * Commit a delta only once the receiving agent has actually said something.
+ *
+ * The distinction this exists for: `spawn` fires when the CLI process starts, and
+ * a prompt handed to a CLI that ignores it produces exactly the same spawn as one
+ * that reads it. Committing there marks a handoff delivered on the strength of an
+ * event that cannot tell those apart.
+ *
+ * `activitySince` is vendor-specific by design (each adapter knows how to read its
+ * own transcript), so this asks the adapter rather than guessing. An adapter that
+ * cannot answer returns nothing, and then nothing is committed — which leaves the
+ * delta pending and retryable, the safe direction.
+ */
+function watchForDelivery(projectDir, agent, carries, startedAt) {
+  const adapter = adapterFor(agent);
+  if (!adapter || typeof adapter.activitySince !== "function") {
+    // No way to observe. Committing blind would restore the bug this replaces, so
+    // the delta simply stays pending until something can confirm it landed. Both
+    // handles are present so the caller's `delivery?.settle()` never throws on an
+    // adapter that cannot watch.
+    return { stop: () => {}, settle: () => {} };
+  }
+
+  function check() {
+    const s = loadState(projectDir);
+    if (!s) return;
+    const slot = agentSlot(s, agent);
+    if (!slot.id) return;
+    const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
+    let seen = 0;
+    try {
+      seen = adapter.activitySince(ref, startedAt)?.messages?.length ?? 0;
+    } catch {
+      // A transcript we cannot read is not evidence of delivery.
+      return;
+    }
+    if (seen > 0) {
+      commitDelivery(projectDir, carries);
+      stop();
+    }
+  }
+
+  const timer = setInterval(check, POLL_MS * 4);
+  timer.unref?.();
+  const stop = () => clearInterval(timer);
+  return { stop, settle: check };
+}
+
+/**
  * Another launcher already running for this project is usually a forgotten tab,
  * and forgotten tabs accumulate: three were found alive on the author's machine,
  * two of them orphaned. It is only ever a warning. `state.launcher.pid` records
@@ -317,11 +412,20 @@ export function buildCommand(projectDir, s, agent, extra = []) {
     // message; hook-injecting ones receive it through their own session hook.
     const { cmd, args } = adapter.startCommand(extra);
     const note = `Starting a new ${adapter.displayName} session for this project…`;
-    if (!seeding || adapter.injection !== "prompt") return { cmd, args, note };
+    if (!seeding || adapter.injection !== "prompt") {
+      if (seeding) appendKickoff(adapter, args, inj?.via);
+      return { cmd, args, note };
+    }
     if (inj?.via === "hook") return { cmd, args, note };
     const seeded = readDelta(projectDir, inj);
-    if (seeded) args.push(...adapter.promptArgs(seeded));
-    return { cmd, args, note, carries: seeded ? inj : null };
+    // Carry the delta only if `promptArgs` actually put it on the command line.
+    // An agent like OpenCode returns nothing here because a fresh session has no
+    // store to inject into yet, so the delta must stay pending rather than be
+    // marked delivered by a blank session; once the session exists and is linked,
+    // the resume branch below injects it through preResume.
+    const carried = seeded ? adapter.promptArgs(seeded) : [];
+    args.push(...carried);
+    return { cmd, args, note, carries: carried.length ? inj : null };
   }
 
   const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
@@ -337,11 +441,42 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   if (inj?.via !== "hook" && adapter.injection === "prompt" && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
     const delta = readDelta(projectDir, inj);
     if (delta) {
-      args.push(...adapter.promptArgs(delta));
-      return { cmd, args, note, carries: inj };
+      // Agents with preResume inject into their own store (e.g. OpenCode: write
+      // the delta into its session db, then open the interactive TUI). For them
+      // the injection is the only delivery path, so if it cannot be built here —
+      // no store, missing tool — the delta stays pending rather than being marked
+      // delivered by a session that never received it. The launcher runs the
+      // returned command and commits on its success.
+      if (typeof adapter.preResume === "function") {
+        const pre = adapter.preResume(ref, delta);
+        return pre ? { cmd, args, note, carries: inj, preResume: pre } : { cmd, args, note };
+      }
+      const carried = adapter.promptArgs(delta);
+      args.push(...carried);
+      return { cmd, args, note, carries: carried.length ? inj : null };
     }
   }
+
+  // Hook-injecting agents get the turn their hook cannot open. `carries` stays
+  // unset on purpose: the hook still owns delivery, and claiming it here would
+  // mark the delta delivered by something that never carried it.
+  if ((adapter.injection === "hook" || inj?.via === "hook") && inj?.agent === agent && (inj.id ?? slot.id) === slot.id) {
+    appendKickoff(adapter, args, inj.via);
+  }
   return { cmd, args, note };
+}
+
+/**
+ * Open a turn for an agent whose context arrives out of band.
+ *
+ * Guarded on the adapter implementing it, so an agent that has no way to accept an
+ * opening prompt is simply left as it was rather than handed an argument its CLI
+ * would treat as a file, a subcommand, or an error.
+ */
+function appendKickoff(adapter, args, via = null) {
+  if (adapter.injection !== "hook" && via !== "hook") return;
+  if (typeof adapter.kickoffArgs !== "function") return;
+  args.push(...adapter.kickoffArgs());
 }
 
 /**
@@ -573,6 +708,9 @@ export function childEnv() {
   // Codex one. Hygiene, not the guarantee: source detection prefers this
   // launcher's own record precisely so that a missed variable cannot mislead it.
   delete env.CODEX_THREAD_ID;
+  // OpenCode: no known host-detection env var exported to children, but clean
+  // any future ones for the same hygiene reason as Codex above.
+  delete env.OPENCODE_SESSION_ID;
   // Mark agent children so `bridge handoff` can tell whether the launcher is
   // actually watching (auto-switch) or the user started the agent bare (manual).
   env.CONTEXT_BRIDGE_LAUNCHER = "1";

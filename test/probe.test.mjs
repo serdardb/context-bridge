@@ -58,9 +58,22 @@ test("each adapter recognises its own real record shape and rejects a foreign on
     codex: { type: "event_msg", timestamp: "2026-07-21T00:00:00Z", payload: { type: "user_message", message: "hi" } },
     grok: { type: "user", content: "hi" },
     antigravity: { step_index: 0, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: "<USER_REQUEST>hi</USER_REQUEST>" },
+    // OpenCode uses CLI export, not JSONL files — probe shells out to `opencode export`.
+    // Its parseProbe ignores transcriptPath and checks CLI availability instead.
+    opencode: null,
   };
   assert.deepEqual(Object.keys(samples).sort(), [...AGENT_IDS].sort(), "a new agent needs a sample here, or it is untested");
   for (const id of AGENT_IDS) {
+    if (samples[id] === null) {
+      // CLI-based agent: probe returns a result based on CLI availability, not file shape.
+      // On a machine without opencode, parseProbe returns {status: "missing"}.
+      // On a machine with opencode, it returns whatever export yields.
+      // Either way the probe must not crash.
+      const ref = { id: "test-session", transcriptPath: null };
+      const result = adapterFor(id).parseProbe(ref);
+      assert.ok(["readable", "missing", "partial"].includes(result.status), `${id} probe returns a valid status`);
+      continue;
+    }
     const own = probeOne(id, samples[id]);
     assert.equal(own.status, "readable", `${id} must recognise its own rows`);
     const foreign = probeOne(id, { totally: "unrelated", shape: 1 });

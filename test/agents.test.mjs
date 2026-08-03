@@ -11,7 +11,7 @@ test("every adapter implements the contract", () => {
   // Pinned on purpose: adding an agent should make this fail once, so whoever
   // adds it is sent through the contract below rather than discovering later
   // that half of it was never implemented.
-  assert.deepEqual(AGENT_IDS, ["claude", "codex", "grok", "antigravity"]);
+  assert.deepEqual(AGENT_IDS, ["claude", "codex", "grok", "antigravity", "opencode"]);
   for (const [name, a] of Object.entries(ADAPTERS)) {
     assert.equal(a.id, name);
     assert.ok(a.displayName, `${name} needs a display name`);

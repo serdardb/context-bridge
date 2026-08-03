@@ -168,6 +168,20 @@ function probeSession(projectDir, agentId, state) {
   // Being linked to a session we can no longer resolve is the opposite of a
   // fresh project, and reporting it as one hid a real fault behind the very
   // wording chosen to keep fresh projects calm.
+  //
+  // Agents that use CLI export (like OpenCode) have no transcript file on disk
+  // by design — transcriptPath is null in their ref. These agents are probed
+  // through their parseProbe which shells out to the CLI, so a missing
+  // transcriptPath is expected and must not be reported as "missing".
+  if (!ref?.id) return linked ? { status: "missing", linked, detail: "the linked session is gone" } : { status: "none", linked: false };
+  if (!ref?.transcriptPath && typeof adapter.parseProbe === "function") {
+    // CLI-based agent: probe through the adapter directly
+    try {
+      return { ...adapter.parseProbe(ref), linked };
+    } catch (err) {
+      return { status: "mismatch", linked, detail: err.message };
+    }
+  }
   if (!ref?.transcriptPath) return linked ? { status: "missing", linked, detail: "the linked session is gone" } : { status: "none", linked: false };
   try {
     return { ...adapter.parseProbe(ref), linked };

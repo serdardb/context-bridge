@@ -1,7 +1,7 @@
 // Agent adapters.
 //
 // Every bridged agent is described by one module implementing the contract below,
-// so adding a fourth agent means writing one file instead of touching eleven.
+// so adding an agent means writing one file instead of touching eleven.
 // This is deliberately narrow: it covers the four behaviours that are genuinely
 // per-vendor. Handoff composition, checkpointing and doctor still live outside,
 // and are generalised in a later round.
@@ -12,7 +12,7 @@
 //   eventsPath     optional separate event stream (Grok); defaults to transcriptPath
 //
 // @typedef {Object} AgentAdapter
-//   id             "claude" | "codex" | "grok" | "antigravity"
+//   id             "claude" | "codex" | "grok" | "antigravity" | "opencode"
 //   displayName    shown to users
 //   injection      "prompt" = delivered as an auto-submitted resume prompt
 //                  "hook"   = delivered through the agent's own session hook
@@ -21,6 +21,11 @@
 //   resumeCommand(ref, extraArgs) -> {cmd, args}
 //   startCommand(extraArgs)       -> {cmd, args}   (fresh session, no id yet)
 //   promptArgs(delta)             -> string[]      (prompt-injecting agents only)
+//   kickoffArgs()                 -> string[]      (hook-injecting agents only, optional)
+//                  A hook delivers *context*, not a *turn*: the agent has nothing
+//                  to answer and so never wakes. These args open one, and carry no
+//                  delta — the hook already did that, and repeating it would put
+//                  the handoff into the conversation twice.
 //   currentMark(ref)              -> sync watermark to persist (vendor-defined)
 //   activitySince(ref, mark)      -> {messages, patchedFiles, turnsCompleted}
 //   idleAfter(ref, sinceIso)      -> boolean | null   (null = reported out of band)
@@ -100,8 +105,9 @@ import * as claude from "./claude.mjs";
 import * as codex from "./codex.mjs";
 import * as grok from "./grok.mjs";
 import * as antigravity from "./antigravity.mjs";
+import * as opencode from "./opencode.mjs";
 
-export const ADAPTERS = { claude, codex, grok, antigravity };
+export const ADAPTERS = { claude, codex, grok, antigravity, opencode };
 
 export function adapterFor(id) {
   return ADAPTERS[id] ?? null;
