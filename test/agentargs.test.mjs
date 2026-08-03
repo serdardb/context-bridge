@@ -188,3 +188,30 @@ test("the launch that saves a flag does not also pass it twice", () => {
   const count = forwarding.split("--dangerously-bypass-approvals-and-sandbox").length - 1;
   assert.equal(count, 1, `the flag must appear once, got: ${forwarding}`);
 });
+
+// Enforcement reads each adapter's own conflictFlags, not a second table that can
+// drift from it. A duplicate table here once did drift: OpenCode's declared
+// conflicts were half-enforced and Grok's and Antigravity's, seven and four
+// flags that break the bridge's session link, were not enforced at all. This
+// walks every agent and proves the first flag it declares is actually dropped.
+test("every agent's own declared conflict flags are the ones enforced", async () => {
+  const { AGENT_IDS, adapterFor } = await import("../src/agents/index.mjs");
+  for (const agent of AGENT_IDS) {
+    const rules = adapterFor(agent).conflictFlags ?? [];
+    assert.ok(rules.length, `${agent} declares no conflict flags to enforce`);
+    for (const rule of rules) {
+      const flag = rule.flags[0];
+      // The flag alone, so a `required`/`optional` value rule cannot swallow a
+      // probe arg placed after it and confuse the assertion.
+      const dropped = filterAgentArgs(agent, [flag]).dropped;
+      assert.ok(
+        dropped.some((d) => d.arg === flag),
+        `${agent} ${flag} is declared a conflict but not enforced`
+      );
+    }
+    // And an unrelated flag is never touched.
+    assert.deepEqual(filterAgentArgs(agent, ["--a-flag-the-bridge-does-not-manage"]).kept, [
+      "--a-flag-the-bridge-does-not-manage",
+    ]);
+  }
+});
