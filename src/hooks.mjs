@@ -3,7 +3,7 @@
 // have no .bridge/ state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, saveState, commitKnown, agentSlot, CONSUMED_SUFFIX } from "./state.mjs";
+import { loadState, mutateState, commitKnown, agentSlot, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, fullContextFor } from "./delivery.mjs";
@@ -66,6 +66,32 @@ function foreignHost(declaredAgent = "claude", env = process.env) {
   return observed;
 }
 
+/**
+ * Which lane does this hook's session belong to?
+ *
+ * A hook writes one session's state, and that session lives in one lane, which is
+ * not necessarily the project's active lane: another launcher may have switched it.
+ *
+ * A session already linked in a lane belongs to that lane, whatever else says so:
+ * the link is the current truth, while `CONTEXT_BRIDGE_LANE` in the environment can
+ * be stale or set by hand. So the id is matched against every lane's slot first. A
+ * review raised exactly this: trusting the env over a live link could file a
+ * session under the wrong lane. Only an unlinked session — the first one, before
+ * any id is recorded — has no link to go on, and it falls to the lane the launcher
+ * pinned in the environment, then to the active lane.
+ */
+function resolveHookLane(s, agent, sessionId) {
+  if (sessionId) {
+    for (const [name, lane] of Object.entries(s.lanes ?? {})) {
+      const slot = lane.agents?.[agent];
+      if (slot && (slot.id === sessionId || slot.pendingId === sessionId)) return name;
+    }
+  }
+  const pinned = process.env.CONTEXT_BRIDGE_LANE;
+  if (pinned && s.lanes?.[pinned]) return pinned;
+  return s.activeLane ?? DEFAULT_LANE;
+}
+
 export async function runHook(event, agent = "claude") {
   const host = foreignHost(agent);
   if (host) {
@@ -86,18 +112,26 @@ export async function runHook(event, agent = "claude") {
     return 0; // unreadable/foreign state — never break the user's session
   }
   if (!s) return 0;
-
-  // Codex hooks record their own agent. Delta delivery still travels by prompt
-  // for it: the hook can inject context (proven), but hooks do not run until the
-  // user trusts them once and that trust cannot be read back, so binding
-  // delivery to something unverifiable would risk losing context silently.
-  // Recording that the hook ran is exactly what makes the switch provable later.
-  if (agent === "codex") return codexHook(projectDir, s, event, input);
-
-  if (event === "session-start") return hookSessionStart(projectDir, s, input);
-  if (event === "stop") return hookStop(projectDir, s, input);
-  if (event === "user-prompt-submit") return hookUserPromptSubmit(projectDir, s, input);
-  return 0;
+  // Resolve the lane this session belongs to, then run the hook as a read-modify
+  // -write under the lock: the hook and a launcher writing the same lane at the
+  // same moment (a launcher spawns the agent, its SessionStart hook fires) each see
+  // the file as it is and neither overwrites the other's fields. The hook handlers
+  // mutate the state they are handed and no longer save themselves; the one write
+  // is here.
+  const lane = resolveHookLane(s, agent, input?.session_id ?? input?.sessionId ?? null);
+  let code = 0;
+  mutateState(projectDir, lane, (st) => {
+    // Codex hooks record their own agent. Delta delivery still travels by prompt
+    // for it: the hook can inject context (proven), but hooks do not run until the
+    // user trusts them once and that trust cannot be read back, so binding
+    // delivery to something unverifiable would risk losing context silently.
+    // Recording that the hook ran is exactly what makes the switch provable later.
+    if (agent === "codex") code = codexHook(projectDir, st, event, input);
+    else if (event === "session-start") code = hookSessionStart(projectDir, st, input);
+    else if (event === "stop") code = hookStop(projectDir, st, input);
+    else if (event === "user-prompt-submit") code = hookUserPromptSubmit(projectDir, st, input);
+  });
+  return code;
 }
 
 /**
@@ -170,7 +204,6 @@ function hookSessionStart(projectDir, s, input) {
       }
       commitKnown(s, inj);
       s.pendingInjection = null;
-      saveState(projectDir, s);
       process.stdout.write(
         JSON.stringify({
           hookSpecificOutput: {
@@ -183,7 +216,6 @@ function hookSessionStart(projectDir, s, input) {
     }
     // Delta missing: never silently lose context — surface it in-session.
     s.pendingInjection = null;
-    saveState(projectDir, s);
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
@@ -197,7 +229,6 @@ function hookSessionStart(projectDir, s, input) {
     return 0;
   }
 
-  if (dirty) saveState(projectDir, s);
   return 0;
 }
 
@@ -237,7 +268,6 @@ function hookStop(projectDir, s, input) {
     }
   }
   // One write per hook: both changes belong to the same turn ending.
-  if (dirty) saveState(projectDir, s);
   return 0;
 }
 
@@ -248,7 +278,6 @@ function hookUserPromptSubmit(projectDir, s, input) {
     s.agents.claude.idle = false;
     dirty = true;
   }
-  if (dirty) saveState(projectDir, s);
   return 0;
 }
 
@@ -315,7 +344,6 @@ function codexHook(projectDir, s, event, input) {
     dirty = true;
   }
 
-  if (dirty) saveState(projectDir, s);
   // Codex reads this shape as extra developer context, which is what puts the
   // delta inside the conversation rather than in front of it.
   if (delivered) {

@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, saveState, writeCheckpoint, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
+import { ensureState, mutateState, writeCheckpoint, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import {
@@ -284,6 +284,15 @@ export function handoff(
   checkSummaryFits(summary);
 
   const s = ensureState(projectDir);
+  // A handoff run inside an agent the launcher spawned inherits that launcher's
+  // lane through the environment; run standalone it works the project's active
+  // lane. Resolve it once and pin the view before touching a field, so every read
+  // and the write below land in this line of work and not another launcher's.
+  const lane =
+    process.env.CONTEXT_BRIDGE_LANE && s.lanes?.[process.env.CONTEXT_BRIDGE_LANE]
+      ? process.env.CONTEXT_BRIDGE_LANE
+      : s.activeLane;
+  s.activeLane = lane;
   const lines = [];
   const sourceId = from ?? detectSource(s, target);
   if (sourceId === target) throw new BridgeError(`Already in ${targetAdapter.displayName}; nothing to hand off.`);
@@ -538,9 +547,27 @@ export function handoff(
     sources: packed,
   };
   sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
-  s.git = { sha: currentGitSha(projectDir), recordedAt: now };
-  s.pendingHandoff = { target, ready: true, requestedAt: now };
-  saveState(projectDir, s);
+
+  // Persist under the lock. A handoff is one transaction that has already reworked
+  // this lane in memory — it links the source (and imports the target on a first
+  // Claude to Codex switch), sets the injection, the git position and the pending
+  // handoff — so its computed lane is applied whole onto the file as it is now.
+  // Unlike the launcher and the hooks, a handoff does not overlap a writer on its
+  // own lane: it runs mid-session, when no SessionStart or Stop hook is firing, so
+  // applying its whole snapshot cannot lose a concurrent field. That includes the
+  // `knownBy` the official import seeds; only `title`, which a handoff never sets,
+  // is left as the disk has it.
+  const handoffLane = s.lanes[lane];
+  const gitNow = { sha: currentGitSha(projectDir), recordedAt: now };
+  mutateState(projectDir, lane, (st) => {
+    const laneObj = st.lanes[lane];
+    laneObj.agents = handoffLane.agents;
+    laneObj.activeAgent = handoffLane.activeAgent;
+    laneObj.knownBy = handoffLane.knownBy;
+    laneObj.pendingInjection = s.pendingInjection;
+    laneObj.git = gitNow;
+    laneObj.pendingHandoff = { target, ready: true, requestedAt: now };
+  });
 
   const others = streams.filter((st) => st.id !== sourceId).map((st) => st.label);
   lines.push(

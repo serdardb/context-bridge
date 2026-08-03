@@ -3,7 +3,7 @@
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, readJson, nowIso, fileExists, log, dim, OK } from "./util.mjs";
+import { writeJsonAtomic, readJson, nowIso, fileExists, log, dim, OK, processAlive } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
 export const STATE_VERSION = 5;
@@ -260,9 +260,44 @@ export function lanes(s) {
  * Older files are migrated in place, keeping a one-time backup of the original.
  * A file from a NEWER bridge is refused rather than guessed at.
  */
+/**
+ * Read and parse `state.json`: null when it does not exist, throw when it exists
+ * but will not parse.
+ *
+ * Missing and malformed both read back as null from `readJson`, but they must not
+ * be treated alike. A missing file is a fresh project to create; a present-but
+ * unparseable one is state that recreating would erase. Writes are atomic (temp +
+ * rename), so a reader never catches a half-written file, which means an
+ * unparseable one is real corruption. Both the load path and every lane-scoped
+ * write go through here, so a bad byte is refused rather than quietly taking every
+ * lane with it — the read that returned it, and the splice that would overwrite it.
+ */
+function readStateFile(projectDir) {
+  const p = statePath(projectDir);
+  const s = readJson(p);
+  if (s) {
+    // Parseable is not the same as valid. `{}` is legal JSON with no version, and
+    // treating it as state would skip migration (undefined < 5 is false) and write
+    // an empty object back, taking every lane with it. A file present but without a
+    // numeric version is refused for the same reason a corrupt one is.
+    if (typeof s.version !== "number") {
+      throw new Error(
+        ".bridge/state.json is present but has no version and is not valid bridge state. Refusing to overwrite it so no lane is lost; fix or remove the file."
+      );
+    }
+    return s;
+  }
+  if (fileExists(p)) {
+    throw new Error(
+      ".bridge/state.json exists but could not be parsed. Refusing to overwrite it so no lane is lost; fix or remove the file."
+    );
+  }
+  return null;
+}
+
 export function loadState(projectDir) {
   const p = statePath(projectDir);
-  let s = readJson(p);
+  let s = readStateFile(projectDir);
   if (!s) return null;
   if (s.version === STATE_VERSION) return withActiveLaneView(s);
   if (s.version > STATE_VERSION) {
@@ -328,11 +363,155 @@ export function saveState(projectDir, s) {
   return s;
 }
 
-/** Read-modify-write helper. */
+/** A synchronous pause with no busy spin, so lock retries do not peg a core. */
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // SharedArrayBuffer unavailable: fall back to a short spin.
+    const until = Date.now() + ms;
+    while (Date.now() < until) {}
+  }
+}
+
+/**
+ * Serialise the read-modify-write of `state.json` across processes.
+ *
+ * Two launchers in two terminals, each driving a different lane, both rewrite the
+ * whole file; without this the second write is computed from a copy taken before
+ * the first and silently drops the first lane's change. An exclusive lock file
+ * (`O_EXCL`, so creating it is the acquire) turns the read-modify-write into a
+ * critical section.
+ *
+ * The wait never gives up and writes unsynchronised, because that is the exact
+ * race the lock exists to prevent. It only proceeds by acquiring, which means a
+ * lock has to be steal-safe from a crashed holder: the writer records its pid, and
+ * a lock is stolen ONLY when its owner is provably gone — a dead pid, or a file
+ * with no readable pid that is older than `staleMs`. A living owner is never
+ * stolen, at any age: a review found that stealing a slow-but-live holder let its
+ * own `finally` delete the new owner's fresh lock, so a stuck live process is
+ * waited on rather than raced. Stealing renames the lock to a private name first,
+ * so the delete only ever removes a file this process exclusively holds; two
+ * stealers racing the same lock cannot both delete it, one wins the rename and the
+ * other retries the acquire.
+ */
+function withStateLock(projectDir, fn, { staleMs = 15000 } = {}) {
+  const lock = statePath(projectDir) + ".lock";
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  let held = false;
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(lock, "wx"); // creating it exclusively IS the acquire
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (stealableLock(lock, staleMs)) stealLock(lock);
+      sleepSync(25);
+      continue;
+    }
+    // We own the lock the instant the create succeeds. Set `held` before writing
+    // the pid, so a failure stamping metadata cannot leave the file orphaned: the
+    // finally still removes it, and until then others fall back to mtime staleness.
+    held = true;
+    try {
+      fs.writeSync(fd, `${process.pid} ${nowIso()}`);
+    } catch {
+      // couldn't stamp the pid; we still hold the lock
+    } finally {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    break;
+  }
+  try {
+    return fn();
+  } finally {
+    if (held) {
+      try {
+        fs.rmSync(lock, { force: true });
+      } catch {}
+    }
+  }
+}
+
+/** Does the lock's owner look gone: a dead pid, or a file too old or unreadable to trust? */
+function stealableLock(lock, staleMs) {
+  let raw, mtimeMs;
+  try {
+    raw = fs.readFileSync(lock, "utf8");
+    mtimeMs = fs.statSync(lock).mtimeMs;
+  } catch {
+    return false; // vanished under us: the acquire retry will just take it
+  }
+  const pid = Number(String(raw).trim().split(/\s+/)[0]);
+  if (pid) return !processAlive(pid); // a living owner is never stolen; a dead one always is
+  return Date.now() - mtimeMs > staleMs; // no readable pid: fall back to age
+}
+
+/** Take a stealable lock by renaming it away first, so the delete is race-safe. */
+function stealLock(lock) {
+  const mine = `${lock}.steal.${process.pid}.${Date.now()}`;
+  try {
+    fs.renameSync(lock, mine);
+  } catch {
+    return; // another stealer moved it first; the acquire retry will sort it out
+  }
+  fs.rmSync(mine, { force: true });
+}
+
+/**
+ * Read-modify-write one lane under the lock. The write primitive everything goes
+ * through.
+ *
+ * The earlier "load a copy, mutate it, write it back" lost updates whenever two
+ * writers touched the same lane, which is the common case, not a corner: a
+ * launcher and its agent's hooks both write the active lane, and the second
+ * wholesale write erased the first. Here the read AND the mutation both happen
+ * inside the lock, against the file as it is at that instant, so nothing computed
+ * from a stale snapshot can overwrite a neighbour's field. The mutator is handed
+ * the state through the usual active-lane view (`s.agents`, `s.pendingInjection`,
+ * `agentSlot(s, …)`) pinned to `laneName`, so call sites keep the shape they had.
+ *
+ * `activeLane` on disk is restored after the mutation: which lane is the project
+ * default is `lane switch`'s decision, never a side effect of one writer saving.
+ * A file that is present but corrupt or versionless aborts the write (readStateFile
+ * throws) rather than being flattened to a skeleton that drops every lane.
+ */
+export function mutateState(projectDir, laneName, fn) {
+  return withStateLock(projectDir, () => {
+    let disk = readStateFile(projectDir) ?? {
+      version: STATE_VERSION,
+      project: projectDir,
+      activeLane: laneName ?? DEFAULT_LANE,
+      lanes: {},
+      launcher: null,
+      updatedAt: null,
+    };
+    while (disk.version < STATE_VERSION) {
+      const migrate = MIGRATIONS[disk.version];
+      if (!migrate) throw new Error(`.bridge/state.json version ${disk.version} cannot be upgraded by this bridge.`);
+      disk = migrate(disk);
+    }
+    if (!disk.lanes) disk.lanes = {};
+    const key = laneName ?? disk.activeLane ?? DEFAULT_LANE;
+    if (!disk.lanes[key]) disk.lanes[key] = emptyLane();
+    const originalActive = disk.activeLane ?? key;
+    disk.activeLane = key; // point the view at the lane being mutated
+    withActiveLaneView(disk);
+    fn(disk);
+    disk.activeLane = originalActive; // a mutate never moves the project default
+    disk.updatedAt = nowIso();
+    writeJsonAtomic(statePath(projectDir), disk);
+    return disk;
+  });
+}
+
+/** Read-modify-write the active lane, under the lock. A thin alias for
+ * `mutateState` on the active lane, kept for callers that read as "update". */
 export function updateState(projectDir, fn) {
-  const s = ensureState(projectDir);
-  fn(s);
-  return saveState(projectDir, s);
+  ensureState(projectDir); // create the .bridge/ layout on first use
+  return mutateState(projectDir, null, fn);
 }
 
 /** Make sure .bridge/ is git-ignored; append if repo exists and entry missing. */

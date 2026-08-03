@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
-import { ensureState, loadState, saveState, agentSlot, commitKnown, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
+import { ensureState, loadState, mutateState, agentSlot, commitKnown, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
@@ -27,11 +27,30 @@ const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
 const TERM_GRACE_MS = 10000;
 
+// The lane this launcher process is driving, pinned once at startup. A launcher
+// follows the lane it opened for its whole life, never the on-disk `activeLane`,
+// which another launcher's `lane switch` can move under it. Every read is
+// re-pointed to this lane and every write is scoped to it, so two launchers on
+// two lanes in two terminals never read or write each other's work. With a single
+// lane this is `main` throughout and changes nothing; it is the seam the lane
+// commands need, put in before they exist so the concurrency guard is proven
+// first, not bolted on after.
+let launcherLane = DEFAULT_LANE;
+
+/** loadState, then re-point its view at the lane this launcher is driving. */
+function loadPinned(projectDir) {
+  const s = loadState(projectDir);
+  if (s) s.activeLane = launcherLane;
+  return s;
+}
+
 export async function runLoop(projectDir, startAgent = null, forward = []) {
   // Accepts either a bare array (older callers) or the split the CLI produces.
   const forwardArgs = Array.isArray(forward) ? forward : (forward?.agentArgs ?? []);
   const bridgeFlags = Array.isArray(forward) ? {} : (forward?.bridgeFlags ?? {});
   let s = ensureState(projectDir);
+  launcherLane = s.activeLane ?? DEFAULT_LANE;
+  s.activeLane = launcherLane;
   let agent = startAgent || s.activeAgent || "claude";
 
   if (bridgeFlags.clearArgs) {
@@ -73,6 +92,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 
   for (;;) {
     s = ensureState(projectDir);
+    s.activeLane = launcherLane; // this launcher drives its own lane, not the on-disk default
     const { cmd, args, note, carries, preResume } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
       const armed = agentArgs[agent].filter(isDangerous);
@@ -89,12 +109,15 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       return 1;
     }
 
-    // This launch consumes any pending handoff towards `agent`.
-    if (s.pendingHandoff?.target === agent) s.pendingHandoff = null;
-    s.activeAgent = agent;
-    s.launcher = { stateVersion: STATE_VERSION, pid: process.pid, recordedAt: nowIso() };
-    agentSlot(s, agent).set({ idle: false });
-    saveState(projectDir, s);
+    // This launch consumes any pending handoff towards `agent`. Read-modify-write
+    // under the lock so a hook writing the same lane in parallel is not clobbered.
+    s = mutateState(projectDir, launcherLane, (st) => {
+      if (st.pendingHandoff?.target === agent) st.pendingHandoff = null;
+      st.activeAgent = agent;
+      st.launcher = { stateVersion: STATE_VERSION, pid: process.pid, recordedAt: nowIso() };
+      agentSlot(st, agent).set({ idle: false });
+    });
+    s.activeLane = launcherLane;
 
     if (note) log(dim(`→ ${note}`));
     // Pre-resume: agents like OpenCode cannot take a delta on the command line
@@ -116,7 +139,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
         execFileSync(preResume.cmd, preResume.args, {
           stdio: "ignore",
           cwd: projectDir,
-          env: childEnv(),
+          env: childEnv(launcherLane),
           timeout: 15000,
         });
         injected = true;
@@ -131,7 +154,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     // its SessionStart hook; every other agent needs the launcher to do it.
     const startedAt = nowIso();
     const needsLink = !agentSlot(s, agent).id;
-    const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv() });
+    const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv(launcherLane) });
     // **A spawn is not a delivery.** This committed here, on the reasoning that a
     // process which started is a process carrying the delta — and a started process
     // only proves the CLI launched, not that the prompt reached the model. When it
@@ -184,7 +207,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       return 1;
     }
 
-    s = loadState(projectDir);
+    s = loadPinned(projectDir);
     // Hook delivery is a judgement, not a certainty: hooks do not run until the
     // user trusts them and that trust can be withdrawn without telling anyone.
     // So the guess is checked rather than believed. Nothing is resent
@@ -235,7 +258,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 export function warnStrandedWork(projectDir, agent) {
   let hasWork = false;
   try {
-    const s = loadState(projectDir);
+    const s = loadPinned(projectDir);
     const slot = agentSlot(s, agent);
     if (!slot.id) return;
     const adapter = adapterFor(agent);
@@ -266,7 +289,7 @@ export function warnStrandedWork(projectDir, agent) {
 function linkStartedSession(projectDir, agent, startedAt, childPid) {
   const adapter = adapterFor(agent);
   if (!adapter?.adoptStartedSession) return false;
-  const s = loadState(projectDir);
+  const s = loadPinned(projectDir);
   if (!s || agentSlot(s, agent).id) return false; // already linked, nothing to do
 
   let candidates = [];
@@ -287,8 +310,9 @@ function linkStartedSession(projectDir, agent, startedAt, childPid) {
   const ref = candidates[0];
   // The mark stays null on purpose: this session has said nothing the bridge has
   // packed yet, so its first handoff must carry the conversation from its start.
-  agentSlot(s, agent).set({ id: ref.id, transcriptPath: ref.transcriptPath ?? null });
-  saveState(projectDir, s);
+  mutateState(projectDir, launcherLane, (st) => {
+    agentSlot(st, agent).set({ id: ref.id, transcriptPath: ref.transcriptPath ?? null });
+  });
   log(dim(`→ Linked this ${adapter.displayName} session to the project.`));
   return true;
 }
@@ -327,7 +351,7 @@ function watchForDelivery(projectDir, agent, carries, startedAt) {
   }
 
   function check() {
-    const s = loadState(projectDir);
+    const s = loadPinned(projectDir);
     if (!s) return;
     const slot = agentSlot(s, agent);
     if (!slot.id) return;
@@ -520,11 +544,11 @@ function commitDelivery(projectDir, inj) {
     // Already renamed, or gone. Either way it is not ours to commit.
     return;
   }
-  const s = loadState(projectDir);
-  if (!s) return;
-  commitKnown(s, inj);
-  if (s.pendingInjection?.deltaFile === inj.deltaFile) s.pendingInjection = null;
-  saveState(projectDir, s);
+  if (!loadPinned(projectDir)) return;
+  mutateState(projectDir, launcherLane, (st) => {
+    commitKnown(st, inj);
+    if (st.pendingInjection?.deltaFile === inj.deltaFile) st.pendingInjection = null;
+  });
 }
 
 /**
@@ -602,9 +626,11 @@ export function appendFinalWords(projectDir, s, agent) {
   // so the packed mark has to move with them: committing the pre-handoff mark
   // would either resend them later or, worse, skip them entirely.
   const finalMark = adapter.currentMark(ref);
-  slot.set({ mark: finalMark });
-  if (inj.sources) inj.sources[agent] = finalMark;
-  saveState(projectDir, s);
+  mutateState(projectDir, launcherLane, (st) => {
+    agentSlot(st, agent).set({ mark: finalMark });
+    const stInj = st.pendingInjection;
+    if (stInj?.sources) stInj.sources[agent] = finalMark;
+  });
   log(dim(`→ Added ${tail.messages.length} closing message(s) from ${agent} to the handoff.`));
 }
 
@@ -623,7 +649,7 @@ function watchForHandoff(projectDir, agent, child) {
     if (stopped || terminated) return;
     let s;
     try {
-      s = loadState(projectDir);
+      s = loadPinned(projectDir);
     } catch (e) {
       // Almost always: this launcher started before a state upgrade and can no
       // longer read the file. Silence here looks exactly like "no handoff is
@@ -666,7 +692,7 @@ function watchForHandoff(projectDir, agent, child) {
     if (Date.now() - idleSince < IDLE_DEBOUNCE_MS) return;
 
     // Final consistency re-check straight from disk before signaling.
-    const fresh = loadState(projectDir);
+    const fresh = loadPinned(projectDir);
     if (!fresh?.pendingHandoff?.ready || fresh.pendingHandoff.target === agent) return;
 
     terminated = true;
@@ -698,8 +724,13 @@ function waitForExit(child) {
   });
 }
 
-export function childEnv() {
+export function childEnv(lane = null) {
   const env = { ...process.env };
+  // The lane this launcher is driving, so the agent's own hooks write the session
+  // they belong to rather than whatever lane happens to be active project-wide.
+  // The hook reads this first and falls back to matching the session id only when
+  // it is absent, which is exactly the first-session case where no id exists yet.
+  if (lane) env.CONTEXT_BRIDGE_LANE = lane;
   // Never look like a nested Claude session to the child TUIs.
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
