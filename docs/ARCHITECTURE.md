@@ -30,12 +30,12 @@ shell
 └── bridge                       launcher, zero-dependency Node CLI
     └── exactly one agent at a time
 
-   claude ⇄ codex ⇄ grok ⇄ antigravity    twelve directed routes
+   claude ⇄ codex ⇄ grok ⇄ antigravity ⇄ opencode    twenty directed routes
 
   ~/.claude/projects/…   ~/.codex/sessions/…   ~/.grok/sessions/…
      native session         native thread        native session
-                  ~/.gemini/antigravity-cli/brain/…
-                            native conversation
+        ~/.gemini/antigravity-cli/brain/…   ~/.local/share/opencode/opencode.db
+              native conversation              native session, in a database
 
         .bridge/state.json   ← what links them, references only
         .bridge/config.json  ← per-agent launch flags for this project
@@ -47,7 +47,7 @@ shell
 | `src/agents/` | one adapter per agent; the only place vendor knowledge lives |
 | Claude plugin (`plugin/`) | `/bridge` skill and the `SessionStart` / `Stop` / `UserPromptSubmit` hooks |
 | Codex hooks (`~/.codex/hooks.json`) | the same three events, installed by `doctor --fix`, merged into whatever is already there |
-| Shared skill (`codex/SKILL.md`) | `$bridge <agent>` for Codex and Grok |
+| Shared skill (`codex/SKILL.md`) | `$bridge <agent>` for Codex, Grok, Antigravity and OpenCode |
 | `.bridge/state.json` | project-local links, watermarks, pending markers. References, never content |
 
 ## The adapter contract
@@ -63,6 +63,15 @@ The contract covers exactly the parts that are genuinely per-vendor: discovery,
 rehydrating a reference, the resume and start commands, parsing activity since a
 watermark, the idle signal, flags that would break the session link, health, a
 harmless headless probe, and the two parser canaries below.
+
+Three of its methods are optional, present only where an agent needs them.
+`kickoffArgs` returns a one-line opening prompt for a hook-injecting agent, whose
+hook delivers context but not a turn (see Delivery below). `preResume` returns a
+command the launcher runs before the interactive session opens, for an agent that
+takes its delta neither on the command line nor through a hook: OpenCode keeps its
+sessions in a SQLite database and the delta is written straight in, authless,
+because the alternative was a paid, authenticated model call. An adapter that does
+not implement one of these is simply never asked for it.
 
 ### Watermarks are opaque
 
@@ -125,9 +134,9 @@ answer as delivered before it had been written.
 This ledger is also the difference from tools that copy a session on every
 switch. Copying needs no such bookkeeping because it starts over each time.
 
-## Delivery: two roads, chosen in advance
+## Delivery: three roads, chosen in advance
 
-A delta reaches its target one of two ways.
+A delta reaches its target one of three ways.
 
 **Hook.** Claude and Codex both accept `hookSpecificOutput.additionalContext`
 from a `SessionStart` hook, which places the delta inside the conversation. The
@@ -136,9 +145,26 @@ handing it over happen exactly once even across a crash or a race: whoever
 renames the file owns it. Handed over is as far as this goes; whether the model
 then attends to it is not something any of this can observe.
 
+A hook delivers *context*, not a *turn*. The delta lands as background, and the
+agent has nothing to answer, so it sits idle until a human types. `kickoffArgs`
+is the other half: a one-line prompt appended to the resume command that opens
+the turn, carrying no delta so the handoff cannot land twice. It fires whenever
+the delivery went by hook, whether that is the agent's permanent road (Claude)
+or its road for this handoff (Codex, once its hooks are trusted).
+
 **Prompt.** The delta rides as the opening message of the resumed session. This
 works everywhere and shapes the session around the delivery. Grok uses it
 permanently: its hooks fire but their output is ignored for passive events.
+
+**Store.** OpenCode has neither road: no usable hook, and a resume command that
+cannot be handed an opening message. It keeps each session in a local SQLite
+database, so `preResume` writes the delta straight into that database as one
+idempotent, transactional insert, authless and with no model call. The write IS
+the delivery, so the launcher commits it on the insert's success rather than
+watching for later activity, and leaves it pending on failure so the next launch
+retries. The context is present when the TUI opens; the turn, uniquely among the
+five, is the person's to open, because OpenCode exposes no seam to open it for
+them.
 
 The road has to be chosen *before* the agent starts, because nothing can be
 injected into a session already running, and whether a hook will fire cannot be
@@ -316,7 +342,7 @@ into `.bridge/config.json`, and `--cb-clear-args` takes it back. Nobody edits
 the file by hand.
 
 Saved defaults come first and typed flags come last, which relies on a CLI
-taking the last occurrence of a repeated flag; that holds for all four agents
+taking the last occurrence of a repeated flag; that holds for all five agents
 and is convention rather than law. A flag that would break the session link is
 refused when it is saved, so the complaint reaches whoever wrote it. Flags that
 change what an agent may do without asking are announced on a plain line at

@@ -6,6 +6,72 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.11.0] — 2026-08-03
+
+A fifth agent, and the delivery machinery that reaching it forced into the open.
+OpenCode keeps its sessions in a database rather than in files and offers no hook,
+so getting a delta to it needed a road the bridge did not have, and building that
+road surfaced two bugs in how every agent was already being handed its context.
+
+### Added
+
+- **OpenCode is the fifth agent.** It stores each session in a local SQLite
+  database and, unlike the other four, exposes no seam to hand a running TUI a
+  message. So the delta is written straight into that database on resume, as one
+  idempotent, transactional insert, authless and with no model call. The first
+  approach was `opencode run`, which turned out to be a paid, authenticated model
+  call that stalled a live switch on a login prompt, so the direct write replaced
+  it. Read-back for building the next delta goes through `opencode export`, which
+  truncates a piped buffer at 128KB but writes the whole session to a real file,
+  so the export lands in a file. Session discovery uses OpenCode's own
+  `session list --format json` rather than a spawned server, for the reason below.
+  The one external tool the write needs is the `sqlite3` CLI, and `bridge doctor`
+  reports whether it is present, because without it a handoff into OpenCode stays
+  pending rather than failing loudly.
+- **`kickoffArgs`, the half of hook delivery nobody had built.** A hook delivers
+  *context*, not a *turn*: the delta lands as background and the agent has nothing
+  to answer, so it sat idle until a human typed, on every hook handoff. Claude and
+  Codex now get a one-line opening prompt appended to the resume command, carrying
+  no delta so the handoff cannot land twice, which fires whenever the delivery
+  went by hook. Verified live: Codex begins reading the handoff on arrival instead
+  of waiting.
+
+### Fixed
+
+- **A first switch no longer blows past the command line.** It used to inline the
+  entire conversation un-clipped, on the theory that a new agent knows nothing. On
+  a large conversation that produced a multi-megabyte delta, and a prompt agent
+  receives its delta as a single command-line argument, so `spawn` threw E2BIG and
+  the agent never started. This shipped in 0.10.0 and broke the first live switch
+  to OpenCode. A first switch is bounded like every other now: the departing
+  agent's summary leads, as much conversation as the road allows follows, and the
+  rest lives in the full context checkpoint the delta points at.
+- **A handoff is committed when the agent answers, not when it spawns.** Delivery
+  was recorded the instant the child process started, but a CLI that ignores the
+  prompt it was handed produces exactly the same successful spawn as one that
+  reads it. A real Claude to Codex handoff was lost that way, with nothing left
+  but a checkpoint that never appeared. Delivery now commits on the target's first
+  activity; an agent that starts and says nothing leaves the delta pending and
+  retryable. The safe direction is a handoff delivered twice, which is visible and
+  recoverable, not one delivered never.
+- **Session discovery stops leaking a background server.** Listing OpenCode
+  sessions first spawned `opencode serve` and killed it after, but a call that
+  timed out left the disowned server alive; several piled up, and because OpenCode
+  is client and server the TUI could attach to a stale one and show its state, so
+  old messages vanished on resume. Discovery now reads OpenCode's own
+  `session list --format json`, which needs no server, and the server path that
+  remains as a fallback carries a trap so even a timeout takes its server down.
+
+### Changed
+
+- **Each agent's conflicting flags are enforced from the adapter, not a second
+  table.** A copy of the conflict rules lived in the argument filter and had
+  drifted from the adapters it was meant to mirror: Grok's seven session-breaking
+  flags and Antigravity's four were declared but never enforced, and OpenCode's
+  were half-enforced. The filter now reads each adapter's own `conflictFlags`, one
+  source, with a test that walks every agent and proves the flag it declares is
+  the flag that gets dropped.
+
 ## [0.10.0] — 2026-07-23
 
 The delta was carrying a tenth of what it was allowed to. This release is mostly

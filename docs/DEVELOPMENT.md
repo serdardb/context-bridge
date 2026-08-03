@@ -12,7 +12,7 @@ npm install -g .     # installs the `bridge` binary (a copy)
 npm link
 ```
 
-Requirements: Node ≥ 18.18, git, and at least two of Claude Code, Codex CLI (`codex login`) and Grok CLI (`grok auth`), logged in. macOS is the verified platform.
+Requirements: Node ≥ 18.18, git, and at least two of Claude Code, Codex CLI (`codex login`), Grok CLI (`grok auth`), Antigravity and OpenCode, logged in. macOS is the verified platform.
 
 > `bridge` must be on `PATH`: the Claude plugin hooks and the Codex skill invoke it by name. `bridge doctor` checks this.
 
@@ -24,7 +24,7 @@ src/
   cli.mjs             command dispatch (bridge | claude | codex | grok | doctor | status | clean | handoff | internal-hook)
   agents/             one adapter per agent; the only place vendor knowledge lives
     index.mjs         the registry and the contract every adapter implements
-    claude.mjs codex.mjs grok.mjs
+    claude.mjs codex.mjs grok.mjs antigravity.mjs opencode.mjs
   state.mjs           .bridge/state.json — versioned, atomic writes, forward migrations
   config.mjs          .bridge/config.json — per-agent launch flags
   launcher.mjs        flat child-process loop, session linking, idle-safe auto-switch
@@ -38,7 +38,7 @@ src/
   doctor.mjs          environment checks + --fix bootstrap
   hooks.mjs           hook endpoints for Claude and Codex (stdin JSON)
 plugin/               Claude Code plugin (skill /bridge + hooks.json)
-codex/SKILL.md        shared $bridge skill for Codex and Grok (~/.agents/skills/bridge)
+codex/SKILL.md        shared $bridge skill for Codex, Grok, Antigravity and OpenCode (~/.agents/skills/bridge)
 .claude-plugin/       marketplace manifest — the repo doubles as a Claude plugin marketplace
 docs/                 this documentation
 ```
@@ -93,7 +93,7 @@ prefix_rule(pattern=["bridge"], decision="allow")
 
 ## How bridge doctor works
 
-`src/doctor.mjs` collects a result object and renders it. Everything it reports is generated from the adapter registry, so a fourth agent appears in the health rows and in all its directed routes without touching this file.
+`src/doctor.mjs` collects a result object and renders it. Everything it reports is generated from the adapter registry, so a new agent appears in the health rows and in all its directed routes without touching this file.
 
 Read the wording as load-bearing. A route says `CONFIGURED`, meaning installed, configured, and its session still parses; it used to say `READY`, which people reasonably read as proof that a switch would work. `--deep` asks each agent a real one-line question and reports `LIVE` or `BROKEN`. Two canaries run by default and cost about 98ms: one checks that each adapter can still read its linked session, the other that its discovery reader can still name what is stored on disk. An unreadable session takes its routes off green and the exit code with it.
 
@@ -156,6 +156,7 @@ Treat these as hard rules; changes that violate them should not merge:
 | Claude Code | 2.1.x (2.1.216) | resume-append semantics, SessionStart `additionalContext`, plugin skills/hooks |
 | Codex CLI | 0.144.x | `codex resume <id>` auto-submit, rollout format, `$skill` invocation, plugin transfer RPC, hooks with `additionalContext` (trusted once via `/hooks`) |
 | Grok CLI | 0.2.x | resume by id, per-project session directories, live `active_sessions.json`; hooks fire but ignore stdout for passive events |
+| OpenCode | 1.18.x | sessions in a SQLite database, authless delta insert via `preResume`, read-back via `opencode export`, discovery via `opencode session list --format json`; no hook and a resume that will not take an opening message, so no auto-start |
 | OS | macOS | Linux paths implemented, suite runs there in CI, vendor layouts unverified; Windows unsupported |
 | Node | ≥ 18.18 | no runtime dependencies |
 
