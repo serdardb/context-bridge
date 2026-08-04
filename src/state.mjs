@@ -434,6 +434,69 @@ export function laneSummaries(projectDir, s) {
 }
 
 /**
+ * Record this launcher process against the lane it is driving, and forget any
+ * launcher whose process is gone. State tracks launchers per pid rather than one
+ * project-wide, so `lane rm` and `unlink` can tell whether a live session is on the
+ * lane they touch instead of refusing whenever any launcher at all is up. Dead pids
+ * are pruned here, on every launch, so the map cannot grow without bound.
+ */
+export function recordLauncher(disk, pid, lane) {
+  const launchers = {};
+  for (const [key, rec] of Object.entries(disk.launchers ?? {})) {
+    const other = Number(key);
+    if (other !== pid && processAlive(other)) launchers[key] = rec; // keep other live launchers
+  }
+  // A pre-per-lane project carries a single legacy `launcher`. If its process is
+  // still alive and is not this one, migrate it into the map as an unknown-lane
+  // entry so it keeps guarding every lane, and ONLY THEN drop the legacy field.
+  // Deleting it unconditionally (as the first version did) made a still-live old
+  // launcher vanish the moment the first new launcher started, wrongly opening the
+  // guards on its lane. A dead legacy record is simply forgotten.
+  const legacy = disk.launcher;
+  if (legacy?.pid && legacy.pid !== pid && processAlive(legacy.pid) && !launchers[String(legacy.pid)]) {
+    launchers[String(legacy.pid)] = {
+      pid: legacy.pid,
+      lane: null,
+      recordedAt: legacy.recordedAt ?? null,
+      stateVersion: legacy.stateVersion ?? null,
+    };
+  }
+  launchers[String(pid)] = { pid, lane, recordedAt: nowIso(), stateVersion: STATE_VERSION };
+  disk.launchers = launchers;
+  delete disk.launcher; // migrated above if it was live, forgotten if it was dead
+  return disk.launchers;
+}
+
+/**
+ * Every launcher whose process is still alive, as `{pid, lane}`. Reads the per-lane
+ * map and folds in the legacy single `launcher` record (lane unknown) so an upgrade
+ * in flight is not misread as "no launcher running".
+ */
+export function liveLaunchers(s) {
+  const out = [];
+  for (const [key, rec] of Object.entries(s?.launchers ?? {})) {
+    const pid = Number(key);
+    if (Number.isFinite(pid) && processAlive(pid)) out.push({ pid, lane: rec?.lane ?? null });
+  }
+  const legacy = s?.launcher?.pid;
+  if (legacy && processAlive(legacy) && !out.some((l) => l.pid === legacy)) {
+    out.push({ pid: legacy, lane: null }); // pre-per-lane record: its lane is not known
+  }
+  return out;
+}
+
+/**
+ * Is a live launcher driving `lane` (other than `excludePid`)? A launcher whose
+ * lane is unknown — a legacy record mid-upgrade — counts for every lane, because it
+ * cannot be proven to be elsewhere. `lane rm` and `unlink` use this to refuse only
+ * when a live session is actually on the lane they touch, and to allow the operation
+ * on a lane no launcher holds.
+ */
+export function laneHasLiveLauncher(s, lane, excludePid = null) {
+  return liveLaunchers(s).some((l) => l.pid !== excludePid && (l.lane === lane || l.lane === null));
+}
+
+/**
  * Add a new, empty lane to `disk` and return it. Throws on a bad or already-taken
  * name. A new lane starts empty on purpose: a different line of work inherits
  * nothing, which is the whole reason lanes exist (seeding, later, is the one

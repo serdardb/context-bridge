@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
+import { ensureState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import {
@@ -183,8 +183,14 @@ function preflightOfficialImport() {
  */
 function launcherIsStale(s, lines) {
   if (!underLauncher()) return false;
-  const seen = s.launcher?.stateVersion ?? null;
-  const pid = s.launcher?.pid ?? null;
+  // The process watching for this switch is the launcher on this handoff's lane.
+  // Launchers are tracked per lane now; fall back to the legacy single record so an
+  // old launcher that predates per-lane tracking (the exact upgrade case this warns
+  // about) is still seen.
+  const lane = s.activeLane ?? DEFAULT_LANE;
+  const rec = Object.values(s.launchers ?? {}).find((r) => r?.lane === lane) ?? s.launcher ?? null;
+  const seen = rec?.stateVersion ?? null;
+  const pid = rec?.pid ?? null;
   // A marker describes a process. If that process is gone, the marker describes
   // nobody, and a matching version proves nothing: something has to be watching
   // for the switch to happen at all.

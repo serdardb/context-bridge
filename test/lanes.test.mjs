@@ -582,7 +582,7 @@ test("bridge lane rm refuses while a launcher is alive, so a live session cannot
 
   const res = spawnSync(process.execPath, [BRIDGE_BIN, "lane", "rm", "feature", "--yes"], { cwd: project, encoding: "utf8" });
   assert.equal(res.status, 1, "rm is refused while a launcher is alive");
-  assert.match(res.stdout, /launcher .* is running/i);
+  assert.match(res.stdout, /launcher is running on lane/i);
   assert.ok(loadState(project).lanes.feature, "the lane is still there, not half-removed");
 
   fs.rmSync(project, { recursive: true });
@@ -708,8 +708,87 @@ test("bridge unlink refuses while a launcher is alive, so a live session cannot 
 
   const res = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "codex"], { cwd: project, encoding: "utf8" });
   assert.equal(res.status, 1, "unlink is refused while a launcher is alive");
-  assert.match(res.stdout, /launcher .* is running/i);
+  assert.match(res.stdout, /launcher is running on lane/i);
   assert.equal(loadState(project).agents.codex.id, "x1", "codex is still linked, not half-unlinked");
 
   fs.rmSync(project, { recursive: true });
+});
+
+// Phase 5.2: the launcher record is per lane, so lane rm / unlink no longer refuse
+// on ANY live launcher, only one on the lane they touch.
+
+test("lane rm frees a lane no launcher holds while still protecting the one a live launcher drives", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-rmperlane-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify(
+      {
+        version: STATE_VERSION,
+        project,
+        activeLane: "main",
+        lanes: { main: emptyLane(), feature: emptyLane(), other: emptyLane() },
+        launchers: { [String(process.pid)]: { pid: process.pid, lane: "other", recordedAt: "2026-01-01T00:00:00.000Z", stateVersion: STATE_VERSION } },
+        updatedAt: null,
+      },
+      null,
+      2
+    )
+  );
+  const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, "lane", ...a], { cwd: project, encoding: "utf8" });
+
+  // feature has no launcher -> removable even though a launcher is live on `other`.
+  const rmFeature = run("rm", "feature", "--yes");
+  assert.equal(rmFeature.status, 0, "a lane no launcher holds is removable while another lane's launcher runs");
+  assert.equal(loadState(project).lanes.feature, undefined, "feature is gone");
+
+  // `other` has the live launcher -> still refused.
+  const rmOther = run("rm", "other", "--yes");
+  assert.equal(rmOther.status, 1, "the lane a live launcher drives is still protected");
+  assert.ok(loadState(project).lanes.other, "and not removed");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("recordLauncher tracks the lane per pid, prunes dead launchers, supersedes the legacy field", async () => {
+  const { recordLauncher, liveLaunchers, laneHasLiveLauncher } = await import("../src/state.mjs");
+  // A DEAD legacy launcher (pid 1 is init and actually alive, so use an unassigned
+  // high pid) plus a dead entry already in the map. Both must be forgotten.
+  const disk = { version: STATE_VERSION, project: "/p", activeLane: "main", lanes: { main: emptyLane() }, launcher: { pid: 999999998, recordedAt: "x" }, launchers: { "999999999": { pid: 999999999, lane: "gone", recordedAt: "x", stateVersion: STATE_VERSION } }, updatedAt: null };
+
+  recordLauncher(disk, process.pid, "main");
+  assert.equal(disk.launchers["999999999"], undefined, "the dead launcher pid was pruned");
+  assert.equal(disk.launchers["999999998"], undefined, "the dead legacy launcher is forgotten, not migrated");
+  assert.equal(disk.launchers[String(process.pid)].lane, "main", "this launcher is recorded against its lane");
+  assert.equal(disk.launcher, undefined, "the legacy single-record field is superseded");
+  assert.deepEqual(liveLaunchers(disk), [{ pid: process.pid, lane: "main" }]);
+  assert.equal(laneHasLiveLauncher(disk, "main"), true, "the lane it drives is held");
+  assert.equal(laneHasLiveLauncher(disk, "other"), false, "another lane is not");
+  assert.equal(laneHasLiveLauncher(disk, "main", process.pid), false, "excluding this pid clears it");
+});
+
+test("liveLaunchers folds in a legacy single launcher record as unknown-lane, blocking every lane", async () => {
+  const { liveLaunchers, laneHasLiveLauncher } = await import("../src/state.mjs");
+  const s = { launcher: { pid: process.pid, recordedAt: "x" } }; // a pre-per-lane state mid-upgrade
+
+  assert.deepEqual(liveLaunchers(s), [{ pid: process.pid, lane: null }]);
+  assert.equal(laneHasLiveLauncher(s, "anything"), true, "an unknown-lane launcher conservatively holds every lane");
+});
+
+test("recordLauncher preserves a still-live legacy launcher so every lane stays guarded through the upgrade", async () => {
+  const { recordLauncher, liveLaunchers, laneHasLiveLauncher } = await import("../src/state.mjs");
+  // A v5 project upgraded from before per-lane tracking: one legacy launcher record,
+  // and its process (this test) is still alive. No launchers map yet.
+  const disk = { version: STATE_VERSION, project: "/p", activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: { pid: process.pid, recordedAt: "x", stateVersion: STATE_VERSION }, updatedAt: null };
+
+  // A brand-new per-lane launcher (a different, not-alive pid) starts on main.
+  recordLauncher(disk, 999001, "main");
+
+  assert.equal(disk.launcher, undefined, "the legacy field is retired");
+  assert.equal(disk.launchers[String(process.pid)].lane, null, "the still-live legacy launcher is kept as unknown-lane, not dropped");
+  assert.ok(liveLaunchers(disk).some((l) => l.pid === process.pid && l.lane === null), "it is still counted alive");
+  // Because the legacy launcher's lane is unknown, it must keep guarding EVERY lane,
+  // including one the new launcher is not on. Dropping it here reopened rm/unlink.
+  assert.equal(laneHasLiveLauncher(disk, "feature"), true, "feature is still guarded by the live legacy launcher");
+  assert.equal(laneHasLiveLauncher(disk, "main"), true, "and so is main");
 });

@@ -13,6 +13,7 @@ import {
   removeLaneFromState,
   unlinkAgent,
   laneSummaries,
+  laneHasLiveLauncher,
   isValidLaneName,
   isInsideDir,
   bridgeDir,
@@ -22,7 +23,7 @@ import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./c
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { log, bold, dim, OK, BAD, NONE, WARN, processAlive } from "./util.mjs";
+import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -610,16 +611,14 @@ function runLane(projectDir, args, flags) {
       log(`${BAD} Lane '${name}' is active. Switch away first: bridge lane switch <other>.`);
       return 1;
     }
-    // Best-effort courtesy, not the correctness guarantee. Resurrection itself is
-    // now blocked in mutateState, which refuses to recreate a removed lane. But
-    // removing a lane a live session is still working in would silently drop that
-    // session's later writes, so where a launcher is visibly alive we stop and say
-    // so. It is only project-level and cannot see a second concurrent launcher, so
-    // it is a helpful warning, not a wall; the per-lane launcher record that makes
-    // it exact is the deferred Phase-5.2 item.
-    if (s.launcher?.pid && processAlive(s.launcher.pid)) {
-      log(`${BAD} A bridge launcher (pid ${s.launcher.pid}) is running in this project.`);
-      log(dim("  Close the bridge terminals first, so a live session's work is not lost under the removal."));
+    // Resurrection itself is blocked in mutateState (it refuses to recreate a
+    // removed lane). This guard protects the live session's work: removing a lane a
+    // launcher is actively driving would silently drop that session's later writes.
+    // The per-lane launcher record makes it exact now — a launcher on ANOTHER lane
+    // no longer blocks this removal, only one on the lane being removed does.
+    if (laneHasLiveLauncher(s, name)) {
+      log(`${BAD} A bridge launcher is running on lane '${name}'.`);
+      log(dim("  Close that bridge terminal first, so a live session's work is not lost under the removal."));
       return 1;
     }
     const laneDir = path.join(bridgeDir(projectDir), "lanes", name);
@@ -673,15 +672,15 @@ function runUnlink(projectDir, agentId) {
   }
   const name = adapterFor(agentId)?.displayName ?? agentId;
   const lane = s.activeLane ?? DEFAULT_LANE;
-  // Unlink is for a session you have finished with. If a launcher is live, the
-  // session may still be running, and its next hook, or a handoff already in flight,
-  // would re-link the very agent you just forgot, from a snapshot taken before the
-  // unlink. Same reachable race as `lane rm`, closed the same way: refuse while a
-  // launcher is alive, since with none there is no writer left to relink it. The
-  // precise per-session generation barrier is the deferred follow-up.
-  if (s.launcher?.pid && processAlive(s.launcher.pid)) {
-    log(`${BAD} A bridge launcher (pid ${s.launcher.pid}) is running in this project.`);
-    log(dim("  Unlink is for a session you are done with. Close the bridge terminals first, so a live session cannot re-link the agent you forget."));
+  // Unlink is for a session you have finished with. If a launcher is live on this
+  // lane, the session may still be running, and its next hook, or a handoff already
+  // in flight, would re-link the very agent you just forgot from a pre-unlink
+  // snapshot. Refuse while a launcher drives this lane; a launcher on another lane
+  // no longer blocks it, now that the record is per-lane. The precise per-session
+  // generation barrier is the deferred follow-up.
+  if (laneHasLiveLauncher(s, lane)) {
+    log(`${BAD} A bridge launcher is running on lane '${lane}'.`);
+    log(dim("  Unlink is for a session you are done with. Close that bridge terminal first, so a live session cannot re-link the agent you forget."));
     return 1;
   }
   let changed = false;

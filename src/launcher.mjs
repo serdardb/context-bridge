@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
-import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, recordLauncher, liveLaunchers, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
@@ -114,7 +114,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     s = mutateState(projectDir, launcherLane, (st) => {
       if (st.pendingHandoff?.target === agent) st.pendingHandoff = null;
       st.activeAgent = agent;
-      st.launcher = { stateVersion: STATE_VERSION, pid: process.pid, recordedAt: nowIso() };
+      recordLauncher(st, process.pid, launcherLane);
       agentSlot(st, agent).set({ idle: false });
     });
     s.activeLane = launcherLane;
@@ -378,13 +378,16 @@ function watchForDelivery(projectDir, agent, carries, startedAt) {
 /**
  * Another launcher already running for this project is usually a forgotten tab,
  * and forgotten tabs accumulate: three were found alive on the author's machine,
- * two of them orphaned. It is only ever a warning. `state.launcher.pid` records
- * the last writer, not an owner, so a stale entry must not scare anyone either.
+ * two of them orphaned. It is only ever a warning. Launchers are tracked per pid
+ * now, and dead ones are pruned on every launch, so a stale entry cannot scare
+ * anyone; when the other launcher's lane is known, name it, since with lanes the
+ * two are often meant to be separate rather than a forgotten duplicate.
  */
 function warnAboutOtherLauncher(s) {
-  const pid = s?.launcher?.pid;
-  if (!pid || pid === process.pid || !processAlive(pid)) return;
-  log(`${WARN} Another bridge launcher (pid ${pid}) is already running for this project.`);
+  const other = liveLaunchers(s).find((l) => l.pid !== process.pid);
+  if (!other) return;
+  const where = other.lane ? ` on lane ${other.lane}` : "";
+  log(`${WARN} Another bridge launcher (pid ${other.pid})${where} is already running for this project.`);
   log(dim("  Both will keep working, but they do not share one session. Close the one you are done with."));
 }
 
