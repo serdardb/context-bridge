@@ -19,7 +19,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 🎥 **Walkthrough:** [watch the original install-and-switch demo on X](https://x.com/SerdarDB/status/2078981172080574900). It was recorded with Claude Code and Codex, before Grok, Antigravity and `bridge inspect` were added, so it shows the flow rather than the current full set.
 
-> **Status: developer preview (0.11.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.12.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 
@@ -352,7 +352,7 @@ than leaving an empty column to be misread as nothing happened.
 
 ## Development status
 
-0.11.0 — developer preview. Round-trips across all five agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok, Antigravity and OpenCode hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed; OpenCode joined as the fifth and its whole delivery path, an authless write into its own session database, was built and hardened over a night of live switches through the bridge.
+0.12.0 — developer preview. Round-trips across all five agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok, Antigravity and OpenCode hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed; OpenCode joined as the fifth and its whole delivery path, an authless write into its own session database, was built and hardened over a night of live switches through the bridge.
 
 Since the first release:
 
@@ -367,6 +367,8 @@ Since the first release:
 - **Checkpoint retention** — checkpoints are delivery artifacts: a companion is dropped once its reader has handed off, with `bridge clean` as the manual backstop
 - **A fourth agent, and what reaching it exposed** — Antigravity joined behind the same adapter contract, and getting a delta to it uncovered a first switch too large for a command line, a delta recorded as delivered before anything carried it, and an agent's identity read from a variable that outlives its session
 - **A fifth agent that keeps its sessions in a database** — OpenCode joined the same way, and reaching it added an authless write into its own session store (it exposes no hook and no promptable resume), a conflict-flag table folded back onto each adapter so three agents' unenforced flags finally bite, and a session-discovery path that no longer leaks a background server on every call
+- **Lanes** — a project can hold more than one line of work, each with its own agent links, history and checkpoints; `bridge lane new/switch/rm` manage them, two run in two terminals at once, and the whole path boundary they added (read, write, delete, list of every checkpoint) was hardened behind three containment guards over a night of review
+- **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting `.bridge/` to relink one
 
 What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 

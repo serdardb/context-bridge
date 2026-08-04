@@ -6,6 +6,61 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.12.0] — 2026-08-04
+
+Lanes: two lines of work in one project directory, each with its own agent links,
+history and checkpoints, so two sessions run in two terminals without seeing each
+other. Plus `bridge unlink`, and a night of hardening the one place every
+checkpoint path is read, written, listed or deleted.
+
+### Added
+
+- **Lanes.** A project can hold more than one line of work. `bridge lane` lists
+  them, most recently active first with the active one marked; `bridge lane new
+  <name>` starts a fresh, empty one and switches to it; `bridge lane switch <name>`
+  moves the default; and `bridge lane rm <name> --yes` deletes one and its
+  checkpoints (`--dry-run` to preview). A new lane inherits nothing on purpose — a
+  different line of work is the whole reason to open one — and a bare `bridge`
+  resumes the lane you were last in, so a one-lane project never has to think about
+  them. Lanes isolate context, not the working tree: every lane shares one
+  checkout, so they are parallel conversation, not parallel code.
+- **`bridge unlink <agent>`.** Forgets one agent's session in the active lane, and
+  every `knownBy` watermark that names it in both directions, so the next switch
+  links it fresh. It replaces deleting `.bridge/` to relink one agent, which took
+  all of them. The whole slot is reset, not just a session id — `hookSeen`, pending
+  markers and `idle` all keep an agent live — and it refuses while a launcher is
+  running, so a live session cannot re-link the agent you just forgot.
+
+### Changed
+
+- **Checkpoints live under their lane.** `main` keeps the flat
+  `.bridge/checkpoints/` it always had, so paths embedded in old deltas stay true;
+  a new lane gets `.bridge/lanes/<lane>/checkpoints/`. Retention, `inspect` and
+  `status` all run per lane.
+- **State writes are lane-scoped and locked.** One primitive, `mutateState`,
+  read-modify-writes a single lane under an exclusive file lock, so two launchers on
+  two lanes never clobber each other. A separate `mutateProject` handles the
+  project-level changes — creating, switching and removing a lane.
+
+### Fixed
+
+- **Every checkpoint path now passes one of three containment guards.** State can
+  be corrupt or hostile, and its paths are read, renamed, deleted, listed and
+  written. `safeCheckpointPath`, `safeCheckpointsDir` and `readableCheckpointsDir`
+  refuse a `..` traversal, a target outside a `checkpoints/` directory, a symlinked
+  directory component and a symlinked `.bridge` root, in every direction;
+  `ensureState` refuses a symlinked `.bridge` before it writes. Found and closed
+  over an eight-round review the night of 2026-08-03.
+- **Retention validates before it deletes.** Pruning checks every lane, state entry
+  and pending marker first and deletes nothing until all pass, so a malformed or
+  cross-lane pending marker can no longer let one lane be pruned before another's
+  fault is seen. Pending protection is keyed to a delta's real directory, not its
+  basename.
+- **A removed lane stays removed.** `mutateState` no longer recreates a lane an
+  existing project deleted, so a delayed hook or a launcher still pinned to it drops
+  its write instead of resurrecting the lane empty. Bootstrapping a brand-new
+  project's first lane, the one legitimate auto-create, is preserved.
+
 ## [0.11.0] — 2026-08-03
 
 A fifth agent, and the delivery machinery that reaching it forced into the open.
