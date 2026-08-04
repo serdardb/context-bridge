@@ -368,3 +368,23 @@ test("a delta too large for a command line is trimmed, not handed to spawn whole
   assert.match(body, /x-full\.md/, "what was cut has to stay reachable");
   assert.equal(spawnSync("/bin/echo", [body]).error, undefined, "and the result has to be spawnable");
 });
+
+// fullContextFor and deltaWasConsumed both derive a path from a state-provided
+// deltaFile. A `..` deltaFile must not make delivery resolve or probe a file
+// outside .bridge. Both go through the containment gate now.
+test("delivery refuses a deltaFile that escapes .bridge", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-deliv-escape-")));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
+  // external delta + full-context files a naive derivation would point at
+  fs.writeFileSync(path.join(outside, `${stem}.md`), "external delta");
+  fs.writeFileSync(path.join(outside, `${stem}-full.md`), "external full context");
+  const escapingDelta = path.relative(project, path.join(outside, `${stem}.md`));
+
+  assert.equal(fullContextFor(project, escapingDelta), null, "a traversing delta never resolves an external full-context file");
+  assert.equal(deltaWasConsumed(project, { deltaFile: escapingDelta }), true, "an escaping deltaFile is treated as nothing to carry");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
+});

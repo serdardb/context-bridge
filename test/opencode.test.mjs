@@ -176,7 +176,7 @@ test("the audit parser pulls commands, reads and changes from tool parts, honour
 function linkedOpencode(dbPresent) {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-build-")));
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
-  const rel = writeCheckpoint(project, "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nthe reading\n");
+  const rel = writeCheckpoint(project, "main", "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nthe reading\n");
   const s = defaultState(project);
   s.agents.opencode = { id: "ses_live", transcriptPath: null, mark: null, idle: false };
   s.pendingInjection = { agent: "opencode", id: "ses_live", via: "prompt", deltaFile: rel, createdAt: "2026-01-01T00:00:00.000Z" };
@@ -250,7 +250,7 @@ test("a first switch to a fresh OpenCode session does not claim delivery", () =>
   // instead it stays pending until the session is created and linked.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "oc-first-")));
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
-  const rel = writeCheckpoint(project, "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nfirst\n");
+  const rel = writeCheckpoint(project, "main", "x-claude-to-opencode.md", "[Bridge Context Update]\nSummary\n\nfirst\n");
   const s = defaultState(project);
   s.agents.opencode = { id: null, transcriptPath: null, mark: null, idle: false };
   s.pendingInjection = { agent: "opencode", id: null, via: "prompt", deltaFile: rel, createdAt: "2026-01-01T00:00:00.000Z" };

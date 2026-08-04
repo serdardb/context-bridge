@@ -2,12 +2,12 @@ import { runLoop } from "./launcher.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoff } from "./handoff.mjs";
-import { loadState } from "./state.mjs";
+import { loadState, readableCheckpointsDir } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { log, bold, dim, OK, BAD, NONE } from "./util.mjs";
+import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,7 +122,7 @@ export async function main(argv) {
       // showing it: what a person wants is who handed to whom and how recently,
       // and that was already on disk in the checkpoint filenames, unread.
       const debug = flags.has("--debug");
-      const history = switchHistory(projectDir);
+      const history = switchHistory(projectDir, s?.activeLane);
       const lastOut = new Map(); // agent -> when it last handed its work onward
       for (const h of history) if (!lastOut.has(h.source)) lastOut.set(h.source, h.at);
 
@@ -275,7 +275,12 @@ export async function main(argv) {
 
     case "inspect": {
       const { latestManifest, renderManifest } = await import("./audit.mjs");
-      const found = latestManifest(projectDir);
+      const { loadState } = await import("./state.mjs");
+      let lane;
+      try {
+        lane = loadState(projectDir)?.activeLane;
+      } catch {}
+      const found = latestManifest(projectDir, lane);
       if (!found) {
         log(`${NONE} No audit manifest yet. One is written beside the delta on the next handoff.`);
         return;
@@ -331,6 +336,29 @@ export async function main(argv) {
         all: flags.has("--all"),
         dryRun: flags.has("--dry-run"),
       });
+      if (
+        res.skippedCorruptState ||
+        res.skippedNoState ||
+        res.skippedEscapingBridge ||
+        res.skippedMalformedPending ||
+        res.skippedInvalidLane
+      ) {
+        const why = res.skippedCorruptState
+          ? ".bridge/state.json could not be read"
+          : res.skippedEscapingBridge
+            ? ".bridge resolves outside the project (symlink escape)"
+            : res.skippedInvalidLane
+              ? "state names a lane whose name could not be a real lane directory"
+              : res.skippedMalformedPending
+                ? "pendingInjection.deltaFile is malformed or points outside the checkpoint namespace"
+                : "there are checkpoints but no .bridge/state.json";
+        log(
+          `${WARN} ${why}, so nothing was pruned. Without readable state a pending delta cannot be told from an orphan, ` +
+            `and deleting could take a handoff. Run 'bridge doctor' to sort out the state, then clean.`
+        );
+        process.exitCode = 1;
+        return;
+      }
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
       // There is one schedule now. This used to report two, because the full
       // context files were pruned on their own clock and counting groups alone
@@ -395,10 +423,15 @@ function intFlag(argv, name) {
  * question people actually ask — what happened, in what order — sat unread in a
  * directory listing.
  */
-function switchHistory(projectDir) {
+function switchHistory(projectDir, lane) {
+  // Read through the containment gate: a symlinked lane checkpoints directory must
+  // not let status enumerate an external directory and present its names as this
+  // project's own switch history.
+  const dir = readableCheckpointsDir(projectDir, lane);
+  if (!dir) return [];
   let names;
   try {
-    names = fs.readdirSync(path.join(projectDir, ".bridge", "checkpoints"));
+    names = fs.readdirSync(dir);
   } catch {
     return [];
   }

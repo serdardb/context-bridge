@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
-import { ensureState, loadState, mutateState, agentSlot, commitKnown, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
@@ -519,9 +519,14 @@ function appendKickoff(adapter, args, via = null) {
  */
 function readDelta(projectDir, inj) {
   if (!inj?.deltaFile) return null;
+  const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
+  if (!deltaPath) {
+    log(`${WARN} Pending delta path is not inside .bridge (${inj.deltaFile}); the agent starts without it.`);
+    return null;
+  }
   let delta;
   try {
-    delta = fs.readFileSync(path.join(projectDir, inj.deltaFile), "utf8");
+    delta = fs.readFileSync(deltaPath, "utf8");
   } catch {
     log(`${WARN} Pending delta could not be read (${inj.deltaFile}); the agent starts without it.`);
     return null;
@@ -537,7 +542,8 @@ function readDelta(projectDir, inj) {
  */
 function commitDelivery(projectDir, inj) {
   if (!inj?.deltaFile) return;
-  const deltaPath = path.join(projectDir, inj.deltaFile);
+  const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
+  if (!deltaPath) return; // a deltaFile that escapes .bridge is never renamed
   try {
     fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
   } catch {
@@ -573,7 +579,8 @@ export function appendFinalWords(projectDir, s, agent) {
   }
   if (!tail.messages.length) return;
 
-  const deltaPath = path.join(projectDir, inj.deltaFile);
+  const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
+  if (!deltaPath) return; // a deltaFile that escapes .bridge is never appended to
   // These used to be cut to their first 220 characters, by a second copy of a
   // rule written by hand in a file nobody was looking at. The departing agent's
   // last answer is the substantive one often enough that appending it at all was

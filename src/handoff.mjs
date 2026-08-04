@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, mutateState, writeCheckpoint, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
+import { ensureState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import {
@@ -391,7 +391,7 @@ export function handoff(
   };
 
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
-  const fullRel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.fullContext}`);
+  const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
   const firstSwitch = !targetSlot.id;
 
   // The road is decided before anything happens to the disk, because it decides
@@ -416,7 +416,7 @@ export function handoff(
   let auditRel = null;
   try {
     manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
-    if (Object.keys(manifest.agents).length) auditRel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.audit}`);
+    if (Object.keys(manifest.agents).length) auditRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
   } catch {
     manifest = null;
     auditRel = null;
@@ -508,13 +508,13 @@ export function handoff(
   // word would have produced no audit trail at all under that design.
   if (manifest && auditRel) {
     try {
-      auditRel = writeManifest(projectDir, stem, manifest);
+      auditRel = writeManifest(projectDir, lane, stem, manifest);
     } catch {
       auditRel = null;
     }
   }
   const full = composeFullContext(sections);
-  writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
+  writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
 
   // A first switch is composed exactly like a repeat one. It used to dump the
   // whole conversation inline on the theory that a new agent knows nothing, so
@@ -525,7 +525,7 @@ export function handoff(
   // toward what is recent, as much conversation as the road allows, and a pointer
   // to the rest, instead of a payload too large for its own delivery channel.
   const delta = composeForRoad(sections, roadBudget, trailingFor);
-  const deltaRel = writeCheckpoint(projectDir, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
+  const deltaRel = writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
 
   s.pendingInjection = {
     agent: target,

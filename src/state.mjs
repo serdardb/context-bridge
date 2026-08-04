@@ -20,16 +20,146 @@ export const DEFAULT_LANE = "main";
 /** The fields that belong to a line of work rather than to the project. */
 const LANE_FIELDS = ["activeAgent", "agents", "pendingHandoff", "pendingInjection", "knownBy", "git"];
 
+/**
+ * A lane name becomes a directory name (`.bridge/lanes/<name>/…`), so it has to be
+ * one path segment and nothing that climbs out of it. Anything with a slash, a
+ * backslash, or a leading dot is refused — `..` and `.` and `../secrets` all fail
+ * because the first character must be a letter or digit. This is enforced wherever
+ * a name reaches the filesystem, and the lane commands validate on creation, so a
+ * hand-set or migrated name can never traverse the tree.
+ */
+const LANE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function isValidLaneName(name) {
+  return typeof name === "string" && name.length <= 64 && LANE_NAME_RE.test(name);
+}
+
+function assertLaneName(name) {
+  if (!isValidLaneName(name)) {
+    throw new Error(`Invalid lane name ${JSON.stringify(name)}: use letters, digits, dot, dash or underscore, starting with a letter or digit.`);
+  }
+  return name;
+}
+
+/** Lane directories present on disk under `.bridge/lanes/`, whatever state says.
+ *
+ * Symlinks are not followed. A `lanes` root that is itself a symlink is refused
+ * outright, and each entry is taken only when it is a real directory (`isDirectory`
+ * on a `Dirent` is false for a symlink, so a lane entry pointing elsewhere is
+ * skipped). Retention deletes what this returns, so a symlink here would let a
+ * `clean --all` reach outside the project — a review reached exactly that.
+ */
+export function laneDirsOnDisk(projectDir) {
+  const lanesRoot = path.join(bridgeDir(projectDir), "lanes");
+  try {
+    if (fs.lstatSync(lanesRoot).isSymbolicLink()) return [];
+    return fs
+      .readdirSync(lanesRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && isValidLaneName(d.name))
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Is `child` really inside `parent`, following every symlink first? Retention uses
+ * it to refuse to delete through a checkpoints directory that resolves outside the
+ * project's own `.bridge`, whatever the path looks like before resolution.
+ */
+export function isInsideDir(child, parent) {
+  let c, p;
+  try {
+    c = fs.realpathSync(child);
+  } catch {
+    return true; // does not exist: nothing to delete, nothing to escape
+  }
+  try {
+    p = fs.realpathSync(parent);
+  } catch {
+    return false;
+  }
+  return c === p || c.startsWith(p + path.sep);
+}
+
 export function bridgeDir(projectDir) {
   return path.join(projectDir, ".bridge");
+}
+
+/**
+ * Is `child` inside `parent` by path arithmetic alone, ignoring symlinks and
+ * whether either exists? Used on read/rename/delete boundaries, where a `..` that
+ * escapes must be refused even when its target is not present — realpath resolves a
+ * missing path to nothing and would wave it through.
+ */
+export function isLexicallyInside(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Resolve a state-derived checkpoint path (a `pendingInjection.deltaFile`, or a
+ * full-context path derived from one) to an absolute path, or null if it does not
+ * safely belong to this project's own checkpoint storage.
+ *
+ * State can be corrupt or hostile, and its `deltaFile` is joined onto the project
+ * and then read, renamed to `.consumed`, appended to, or deleted. Every one of
+ * those is a trust boundary, and they were each guarding it differently (or not at
+ * all): a `..` or a symlinked directory component could read or mutate a file
+ * outside `.bridge`. This is the one gate they all pass through now, so the answer
+ * to "can a bad deltaFile escape" is "does the caller use this", asked once.
+ *
+ * Four checks, because each catches what the others miss:
+ *   - lexical containment refuses a `..` that climbs out, target present or not;
+ *   - the parent directory must be a `checkpoints/` directory, so a contained but
+ *     wrong path (`.bridge/state.json`) cannot be read or renamed;
+ *   - realpath containment of `.bridge` itself refuses a symlinked root;
+ *   - realpath containment of the file's directory refuses a symlinked directory
+ *     component that points outside. (A symlinked leaf file is left to the caller:
+ *     unlink and rename act on the link, not its target, and a read is contained.)
+ */
+export function safeCheckpointPath(projectDir, rel) {
+  if (typeof rel !== "string" || rel === "") return null;
+  const bridge = bridgeDir(projectDir);
+  const abs = path.resolve(projectDir, rel);
+  if (
+    !isLexicallyInside(abs, bridge) ||
+    path.basename(path.dirname(abs)) !== "checkpoints" ||
+    !isInsideDir(bridge, projectDir) ||
+    !isInsideDir(path.dirname(abs), bridge)
+  ) {
+    return null;
+  }
+  return abs;
 }
 
 export function statePath(projectDir) {
   return path.join(bridgeDir(projectDir), "state.json");
 }
 
-export function checkpointsDir(projectDir) {
-  return path.join(bridgeDir(projectDir), "checkpoints");
+/**
+ * A lane's checkpoints live under it, so deleting a lane removes a directory and
+ * `clean`, `inspect` and `status` look in the one lane they are about.
+ *
+ * `main` is the exception, on purpose. Its checkpoints stay in the flat
+ * `.bridge/checkpoints/` they have always used, and are never moved. A checkpoint
+ * path is not only stored in state, it is written into the delta's own text and
+ * the audit manifest ("Full context checkpoint: .bridge/checkpoints/…"), and a
+ * human and `bridge inspect` both read those; moving the files would leave every
+ * one of those references pointing at nothing. Not moving them keeps them true. A
+ * three-agent review agreed this asymmetry is the safe choice over a migration
+ * that would have to rewrite embedded paths transactionally. New lanes have no
+ * such history, so they start clean under `.bridge/lanes/<lane>/checkpoints/`.
+ */
+export function checkpointsDir(projectDir, lane = DEFAULT_LANE) {
+  if (lane === DEFAULT_LANE) return path.join(bridgeDir(projectDir), "checkpoints");
+  assertLaneName(lane); // a name reaching the filesystem must not climb out of it
+  return path.join(bridgeDir(projectDir), "lanes", lane, "checkpoints");
+}
+
+/** A checkpoint's path relative to the project, for storing in state and text. */
+export function checkpointRel(projectDir, lane, name) {
+  return path.relative(projectDir, path.join(checkpointsDir(projectDir, lane), name));
 }
 
 export function logsDir(projectDir) {
@@ -348,9 +478,24 @@ export function loadState(projectDir) {
 export function ensureState(projectDir) {
   let s = loadState(projectDir);
   if (!s) {
+    // Refuse to initialise a project through a symlinked `.bridge`. Everything
+    // below (the state file, the checkpoints and logs directories) is created
+    // under `.bridge`, so if the root is a symlink pointing away, the very first
+    // `bridge` run would write this project's state and checkpoints outside it.
+    // lstat, not exists, so a symlink to a not-yet-existing target is caught too.
+    const bridge = bridgeDir(projectDir);
+    let linkStat = null;
+    try {
+      linkStat = fs.lstatSync(bridge);
+    } catch {
+      // no .bridge yet: a normal fresh project
+    }
+    if (linkStat?.isSymbolicLink()) {
+      throw new Error(`.bridge is a symlink; refusing to initialise a project through it: ${bridge}`);
+    }
     s = defaultState(projectDir);
     saveState(projectDir, s);
-    fs.mkdirSync(checkpointsDir(projectDir), { recursive: true });
+    fs.mkdirSync(safeCheckpointsDir(projectDir, DEFAULT_LANE), { recursive: true });
     fs.mkdirSync(logsDir(projectDir), { recursive: true });
     ensureGitignore(projectDir);
   }
@@ -569,9 +714,56 @@ export const CHECKPOINT_KINDS = {
 /** A delivered delta is renamed rather than deleted, so the rename is the record. */
 export const CONSUMED_SUFFIX = ".consumed";
 
+/**
+ * Assert a lane's checkpoints directory can be written to without escaping the
+ * project, and return its absolute path. `safeCheckpointPath` is the read/rename/
+ * delete gate for an existing delta; this is its symmetric twin for CREATING
+ * checkpoint files. A symlinked lane directory (or a symlinked `.bridge`) would
+ * otherwise let writeCheckpoint / writeManifest create files outside the project —
+ * reproduced in review with a `lanes/<lane>/checkpoints` symlink. Every existing
+ * path component from `.bridge` down must be a real directory; a missing one is
+ * fine, since mkdir creates it as a real directory inside `.bridge`.
+ */
+export function safeCheckpointsDir(projectDir, lane) {
+  const bridge = bridgeDir(projectDir);
+  if (!isInsideDir(bridge, projectDir)) {
+    throw new Error(".bridge does not resolve inside the project; refusing to write checkpoints.");
+  }
+  const dir = checkpointsDir(projectDir, lane); // also validates the lane name
+  let cur = bridge;
+  for (const seg of path.relative(bridge, dir).split(path.sep)) {
+    cur = path.join(cur, seg);
+    let st;
+    try {
+      st = fs.lstatSync(cur);
+    } catch {
+      break; // this component and everything below is absent; mkdir makes real dirs
+    }
+    if (st.isSymbolicLink()) {
+      throw new Error(`Refusing to write through a symlinked path component: ${path.relative(projectDir, cur)}`);
+    }
+  }
+  return dir;
+}
+
+/**
+ * A lane's checkpoints directory, but only if it can be READ without escaping the
+ * project — null otherwise. The read counterpart to `safeCheckpointsDir` (which is
+ * for writes and throws): `status` and `inspect` list this directory, and a
+ * symlinked lane checkpoints dir would let them enumerate or read files outside the
+ * project and present them as this project's own. Returns null rather than throwing,
+ * because a read for display must degrade quietly, not crash.
+ */
+export function readableCheckpointsDir(projectDir, lane) {
+  const bridge = bridgeDir(projectDir);
+  const dir = checkpointsDir(projectDir, lane);
+  if (!isInsideDir(bridge, projectDir) || !isInsideDir(dir, bridge)) return null;
+  return dir;
+}
+
 /** Write a delta checkpoint file; returns path relative to project. */
-export function writeCheckpoint(projectDir, name, content) {
-  const dir = checkpointsDir(projectDir);
+export function writeCheckpoint(projectDir, lane, name, content) {
+  const dir = safeCheckpointsDir(projectDir, lane);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, name);
   fs.writeFileSync(file, content);

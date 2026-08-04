@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState } from "../src/state.mjs";
+import { defaultState, saveState, loadState, emptyLane, STATE_VERSION } from "../src/state.mjs";
 
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
@@ -228,4 +228,34 @@ test("a project that has genuinely never switched says nothing about pruning", (
 
   const out = status(project);
   assert.doesNotMatch(out, /no longer kept/, "nothing was lost, so claiming loss would be its own false statement");
+});
+
+// The last ungated checkpoint read, found in a full-tree audit: switchHistory listed
+// the lane checkpoints directory directly. A symlinked lane dir would let `status`
+// enumerate an external directory and print its names as this project's own switch
+// history. It reads through the containment gate now. Point the active lane's
+// checkpoints at an outside directory full of switch-named files, and none of them
+// may appear.
+test("status will not read switch history through a symlinked lane checkpoints dir", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-status-symlink-")));
+  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  fs.writeFileSync(path.join(outside, "2026-07-22T07-29-41-089Z-claude-to-codex.md"), "x");
+  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+
+  fs.writeFileSync(
+    path.join(project, ".bridge", "state.json"),
+    JSON.stringify(
+      { version: STATE_VERSION, project, activeLane: "feature", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null },
+      null,
+      2
+    )
+  );
+
+  const out = status(project);
+  assert.doesNotMatch(out, /Recent switches/, "a symlinked lane dir must not surface external names as switch history");
+  assert.doesNotMatch(out, /→\s*Codex/, "no external switch is shown");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
 });

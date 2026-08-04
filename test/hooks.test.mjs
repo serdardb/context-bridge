@@ -178,3 +178,49 @@ test("a hook installed for one agent refuses to run inside another", () => {
   assert.match(res.stderr, /Grok/);
   assert.equal(loadState(project).agents.codex.id, null, "nothing is written when the host is wrong");
 });
+
+// A pending deltaFile is state, and state can be corrupt or hostile. Before the
+// containment gate, the SessionStart hook path.join'd it onto the project and
+// renamed it to .consumed, so a `..` path renamed a real file outside .bridge. The
+// hook now resolves through safeCheckpointPath: an escaping path reads as an
+// unreadable delta and surfaces the missing-context notice, and nothing outside is
+// touched. Revert the resolve to a raw path.join and the external file is renamed.
+test("SessionStart refuses a pending deltaFile that escapes .bridge and never renames it", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hook-escape-")));
+  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  const evil = path.join(outside, "delta.md");
+  fs.writeFileSync(evil, "external file the hook must not touch");
+
+  const state = defaultState(project);
+  state.agents.claude.id = "claude-session-1";
+  state.agents.claude.transcriptPath = path.join(project, "claude.jsonl");
+  state.pendingInjection = {
+    agent: "claude",
+    id: "claude-session-1",
+    deltaFile: path.relative(project, evil), // ../bridge-outside-XXXX/delta.md
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  saveState(project, state);
+
+  const input = JSON.stringify({
+    cwd: project,
+    source: "resume",
+    session_id: "claude-session-1",
+    transcript_path: state.agents.claude.transcriptPath,
+  });
+
+  const res = runHook(input);
+  assert.equal(res.status, 0);
+  assert.ok(fs.existsSync(evil), "the external file is left in place");
+  assert.equal(fs.existsSync(evil + ".consumed"), false, "the hook did not rename an external file to .consumed");
+  const payload = res.stdout ? JSON.parse(res.stdout) : null;
+  assert.match(
+    payload?.hookSpecificOutput?.additionalContext ?? "",
+    /could not be read/,
+    "context is not silently lost: the missing-delta notice is surfaced"
+  );
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
+});

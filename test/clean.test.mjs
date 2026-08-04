@@ -73,6 +73,8 @@ test("files not named by the bridge are never touched", () => {
 function makeProject() {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  // Valid state is required: without it the missing-state guard refuses all deletion.
+  saveState(project, defaultState(project));
   return project;
 }
 
@@ -403,4 +405,290 @@ test("no source file spells a checkpoint suffix out by hand", async () => {
     [],
     `these lines spell a checkpoint suffix by hand instead of naming it from the registry:\n  ${offences.join("\n  ")}`
   );
+});
+
+test("root .bridge symlink escaping project is refused", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
+  const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  // Remove real .bridge directory and replace with symlink to outsideDir
+  fs.rmSync(path.join(project, ".bridge"), { recursive: true, force: true });
+  fs.symlinkSync(outsideDir, path.join(project, ".bridge"));
+  // Write state and checkpoints under the symlink target (outside the project)
+  const outsideLanes = path.join(outsideDir, "lanes", "feature", "checkpoints");
+  fs.mkdirSync(outsideLanes, { recursive: true });
+  fs.writeFileSync(path.join(outsideDir, "state.json"), JSON.stringify({
+    version: 5, project, activeLane: "feature",
+    lanes: { feature: { agents: {}, knownBy: {}, pendingHandoff: null, pendingInjection: null, git: null } },
+    launcher: null, updatedAt: null
+  }));
+  fs.writeFileSync(path.join(outsideLanes, "2026-08-03T12-00-00-000Z-claude-to-codex.md"), "content");
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.equal(res.deletedGroups, 0, "external checkpoints must not be deleted");
+  assert.equal(res.skippedEscapingBridge, true, "skippedEscapingBridge flag is set");
+  assert.ok(fs.existsSync(path.join(outsideLanes, "2026-08-03T12-00-00-000Z-claude-to-codex.md")), "outside file survives");
+
+  fs.rmSync(outsideDir, { recursive: true });
+  // Unlink symlink before removing project to avoid following it
+  fs.unlinkSync(path.join(project, ".bridge"));
+  fs.rmSync(project, { recursive: true });
+});
+
+test("missing state refuses all deletion, not just --all", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  // Old checkpoint, no state.json
+  const stem = "2026-07-04T23-29-12-509Z-claude-to-codex";
+  const fpath = path.join(checkpointsDir(project), `${stem}.md`);
+  fs.writeFileSync(fpath, "content");
+  const oldTime = Date.now() - 30 * DAY;
+  fs.utimesSync(fpath, new Date(oldTime), new Date(oldTime));
+
+  // Normal retention (not --all) still refuses without state
+  const res = pruneCheckpoints(project, { keep: 0, days: 1 });
+  assert.equal(res.deletedGroups, 0, "old checkpoint survives without state");
+  assert.equal(res.skippedNoState, true, "skippedNoState flag is set");
+  assert.ok(fs.existsSync(fpath), "file not deleted");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("a pending delta in one lane protects the group even when another lane's marker names it", () => {
+  // P1: protection used to match on basename only. Lane feature's pending marker
+  // points at a group that physically lives in flat main. Under the old code,
+  // feature protected the stem in ITS OWN (empty) directory, main had no marker,
+  // and `clean --all` deleted the live delta from main. Reintroduce the basename
+  // match and this test deletes the victim.
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const victim = path.join(checkpointsDir(project), `${stem}.md`); // lives in flat main
+  fs.writeFileSync(victim, "the delta a switch is waiting on");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(victim, oldTime, oldTime);
+
+  // feature is a valid lane with no checkpoints of its own; its pending marker
+  // points across into main's flat directory.
+  const s = defaultState(project);
+  s.lanes.feature = {
+    title: null, activeAgent: null, agents: {}, knownBy: {},
+    pendingHandoff: null,
+    pendingInjection: { agent: "claude", sessionId: null, deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`) },
+    git: { sha: null, recordedAt: null },
+  };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.ok(fs.existsSync(victim), "a cross-lane pending marker must protect the group wherever it lives");
+  assert.equal(res.deletedGroups, 0, "nothing deleted: the only group is the protected one");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("symlinked project root still prunes normally", () => {
+  const realProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
+  fs.mkdirSync(checkpointsDir(realProject), { recursive: true });
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const fpath = path.join(checkpointsDir(realProject), `${stem}.md`);
+  fs.writeFileSync(fpath, "content");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(fpath, oldTime, oldTime);
+  saveState(realProject, defaultState(realProject));
+
+  // Create alias symlink to the project
+  const alias = realProject + "-alias";
+  fs.symlinkSync(realProject, alias);
+
+  const res = pruneCheckpoints(alias, { all: true });
+  assert.equal(res.deletedGroups, 1, "old checkpoint must be pruned through symlinked root");
+  assert.ok(!fs.existsSync(fpath), "file deleted");
+
+  fs.unlinkSync(alias);
+  fs.rmSync(realProject, { recursive: true });
+});
+
+test("a malformed pending marker refuses the WHOLE prune, not just its own lane", () => {
+  // P1: the refusal used to be decided inside the per-lane deletion loop, so a lane
+  // processed before the malformed one was already deleted by the time the marker
+  // was seen. Here main holds a prunable group and feature carries a malformed
+  // pending marker; both must survive. Move the malformed check back inside the
+  // loop and main's group is deleted before feature is ever inspected.
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const mainVictim = path.join(checkpointsDir(project), `${stem}.md`);
+  fs.writeFileSync(mainVictim, "main content that must not be lost");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(mainVictim, oldTime, oldTime);
+
+  // feature also has its own old checkpoint and a malformed pending marker.
+  const featureDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  fs.mkdirSync(featureDir, { recursive: true });
+  const fpath = path.join(featureDir, `${stem}.md`);
+  fs.writeFileSync(fpath, "feature content");
+  fs.utimesSync(fpath, oldTime, oldTime);
+
+  const s = defaultState(project);
+  s.lanes.feature = {
+    title: null, activeAgent: null, agents: {}, knownBy: {},
+    pendingHandoff: null,
+    pendingInjection: { deltaFile: "/tmp/not-this-project.md" },
+    git: { sha: null, recordedAt: null },
+  };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.equal(res.deletedGroups, 0, "malformed pending must prevent ALL deletion");
+  assert.equal(res.skippedMalformedPending, true, "skippedMalformedPending flag is set");
+  assert.ok(fs.existsSync(mainVictim), "main's group survives even though it is processed first");
+  assert.ok(fs.existsSync(fpath), "feature's own checkpoint survives");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("an invalid lane name in state fails the prune closed", () => {
+  // P1: an invalid lane name was silently filtered out, and with it any pending
+  // marker it carried. If that marker was the only thing protecting a flat-main
+  // delta, main was then pruned unprotected. Untrustworthy state metadata refuses
+  // the whole prune instead. Remove the isValidLaneName guard and main is deleted.
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const mainVictim = path.join(checkpointsDir(project), `${stem}.md`);
+  fs.writeFileSync(mainVictim, "protected by the invalid lane's pending marker");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(mainVictim, oldTime, oldTime);
+
+  const s = defaultState(project);
+  s.lanes["../evil"] = {
+    title: null, activeAgent: null, agents: {}, knownBy: {},
+    pendingHandoff: null,
+    pendingInjection: { deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`) },
+    git: { sha: null, recordedAt: null },
+  };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.equal(res.skippedInvalidLane, true, "it refused because state names an impossible lane");
+  assert.equal(res.deletedGroups, 0, "nothing deleted");
+  assert.ok(fs.existsSync(mainVictim), "the flat-main delta survives");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("a symlinked .bridge/lanes root fails the prune closed", () => {
+  // P2 hardened to a hard gate: laneDirsOnDisk returns [] for a symlinked lanes
+  // root, which would hide every real lane and, with it, the pending markers that
+  // protect deltas elsewhere. A tampered tree is refused, not quietly half-cleaned.
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const mainVictim = path.join(checkpointsDir(project), `${stem}.md`);
+  fs.writeFileSync(mainVictim, "must not be pruned under a tampered tree");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(mainVictim, oldTime, oldTime);
+
+  const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanes-")));
+  fs.symlinkSync(elsewhere, path.join(project, ".bridge", "lanes"));
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.equal(res.skippedEscapingBridge, true, "it refused because .bridge/lanes is a symlink");
+  assert.equal(res.deletedGroups, 0, "nothing deleted");
+  assert.ok(fs.existsSync(mainVictim), "the flat-main delta survives");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(elsewhere, { recursive: true });
+});
+
+test("a pending marker naming a lane whose checkpoints dir does not exist fails closed", () => {
+  // A valid-looking path into a state lane whose directory is absent used to be
+  // accepted: it protected a phantom location while the real work elsewhere was
+  // pruned. If the file the marker names is not on disk, we cannot tell which group
+  // is the live handoff, so the whole prune is refused. Drop the existence check and
+  // main's group is deleted while the marker "protects" a directory that isn't there.
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const mainVictim = path.join(checkpointsDir(project), `${stem}.md`);
+  fs.writeFileSync(mainVictim, "real work that a phantom marker leaves unprotected");
+  const oldTime = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(mainVictim, oldTime, oldTime);
+
+  // feature is a valid lane in state, but its checkpoints directory never exists.
+  const s = defaultState(project);
+  s.lanes.feature = {
+    title: null, activeAgent: null, agents: {}, knownBy: {},
+    pendingHandoff: null,
+    pendingInjection: { deltaFile: path.join(".bridge", "lanes", "feature", "checkpoints", `${stem}.md`) },
+    git: { sha: null, recordedAt: null },
+  };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true });
+  assert.equal(res.skippedMalformedPending, true, "a marker into a missing lane dir fails closed");
+  assert.equal(res.deletedGroups, 0, "nothing deleted");
+  assert.ok(fs.existsSync(mainVictim), "the real group is not pruned behind a phantom marker");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("supersedePending refuses a deltaFile that traverses outside the project", () => {
+  // supersedePending trusted pendingInjection.deltaFile and joined it straight onto
+  // the project. A corrupt or hostile `..` path walked the delete out to a real file
+  // anywhere on disk. The deletion boundary now refuses any path that is not lexically
+  // inside .bridge. Remove that guard and the outside victim is deleted.
+  const project = makeProject();
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
+  const victim = path.join(outside, `${stem}.md`); // valid-looking name, real file outside
+  fs.writeFileSync(victim, "a real file the bridge has no business deleting");
+
+  const traversal = path.relative(project, victim); // e.g. ../bridge-outside-XXXX/<stem>.md
+  const res = supersedePending(project, { deltaFile: traversal });
+
+  assert.equal(res.files, 0, "nothing was deleted");
+  assert.ok(fs.existsSync(victim), "a traversing deltaFile must not reach outside the project");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
+});
+
+test("supersedePending refuses a deltaFile whose directory component is a symlink out", () => {
+  // Lexical containment cannot see through a symlink: `.bridge/escape` looks inside
+  // .bridge by path arithmetic but points at another directory entirely. Deleting
+  // through it removes the real external target, not a link. Realpath of the delta's
+  // directory catches it. Remove that gate and the outside victim is deleted.
+  const project = makeProject();
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
+  const victim = path.join(outside, `${stem}.md`);
+  fs.writeFileSync(victim, "external, not the bridge's to delete");
+  fs.symlinkSync(outside, path.join(project, ".bridge", "escape")); // symlinked dir component
+
+  const res = supersedePending(project, { deltaFile: path.join(".bridge", "escape", `${stem}.md`) });
+
+  assert.equal(res.files, 0, "nothing was deleted");
+  assert.ok(fs.existsSync(victim), "a symlinked directory component must not let supersede escape");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
+});
+
+test("supersedePending refuses a deltaFile when the .bridge root itself is a symlink out", () => {
+  // If .bridge is a symlink to an external directory, realpath containment against
+  // .bridge would pass (it resolves there too). The separate check that .bridge
+  // stays inside the project is what refuses it. Remove that gate and supersede
+  // deletes the external target through the root link.
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-rootlink-")));
+  const project = path.join(base, "proj");
+  fs.mkdirSync(project);
+  const evil = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-evil-")));
+  fs.mkdirSync(path.join(evil, "checkpoints"), { recursive: true });
+  const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
+  const victim = path.join(evil, "checkpoints", `${stem}.md`);
+  fs.writeFileSync(victim, "external, reached through a symlinked .bridge root");
+  fs.symlinkSync(evil, path.join(project, ".bridge"));
+
+  const res = supersedePending(project, { deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`) });
+
+  assert.equal(res.files, 0, "nothing was deleted");
+  assert.ok(fs.existsSync(victim), "a symlinked .bridge root must not let supersede escape");
+
+  fs.rmSync(base, { recursive: true });
+  fs.rmSync(evil, { recursive: true });
 });

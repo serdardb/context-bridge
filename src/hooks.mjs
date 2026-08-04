@@ -3,7 +3,7 @@
 // have no .bridge/ state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, mutateState, commitKnown, agentSlot, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeCheckpointPath, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, fullContextFor } from "./delivery.mjs";
@@ -191,11 +191,16 @@ function hookSessionStart(projectDir, s, input) {
     inj?.agent === "claude" &&
     (inj.id == null || (input.source === "resume" && inj.id === input.session_id));
   if (injectHere) {
-    const deltaPath = path.join(projectDir, inj.deltaFile);
+    // Resolve through the containment gate: a corrupt or hostile deltaFile must
+    // not let the hook read or rename a file outside .bridge. An unsafe path reads
+    // as an unreadable delta and falls through to the missing-context notice below.
+    const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
     let delta = null;
-    try {
-      delta = fs.readFileSync(deltaPath, "utf8");
-    } catch {}
+    if (deltaPath) {
+      try {
+        delta = fs.readFileSync(deltaPath, "utf8");
+      } catch {}
+    }
     if (delta) {
       try {
         fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
@@ -222,7 +227,7 @@ function hookSessionStart(projectDir, s, input) {
           hookEventName: "SessionStart",
           additionalContext:
             "[Bridge] A Codex→Claude context delta was pending but its file could not be read. " +
-            "Context may be incomplete — ask the user what happened in Codex, or check .bridge/checkpoints/.",
+            `Context may be incomplete — ask the user what happened in Codex, or check ${path.relative(projectDir, checkpointsDir(projectDir, s.activeLane)) || ".bridge/checkpoints"}/.`,
         },
       })
     );
@@ -238,7 +243,8 @@ function hookSessionStart(projectDir, s, input) {
  * owns the delivery, and everyone else can see it already happened.
  */
 function consumeForHook(projectDir, s, inj) {
-  const deltaPath = path.join(projectDir, inj.deltaFile);
+  const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
+  if (!deltaPath) return null; // a deltaFile that escapes .bridge is never ours to deliver
   let delta;
   try {
     delta = fs.readFileSync(deltaPath, "utf8");

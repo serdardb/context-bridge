@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureState, loadState, STATE_VERSION } from "../src/state.mjs";
+import { ensureState, loadState, STATE_VERSION, safeCheckpointPath } from "../src/state.mjs";
 
 test("ensureState creates bridge layout and appends .bridge/ to gitignore once", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-state-"));
@@ -122,4 +122,92 @@ test("a migration says what it did and where the original went, exactly once", (
   assert.match(spoke[0], /state\.json\.v4\.backup/, "and the file that makes going back possible");
   assert.match(spoke[1], /cannot read the new file/, "one way is the part nobody would guess");
   assert.ok(fs.existsSync(path.join(project, ".bridge", "state.json.v4.backup")));
+});
+
+// safeCheckpointPath is the single gate every state-derived checkpoint path passes
+// through before it is read, renamed, appended to or deleted. State can be corrupt
+// or hostile, so each of these shapes must be refused (null), and the legitimate
+// shape must be allowed. Each assertion bites: removing the matching check in
+// safeCheckpointPath flips exactly one of these from null to a path.
+test("safeCheckpointPath allows a real checkpoint path and refuses every escape", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-safe-")));
+  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
+  const name = "2026-01-01T00-00-00-000Z-claude-to-codex.md";
+
+  // legitimate: flat main checkpoints
+  assert.equal(
+    safeCheckpointPath(project, path.join(".bridge", "checkpoints", name)),
+    path.join(project, ".bridge", "checkpoints", name),
+    "a real .bridge/checkpoints path resolves"
+  );
+  // legitimate: a lane's checkpoints
+  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature", "checkpoints"), { recursive: true });
+  assert.equal(
+    safeCheckpointPath(project, path.join(".bridge", "lanes", "feature", "checkpoints", name)),
+    path.join(project, ".bridge", "lanes", "feature", "checkpoints", name),
+    "a real lane checkpoints path resolves"
+  );
+
+  // .. traversal (target may not even exist) -> refused lexically
+  assert.equal(safeCheckpointPath(project, path.join("..", "evil", name)), null, "a .. climb is refused");
+  // a contained path whose parent is not a checkpoints dir -> refused structurally
+  assert.equal(safeCheckpointPath(project, path.join(".bridge", "state.json")), null, "a non-checkpoints path is refused");
+  // empty / non-string
+  assert.equal(safeCheckpointPath(project, ""), null);
+  assert.equal(safeCheckpointPath(project, null), null);
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("safeCheckpointPath refuses a symlinked checkpoints directory and a symlinked .bridge root", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-safe-")));
+  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  const name = "2026-01-01T00-00-00-000Z-claude-to-codex.md";
+  fs.writeFileSync(path.join(outside, name), "external");
+
+  // a lane checkpoints directory that is a symlink out
+  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+  assert.equal(
+    safeCheckpointPath(project, path.join(".bridge", "lanes", "feature", "checkpoints", name)),
+    null,
+    "a symlinked checkpoints directory is refused"
+  );
+
+  // .bridge root itself a symlink out (build a fresh project so .bridge can be the link)
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-root-")));
+  const proj2 = path.join(base, "proj");
+  fs.mkdirSync(proj2);
+  const evil = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-evil-")));
+  fs.mkdirSync(path.join(evil, "checkpoints"), { recursive: true });
+  fs.writeFileSync(path.join(evil, "checkpoints", name), "external");
+  fs.symlinkSync(evil, path.join(proj2, ".bridge"));
+  assert.equal(
+    safeCheckpointPath(proj2, path.join(".bridge", "checkpoints", name)),
+    null,
+    "a symlinked .bridge root is refused"
+  );
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
+  fs.rmSync(base, { recursive: true });
+  fs.rmSync(evil, { recursive: true });
+});
+
+// The init-time twin of the write gate: ensureState builds the whole .bridge layout
+// on first run, so a symlinked .bridge root would write this project's state and
+// checkpoints outside it before any per-write gate is reached. It refuses up front.
+// Remove the guard and saveState writes state.json into the external directory.
+test("ensureState refuses to initialise a project through a symlinked .bridge", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-init-")));
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  fs.symlinkSync(outside, path.join(project, ".bridge"));
+
+  assert.throws(() => ensureState(project), /\.bridge is a symlink/, "a symlinked .bridge root must refuse init");
+  assert.equal(fs.existsSync(path.join(outside, "state.json")), false, "no state written into the external directory");
+  assert.equal(fs.existsSync(path.join(outside, "checkpoints")), false, "no checkpoints dir created outside");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
 });

@@ -15,7 +15,7 @@
 // and says so plainly when it was not.
 import fs from "node:fs";
 import path from "node:path";
-import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
+import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, safeCheckpointPath } from "./state.mjs";
 import { adapterFor } from "./agents/index.mjs";
 
 /**
@@ -148,11 +148,16 @@ function fit(delta, fullContextRel, limit, markerText) {
   return `${cut}${marker}${pointer}`;
 }
 
-/** The full context checkpoint written beside a delta, if it is still on disk. */
+/** The full context checkpoint written beside a delta, if it is still on disk.
+ *
+ * The full path is derived from a state-provided delta path, so it goes through the
+ * same containment gate as every other state-derived checkpoint path: a corrupt or
+ * hostile deltaFile must not make delivery read a file outside `.bridge`. */
 export function fullContextFor(projectDir, deltaRel) {
   if (!deltaRel) return null;
   const fullContextRel = deltaRel.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
-  return fs.existsSync(path.join(projectDir, fullContextRel)) ? fullContextRel : null;
+  const abs = safeCheckpointPath(projectDir, fullContextRel);
+  return abs && fs.existsSync(abs) ? fullContextRel : null;
 }
 
 /**
@@ -161,7 +166,10 @@ export function fullContextFor(projectDir, deltaRel) {
  */
 export function deltaWasConsumed(projectDir, injection) {
   if (!injection?.deltaFile) return true;
-  const delta = path.join(projectDir, injection.deltaFile);
+  // An unsafe deltaFile is never a live delivery: treat it as nothing to carry
+  // rather than probe a path outside .bridge.
+  const delta = safeCheckpointPath(projectDir, injection.deltaFile);
+  if (!delta) return true;
   if (fs.existsSync(`${delta}${CONSUMED_SUFFIX}`)) return true;
   return !fs.existsSync(delta);
 }

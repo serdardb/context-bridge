@@ -141,8 +141,8 @@ test("inspect finds the newest manifest and survives a project with none", () =>
   assert.equal(latestManifest(project), null, "a project with no handoff yet is not an error");
 
   fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
-  writeManifest(project, "2026-07-21T10-00-00-000Z-a-to-b", { manifestVersion: 1, source: "a", target: "b", agents: {} });
-  writeManifest(project, "2026-07-21T11-00-00-000Z-b-to-c", { manifestVersion: 1, source: "b", target: "c", agents: {} });
+  writeManifest(project, "main", "2026-07-21T10-00-00-000Z-a-to-b", { manifestVersion: 1, source: "a", target: "b", agents: {} });
+  writeManifest(project, "main", "2026-07-21T11-00-00-000Z-b-to-c", { manifestVersion: 1, source: "b", target: "c", agents: {} });
   assert.equal(latestManifest(project).manifest.source, "b", "the newest one is the one anybody means");
 });
 
@@ -417,4 +417,26 @@ test("the agent you are working in is not reported as stranded", async () => {
 
   const out = spawnSync(process.execPath, [BRIDGE, "status"], { cwd: project, encoding: "utf8" }).stdout;
   assert.doesNotMatch(out, /never handed off/, "unsent work in the active agent is normal, and saying so every time is how a real warning gets ignored");
+});
+
+test("writeManifest refuses, and latestManifest will not read, through a symlinked lane dir", () => {
+  // The manifest shares the checkpoints directory with the delta, so it shares the
+  // write boundary: a symlinked lane checkpoints dir must not let a manifest be
+  // created outside the project, and inspect must not read one back through it.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-audit-")));
+  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
+  // Plant a real manifest in the external target to prove latestManifest won't read it.
+  fs.writeFileSync(path.join(outside, "2026-01-01T00-00-00-000Z-claude-to-codex-audit.json"), JSON.stringify({ planted: true }));
+  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+
+  assert.throws(
+    () => writeManifest(project, "feature", "2026-01-01T00-00-00-000Z-claude-to-codex", { commands: [] }),
+    /symlinked path component/,
+    "a symlinked lane checkpoints dir must be refused for manifests too"
+  );
+  assert.equal(latestManifest(project, "feature"), null, "inspect will not read a manifest through a symlinked lane dir");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(outside, { recursive: true });
 });

@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { adapterFor } from "./agents/index.mjs";
-import { checkpointsDir, CHECKPOINT_KINDS } from "./state.mjs";
+import { checkpointRel, safeCheckpointsDir, readableCheckpointsDir, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -83,24 +83,31 @@ function withinProject(projectDir, paths) {
 }
 
 /** Write it beside its delta, sharing the stem so the pair is obvious on disk. */
-export function writeManifest(projectDir, stem, manifest) {
-  const rel = path.join(".bridge", "checkpoints", `${stem}${CHECKPOINT_KINDS.audit}`);
-  fs.mkdirSync(checkpointsDir(projectDir), { recursive: true });
+export function writeManifest(projectDir, lane, stem, manifest) {
+  // Same write boundary as writeCheckpoint: refuse to create a manifest through a
+  // symlinked lane directory that would land it outside the project.
+  const dir = safeCheckpointsDir(projectDir, lane);
+  const rel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
+  fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, rel), JSON.stringify(manifest, null, 2));
   return rel;
 }
 
-/** The newest manifest in this project, which is what `bridge inspect` defaults to. */
-export function latestManifest(projectDir) {
+/** The newest manifest in one lane, which is what `bridge inspect` defaults to. */
+export function latestManifest(projectDir, lane = DEFAULT_LANE) {
+  // Refuse to read through a symlinked lane checkpoints directory that resolves
+  // outside the project — the read twin of the write guard above.
+  const dir = readableCheckpointsDir(projectDir, lane);
+  if (!dir) return null;
   let names;
   try {
-    names = fs.readdirSync(checkpointsDir(projectDir)).filter((n) => n.endsWith(CHECKPOINT_KINDS.audit));
+    names = fs.readdirSync(dir).filter((n) => n.endsWith(CHECKPOINT_KINDS.audit));
   } catch {
     return null;
   }
   if (!names.length) return null;
   const newest = names.sort().at(-1);
-  const rel = path.join(".bridge", "checkpoints", newest);
+  const rel = checkpointRel(projectDir, lane, newest);
   try {
     return { rel, manifest: JSON.parse(fs.readFileSync(path.join(projectDir, rel), "utf8")) };
   } catch {
