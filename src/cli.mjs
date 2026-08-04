@@ -20,6 +20,7 @@ import {
   DEFAULT_LANE,
 } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
+import { prepareSeed, writeSeed } from "./seed.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
@@ -60,8 +61,9 @@ ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handof
 ${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
 ${cont}--days N, --all; a pending injection is never deleted)
 ${cmd("lane")}List lines of work in this project ( lane new <name> starts a
-${cont}separate one, lane switch <name> moves the default, lane rm <name>
-${cont}--yes deletes one; lanes share files, not sessions )
+${cont}separate one, --seed <lane> gives it another lane's decisions and git
+${cont}state to start from, lane switch <name> moves the default, lane rm
+${cont}<name> --yes deletes one; lanes share files, not sessions )
 ${cmd("unlink <agent>")}Forget one agent's session in the active lane, and every
 ${cont}watermark that named it, so the next switch links it fresh
 
@@ -156,8 +158,10 @@ export async function main(argv) {
       log(`  You are in     ${here}`);
       const pending = s.pendingHandoff
         ? `handoff → ${adapterFor(s.pendingHandoff.target)?.displayName ?? s.pendingHandoff.target}`
-        : s.pendingInjection
-          ? `context waiting for ${adapterFor(s.pendingInjection.agent)?.displayName ?? s.pendingInjection.agent}`
+        : s.pendingInjection?.seed
+          ? "seed waiting for the first agent opened here"
+          : s.pendingInjection
+            ? `context waiting for ${adapterFor(s.pendingInjection.agent)?.displayName ?? s.pendingInjection.agent}`
           : dim("nothing");
       log(`  Pending        ${pending}`);
 
@@ -396,7 +400,7 @@ export async function main(argv) {
     }
 
     case "lane": {
-      process.exitCode = runLane(projectDir, args.slice(1), flags);
+      process.exitCode = runLane(projectDir, args.slice(1), flags, valueOf(argv, "--seed"));
       return;
     }
 
@@ -523,7 +527,7 @@ function valueOf(argv, name) {
  *   bridge lane rm <name>       delete a lane and its checkpoints (guarded)
  * Returns a process exit code. `args` is the tail after `lane`.
  */
-function runLane(projectDir, args, flags) {
+function runLane(projectDir, args, flags, seedSource) {
   const sub = args[0];
   const name = args[1];
 
@@ -555,12 +559,38 @@ function runLane(projectDir, args, flags) {
 
   if (sub === "new") {
     if (!name) {
-      log("Usage: bridge lane new <name>");
+      log("Usage: bridge lane new <name> [--seed <source-lane>]");
       return 1;
     }
     if (!isValidLaneName(name)) {
       log(`${BAD} Invalid lane name '${name}'. Use letters, digits, dot, dash or underscore, starting with a letter or digit.`);
       return 1;
+    }
+    // --seed carries starter context from another lane. Validate the source and
+    // build the whole seed BEFORE creating the new lane, so a bad or unbuildable
+    // --seed leaves no half-made lane behind.
+    const seeding = flags.has("--seed");
+    let prepared = null;
+    if (seeding) {
+      if (!seedSource) {
+        log(`${BAD} --seed needs a source lane: bridge lane new ${name} --seed <lane>.`);
+        return 1;
+      }
+      if (seedSource === name) {
+        log(`${BAD} A lane cannot seed from itself.`);
+        return 1;
+      }
+      const s = loadState(projectDir);
+      if (!s?.lanes?.[seedSource]) {
+        log(`${BAD} No lane named '${seedSource}' to seed from. 'bridge lane' lists them.`);
+        return 1;
+      }
+      try {
+        prepared = prepareSeed(projectDir, seedSource);
+      } catch (e) {
+        log(`${BAD} Could not read lane '${seedSource}' to seed from: ${e.message}.`);
+        return 1;
+      }
     }
     ensureState(projectDir);
     try {
@@ -571,6 +601,27 @@ function runLane(projectDir, args, flags) {
     } catch (e) {
       log(`${BAD} ${e.message}`);
       return 1;
+    }
+    if (seeding) {
+      try {
+        writeSeed(projectDir, name, prepared);
+      } catch (e) {
+        // The seed write failed after the lane was created: roll the lane back so
+        // nothing half-made survives, which is the promise the validation makes.
+        rollbackLane(projectDir, name, seedSource);
+        log(`${BAD} Could not seed lane '${name}' (${e.message}); it was rolled back.`);
+        return 1;
+      }
+      log(`${OK} Created lane ${bold(name)}, seeded from ${bold(seedSource)}, and switched to it.`);
+      const carried = [
+        prepared.report.decisions ? "decisions" : null,
+        prepared.report.next ? "next" : null,
+        prepared.report.gitLines ? `${prepared.report.gitLines} git line(s)` : null,
+        prepared.report.touched ? `${prepared.report.touched} touched file(s)` : null,
+        prepared.report.read ? `${prepared.report.read} read file(s)` : null,
+      ].filter(Boolean);
+      log(dim(`  Carried ${carried.length ? carried.join(", ") : "a briefing"}; no conversation or sessions. The first agent you open here receives it.`));
+      return 0;
     }
     log(`${OK} Created lane ${bold(name)} and switched to it. The next 'bridge' opens here.`);
     log(dim("  It starts empty on purpose: a new line of work carries no context from another."));
@@ -841,4 +892,27 @@ async function pickLane(projectDir) {
     return name;
   }
   return summaries[n - 1].name;
+}
+
+/**
+ * Undo a lane that was created but could not be seeded: switch the default away from
+ * it, remove it from state, then delete its directory (containment-checked, never
+ * following a symlink out). Best-effort, so a partial seed failure never leaves a
+ * lane the write did not finish filling.
+ */
+function rollbackLane(projectDir, name, fallback) {
+  try {
+    mutateProject(projectDir, (disk) => {
+      if (disk.activeLane === name) disk.activeLane = disk.lanes?.[fallback] ? fallback : DEFAULT_LANE;
+      removeLaneFromState(disk, name);
+    });
+  } catch {
+    // Already consistent, or the lane was never recorded; the directory sweep runs regardless.
+  }
+  const laneDir = path.join(bridgeDir(projectDir), "lanes", name);
+  if (isInsideDir(bridgeDir(projectDir), projectDir) && isInsideDir(laneDir, bridgeDir(projectDir))) {
+    try {
+      fs.rmSync(laneDir, { recursive: true, force: true });
+    } catch {}
+  }
 }

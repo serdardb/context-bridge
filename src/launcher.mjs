@@ -17,9 +17,11 @@ import {
   fullContextFor,
   deliverableBudget,
   closingWordsNotice,
+  hookDeliveryEligible,
   HOOK_DELTA_BYTES,
   PROMPT_DELTA_BYTES,
 } from "./delivery.mjs";
+import { bindSeed, unbindSeed } from "./seed.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 
@@ -97,6 +99,23 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
   for (;;) {
     s = ensureState(projectDir);
     s.activeLane = launcherLane; // this launcher drives its own lane, not the on-disk default
+    // A `lane new --seed` leaves an unbound seed injection for whichever agent opens
+    // the lane first. Bind it to this agent under the lock (bindSeed re-checks inside
+    // it, so two launchers racing one seeded lane give the seed to exactly one). If
+    // this launcher LOST the race, stop cleanly rather than start a second session on
+    // the lane: a hook agent would otherwise begin an untracked, seedless one. The
+    // session that won runs with the seed; reopen this terminal once it is up.
+    let boundSeedThisLaunch = false;
+    if (s.pendingInjection?.seed && s.pendingInjection.agent == null && !agentSlot(s, agent).id) {
+      const won = bindSeed(projectDir, launcherLane, agent, hookDeliveryEligible(agent, agentSlot(s, agent)));
+      if (!won) {
+        log(`${WARN} Another session is opening the seeded lane '${launcherLane}' and took the seed.`);
+        log(dim("  Nothing was started here. Reopen once that session is running."));
+        return 0;
+      }
+      boundSeedThisLaunch = true;
+      s = loadPinned(projectDir);
+    }
     const { cmd, args, note, carries, preResume } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
       const armed = agentArgs[agent].filter(isDangerous);
@@ -203,6 +222,10 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     process.removeListener("SIGTERM", termHandler);
 
     if (exit.error) {
+      // A seed belongs to whoever actually OPENS the lane. This agent never started,
+      // so hand the seed back: revert it to unbound, so the next agent can become the
+      // first opener instead of it staying locked to a launch that never ran.
+      if (boundSeedThisLaunch) unbindSeed(projectDir, launcherLane, agent);
       if (exit.error.code === "ENOENT") {
         log(`${BAD} '${cmd}' is not installed or not on PATH. Run: bridge doctor`);
       } else {
