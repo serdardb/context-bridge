@@ -346,7 +346,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Roadmap
 
 - Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- Seeding a new lane from another (`lane new --seed`), and a `--resume` lane picker
+- Worktree-backed lanes, so two lanes can hold different working trees, not just different sessions
 - Linux verification, Windows support
 - Optional MCP quick-question mode (ask the other agent without switching)
 
@@ -367,7 +367,7 @@ Since the first release:
 - **Checkpoint retention** — checkpoints are delivery artifacts: a companion is dropped once its reader has handed off, with `bridge clean` as the manual backstop
 - **A fourth agent, and what reaching it exposed** — Antigravity joined behind the same adapter contract, and getting a delta to it uncovered a first switch too large for a command line, a delta recorded as delivered before anything carried it, and an agent's identity read from a variable that outlives its session
 - **A fifth agent that keeps its sessions in a database** — OpenCode joined the same way, and reaching it added an authless write into its own session store (it exposes no hook and no promptable resume), a conflict-flag table folded back onto each adapter so three agents' unenforced flags finally bite, and a session-discovery path that no longer leaks a background server on every call
-- **Lanes** — a project can hold more than one line of work, each with its own agent links, history and checkpoints; `bridge lane new/switch/rm` manage them, two run in two terminals at once, and the whole path boundary they added (read, write, delete, list of every checkpoint) was hardened behind three containment guards over a night of review
+- **Lanes** — a project can hold more than one line of work, each with its own agent links, history and checkpoints; `bridge lane new/switch/rm/list` manage them and two run in two terminals at once, `bridge <agent> --resume` opens one, `lane new --seed` starts one from another's decisions and git state, `clean`/`inspect` take `--lane`, and launchers are tracked per lane so `lane rm`/`unlink` guard precisely. The whole checkpoint-path boundary and every seed/unlink lifecycle edge were hardened behind containment guards and tombstones over a long review
 - **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting `.bridge/` to relink one
 
 What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

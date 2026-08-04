@@ -10,8 +10,11 @@ half.
 
 Lanes: two lines of work in one project directory, each with its own agent links,
 history and checkpoints, so two sessions run in two terminals without seeing each
-other. Plus `bridge unlink`, and a night of hardening the one place every
-checkpoint path is read, written, listed or deleted.
+other. The full set — open one with `--resume`, start one from another with
+`--seed`, scope `clean` and `inspect` to one with `--lane`, and per-lane launcher
+tracking so `lane rm`/`unlink` guard precisely. Plus `bridge unlink`, and a long
+review hardening every place a checkpoint path is read, written, listed or deleted,
+and every lifecycle edge in seeding and unlinking.
 
 ### Added
 
@@ -24,12 +27,28 @@ checkpoint path is read, written, listed or deleted.
   resumes the lane you were last in, so a one-lane project never has to think about
   them. Lanes isolate context, not the working tree: every lane shares one
   checkout, so they are parallel conversation, not parallel code.
+- **`bridge <agent> --resume`.** Opens a lane directly: `--resume <name>` enters a
+  named one, `--resume` alone offers a picker, and a bare `bridge` resumes the last
+  lane. It reuses the flag the bridge already holds back from the agent, so nothing
+  leaks to the agent even if you pass it twice.
+- **`bridge lane new <name> --seed <source>`.** Starts a lane that is not empty: it
+  carries the source lane's decisions, open questions, current git state and the
+  files it had touched — a briefing, not a transcript. No conversation, no session
+  links, no watermarks cross. It is delivered to whichever agent opens the new lane
+  first, and if that launch fails to start the seed is handed back to the next.
+- **`--lane` on `clean` and `inspect`.** `bridge clean --lane <name>` prunes one
+  lane's checkpoints (protection still scans every lane, so a delta another lane is
+  waiting on is safe); `bridge inspect --lane <name>` shows that lane's newest audit.
 - **`bridge unlink <agent>`.** Forgets one agent's session in the active lane, and
   every `knownBy` watermark that names it in both directions, so the next switch
   links it fresh. It replaces deleting `.bridge/` to relink one agent, which took
   all of them. The whole slot is reset, not just a session id — `hookSeen`, pending
   markers and `idle` all keep an agent live — and it refuses while a launcher is
-  running, so a live session cannot re-link the agent you just forgot.
+  running on that lane. It also leaves a tombstone: a directly-run agent (one
+  started outside the launcher) keeps firing hooks, so without it the next one could
+  silently re-adopt the session you just forgot, or consume a delta meant for a live
+  one. The tombstoned session's hooks become a complete no-op until a genuinely new
+  session, or a deliberate re-adopt of the same id, clears it.
 
 ### Changed
 
@@ -41,6 +60,10 @@ checkpoint path is read, written, listed or deleted.
   read-modify-writes a single lane under an exclusive file lock, so two launchers on
   two lanes never clobber each other. A separate `mutateProject` handles the
   project-level changes — creating, switching and removing a lane.
+- **Launchers are tracked per lane.** State records each launcher against the lane
+  it drives, keyed by pid and pruned when the process is gone, so `lane rm` and
+  `unlink` refuse only when a launcher is live on the lane they touch, not on any
+  lane at all. A launcher on one lane no longer blocks removing another.
 
 ### Fixed
 
