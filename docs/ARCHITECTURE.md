@@ -200,30 +200,52 @@ understands. References only:
 
 ```json
 {
-  "version": 4,
+  "version": 5,
   "project": "<absolute path>",
-  "activeAgent": "claude",
-  "agents": {
-    "claude": { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false },
-    "codex":  { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false, "hookSeen": "…" },
-    "grok":   { "id": "…", "transcriptPath": "…", "mark": { "rows": 262, "ts": "…" }, "idle": false }
+  "activeLane": "main",
+  "lanes": {
+    "main": {
+      "activeAgent": "claude",
+      "agents": {
+        "claude": { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false },
+        "codex":  { "id": "…", "transcriptPath": "…", "mark": "2026-07-21T…", "idle": false, "hookSeen": "…" },
+        "grok":   { "id": "…", "transcriptPath": "…", "mark": { "rows": 262, "ts": "…" }, "idle": false }
+      },
+      "knownBy": { "grok": { "claude": "…", "codex": "…" } },
+      "pendingHandoff":   { "target": "codex", "ready": true, "requestedAt": "…" },
+      "pendingInjection": { "agent": "codex", "via": "hook", "deltaFile": "…", "sources": {} },
+      "git": { "sha": "…", "recordedAt": "…" }
+    }
   },
-  "knownBy": { "grok": { "claude": "…", "codex": "…" } },
-  "pendingHandoff":   { "target": "codex", "ready": true, "requestedAt": "…" },
-  "pendingInjection": { "agent": "codex", "via": "hook", "deltaFile": "…", "sources": {} },
-  "launcher": { "stateVersion": 4, "pid": 71272, "recordedAt": "…" },
-  "git": { "sha": "…", "recordedAt": "…" }
+  "launchers": { "71272": { "pid": 71272, "lane": "main", "stateVersion": 5, "recordedAt": "…" } }
 }
 ```
+
+Everything one line of work owns — its agent links, watermarks, pending markers
+and git snapshot — lives under `lanes[<name>]`, and `activeLane` names the one in
+force. Readers never index `lanes` directly: state loaded for a lane exposes that
+lane's fields at the top level (`s.agents`, `s.pendingHandoff`, …) through an
+active-lane view, so the whole codebase reads as if there were one lane and a
+switch is a single pointer move. A fresh install is one lane called `main`; a
+project that never opens a second one never notices the layer.
+
+Two writers are serialised by two locked primitives. `mutateState` read-modify-
+writes exactly one lane under an exclusive lock, and refuses to resurrect a lane
+an existing project has removed (a delayed hook drops its write instead of
+recreating the lane empty). `mutateProject` writes the whole file, for the
+lane create / switch / remove commands that are about the set of lanes rather
+than the work inside one.
 
 Transcripts are deliberately not duplicated here. The native files already are
 the transcripts; copying them would double the on-disk footprint of sensitive
 conversation, and references plus watermarks are enough to compute every delta.
 `.bridge/` is added to the project's `.gitignore` automatically.
 
-`launcher` exists because a launcher started before an upgrade cannot read a
-newer state file. It says so and asks to be restarted rather than waiting for a
-switch that can never come.
+`launchers` records each live launcher by pid and the lane it opened. It exists
+because a launcher started before an upgrade cannot read a newer state file — it
+says so and asks to be restarted rather than waiting for a switch that can never
+come — and because knowing which lane a launcher holds lets `lane rm` and
+`unlink` refuse only when a launcher is live on the lane they touch, not on any.
 
 ## Checkpoints are delivery artifacts
 
@@ -377,8 +399,9 @@ is not readable and claiming otherwise would be a green tick over an unknown.
 
 - Verified on macOS. The suite runs on Linux in CI, but the vendor directory
   layouts there are unverified. Windows is unsupported.
-- One linked session per agent per project. Deleting `.bridge/` relinks, and
-  takes the saved launch flags with it.
+- One linked session per agent per lane. `bridge unlink <agent>` forgets just that
+  one; deleting `.bridge/` still relinks everything at once and takes the saved
+  launch flags with it, but is no longer needed to relink a single agent.
 - Grok cannot receive a delta through a hook, and that is a limit in Grok.
 - Codex stores sessions by date rather than by project, so its discovery check
   answers for the machine rather than for one project.

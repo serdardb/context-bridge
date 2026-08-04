@@ -202,17 +202,29 @@ Grok
   ✓ $bridge skill installed and current (~/.agents/skills/bridge)
   ✓ Session readable by this version of the bridge (104 messages)
 
+Antigravity
+  ✓ Installed: 1.1.10
+  ✓ Authenticated
+  ✓ Conversation history readable
+  ✓ Session readable by this version of the bridge (47 messages)
+
+OpenCode
+  ✓ Installed: 1.18.12
+  ✓ Authenticated
+  ✓ Authentication configured
+  ✓ sqlite3 present (used to inject a handoff into OpenCode's session store)
+  ✓ Session readable by this version of the bridge
+
 Bridge
   ✓ bridge on PATH (hooks can reach it)
-  ✓ Project state: linked claude, codex, grok
+  ✓ Project state: linked claude, codex, grok, antigravity, opencode
 
 Available routes
   claude->codex      ✓ CONFIGURED  first switch: official import
   claude->grok       ✓ CONFIGURED  first switch: delta-seeded
-  codex->claude      ✓ CONFIGURED  first switch: delta-seeded
-  codex->grok        ✓ CONFIGURED  first switch: delta-seeded
-  grok->claude       ✓ CONFIGURED  first switch: delta-seeded
-  grok->codex        ✓ CONFIGURED  first switch: delta-seeded
+  claude->antigravity ✓ CONFIGURED  first switch: delta-seeded
+  claude->opencode   ✓ CONFIGURED  first switch: delta-seeded
+  … and 16 more — every ordered pair of the five agents, twenty directions in all
 
 CONFIGURED means installed, configured, and its session still parses. It does not mean the agent answers: run `bridge doctor --deep` to ask each one a real question.
 ```

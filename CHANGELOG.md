@@ -47,8 +47,10 @@ and every lifecycle edge in seeding and unlinking.
   running on that lane. It also leaves a tombstone: a directly-run agent (one
   started outside the launcher) keeps firing hooks, so without it the next one could
   silently re-adopt the session you just forgot, or consume a delta meant for a live
-  one. The tombstoned session's hooks become a complete no-op until a genuinely new
-  session, or a deliberate re-adopt of the same id, clears it.
+  one. The tombstoned session's hooks become a complete no-op, and every session you
+  unlink is remembered separately, so forgetting one never revives another you
+  forgot earlier. A tombstone is cleared only by a deliberate re-adopt of that exact
+  id; a genuinely new session just links alongside without disturbing the rest.
 
 ### Changed
 
