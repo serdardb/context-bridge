@@ -254,6 +254,21 @@ Coming back is the same command in the other direction. Ask the agent *"where we
 
 Each delta costs the receiving agent one short acknowledgment sentence — that is the entire overhead.
 
+## Lanes
+
+A project directory usually holds one line of work. When it holds two — a feature and an unrelated bug fix — a **lane** keeps them apart: each lane has its own agent links, its own switch history and its own checkpoints, and the lanes do not see each other. Two lanes in two terminals run at once, the way two plain `claude` sessions in one directory already can.
+
+```
+bridge lane                    list the lanes here, most recently active first
+bridge lane new <name>         start a new, empty lane and switch to it
+bridge lane switch <name>      point the default lane at an existing one
+bridge lane rm <name> --yes    delete a lane and its checkpoints (--dry-run to preview)
+```
+
+A new lane starts empty on purpose: a different line of work inherits nothing, which is the whole reason to open one. A bare `bridge` resumes the lane you were last in, so a project that only ever has one lane never has to think about them.
+
+**Lanes isolate context, not the working tree.** Every lane shares the one checkout, so switching lanes does not switch files: this is parallel *conversation*, not parallel *code*. Two lanes editing the same files collide exactly as two plain agents in one directory would. Real parallel code needs a git worktree, which is a separate, later feature.
+
 ## Architecture
 
 | Piece | What it is |
@@ -314,6 +329,8 @@ than leaving an empty column to be misread as nothing happened.
 
 - Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
 - One linked session per agent per project (no `bridge unlink` yet — delete `.bridge/` to relink).
+- Lanes isolate context, not the working tree: every lane shares one checkout, so they are parallel conversations, not parallel code. Editing the same files from two lanes collides as two plain agents would.
+- `bridge lane rm` refuses while any bridge launcher is running in the project. It cannot yet tell which lane each launcher holds, so it stays safe by asking you to close the bridge terminals first.
 - Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
 - Codex runs hooks only after you review them once with `/hooks`, and that trust is not readable from outside. Until then a handoff falls back to the prompt path, and when a delta was routed to a hook that never fired the launcher says so and names the file it is still sitting in.
 - Grok cannot receive a delta through a hook at all: its hooks fire but their output is ignored for passive events, so Grok stays on prompt delivery.
