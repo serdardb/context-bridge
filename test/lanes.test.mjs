@@ -884,27 +884,47 @@ test("unlinkAgent tombstones the forgotten session, and a re-unlink preserves th
 
   assert.equal(unlinkAgent(lane, "codex"), true, "the first unlink forgets the session");
   assert.equal(lane.agents.codex.id, null, "the session is forgotten");
-  assert.equal(lane.agents.codex.unlinked, "sess-1", "and its id is tombstoned so a stale hook cannot relink it");
+  assert.deepEqual(lane.agents.codex.rejectedSessions, ["sess-1"], "and its id is tombstoned so a stale hook cannot relink it");
 
-  // The tombstone is not 'content' to forget, so re-unlinking is still a no-op AND
-  // keeps the tombstone (a re-unlink must not reopen the relink window).
+  // The tombstone set is not 'content' to forget, so re-unlinking is still a no-op AND
+  // keeps the set (a re-unlink must not reopen the relink window).
   assert.equal(unlinkAgent(lane, "codex"), false, "re-unlinking an already-forgotten agent changes nothing");
-  assert.equal(lane.agents.codex.unlinked, "sess-1", "the tombstone survives the re-unlink");
+  assert.deepEqual(lane.agents.codex.rejectedSessions, ["sess-1"], "the tombstone survives the re-unlink");
 });
 
-test("a deliberate link (adopt) of the same unlinked id clears the tombstone", async () => {
+test("unlinkAgent ACCUMULATES tombstones so an earlier session is never forgotten (the single-tombstone bug)", async () => {
+  const { unlinkAgent, agentSlot } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  // Session A links, then is unlinked.
+  lane.agents.codex = { id: "A", transcriptPath: "/a", mark: null, idle: false };
+  unlinkAgent(lane, "codex");
+  assert.deepEqual(lane.agents.codex.rejectedSessions, ["A"], "A is rejected");
+
+  // A DIFFERENT session B links (a deliberate link retires only B, which was not there),
+  // then B is unlinked too.
+  agentSlot(lane, "codex").set({ id: "B", transcriptPath: "/b" });
+  unlinkAgent(lane, "codex");
+
+  // BOTH A and B must stay rejected. A single scalar tombstone remembered only B here,
+  // so A's delayed hook could relink; the set keeps them both.
+  assert.ok(lane.agents.codex.rejectedSessions.includes("A"), "A is STILL rejected after B was unlinked");
+  assert.ok(lane.agents.codex.rejectedSessions.includes("B"), "and so is B");
+});
+
+test("a deliberate link (adopt) of the same unlinked id retires just that one tombstone", async () => {
   const { unlinkAgent, agentSlot } = await import("../src/state.mjs");
   const lane = emptyLane();
   lane.agents.codex = { id: "old", transcriptPath: "/t", mark: "m", idle: false };
   unlinkAgent(lane, "codex");
-  assert.equal(lane.agents.codex.unlinked, "old", "tombstoned after unlink");
+  // Also reject a second, unrelated session so we can prove only 'old' is retired.
+  lane.agents.codex.rejectedSessions = ["old", "other"];
 
-  // The user deliberately re-adopts the SAME id. Every intentional link goes through
-  // agentSlot.set, which must retire the tombstone so the re-adopted session's own
-  // hooks are not blocked forever.
+  // The user deliberately re-adopts the SAME id. agentSlot.set retires that ONE
+  // session's tombstone so its hooks are not blocked forever, but leaves the rest.
   agentSlot(lane, "codex").set({ id: "old", transcriptPath: "/t" });
-  assert.equal(lane.agents.codex.unlinked ?? null, null, "the deliberate link cleared the tombstone");
-  assert.equal(lane.agents.codex.id, "old", "and the session is linked again");
+  assert.equal(lane.agents.codex.id, "old", "the session is linked again");
+  assert.ok(!lane.agents.codex.rejectedSessions?.includes("old"), "old is no longer rejected");
+  assert.ok(lane.agents.codex.rejectedSessions?.includes("other"), "but an unrelated rejected session stays rejected");
 });
 
 test("bridge clean --lane and inspect --lane target one lane and reject an unknown one", () => {
@@ -952,4 +972,45 @@ test("clean --lane and inspect --lane fail closed on corrupt state instead of cr
   assert.match(inspected.stdout, /could not be read/i, "inspect reports corrupt state clearly, not 'unknown lane'");
 
   fs.rmSync(project, { recursive: true });
+});
+
+test("a legacy scalar 'unlinked' tombstone is migrated into the rejectedSessions set", async () => {
+  const { unlinkAgent } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  // A state written by the briefly-shipped scalar version.
+  lane.agents.codex = { id: "live", transcriptPath: "/t", mark: null, idle: false, unlinked: "old-scalar" };
+
+  unlinkAgent(lane, "codex");
+
+  assert.ok(lane.agents.codex.rejectedSessions.includes("old-scalar"), "the legacy scalar tombstone survives as a set entry");
+  assert.ok(lane.agents.codex.rejectedSessions.includes("live"), "and the just-unlinked id is added, not overwriting it");
+  assert.equal(lane.agents.codex.unlinked ?? null, null, "the scalar field is dropped after migration");
+});
+
+test("re-adopting an id that a LEGACY scalar 'unlinked' tombstoned clears the scalar too", async () => {
+  // The scalar version left one field, `unlinked`, that the hook gate still honours.
+  // A deliberate re-adopt of that exact id retired the id from the new set but left
+  // the legacy scalar in place, so the gate kept rejecting the very session the user
+  // chose to link. agentSlot.set must drop the scalar when it names the linked id.
+  const project = twoLaneProject();
+  const s = loadState(project); // active is main
+  laneOf(s, "main").agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "sess-A" };
+
+  agentSlot(s, "codex").set({ id: "sess-A", transcriptPath: "/t" });
+
+  const slot = laneOf(s, "main").agents.codex;
+  assert.equal(slot.id, "sess-A", "the deliberate link landed");
+  assert.equal(slot.unlinked ?? null, null, "and the legacy scalar tombstone for that same id is gone");
+});
+
+test("re-adopting a DIFFERENT id leaves a legacy scalar tombstone standing", async () => {
+  // Linking sess-B must not resurrect sess-A: its scalar tombstone stays until the
+  // next unlink migrates it into the set, so sess-A's stale hook is still a no-op.
+  const project = twoLaneProject();
+  const s = loadState(project); // active is main
+  laneOf(s, "main").agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "sess-A" };
+
+  agentSlot(s, "codex").set({ id: "sess-B", transcriptPath: "/t" });
+
+  assert.equal(laneOf(s, "main").agents.codex.unlinked, "sess-A", "a link of a different id leaves sess-A tombstoned");
 });

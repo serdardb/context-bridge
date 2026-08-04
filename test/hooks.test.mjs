@@ -232,7 +232,7 @@ test("a Claude SessionStart hook refuses to relink a session that was unlinked, 
 
   const state = defaultState(project);
   // claude was unlinked: an empty slot carrying only the tombstone for its old session.
-  state.agents.claude = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "old-session" };
+  state.agents.claude = { id: null, transcriptPath: null, mark: null, idle: false, rejectedSessions: ["old-session"] };
   saveState(project, state);
 
   const fire = (session_id, source) =>
@@ -244,12 +244,14 @@ test("a Claude SessionStart hook refuses to relink a session that was unlinked, 
 
   fire("old-session", "resume");
   assert.equal(loadState(project).agents.claude.id, null, "the unlinked session was NOT relinked by its stale hook");
-  assert.equal(loadState(project).agents.claude.unlinked, "old-session", "the tombstone is still in place");
+  assert.deepEqual(loadState(project).agents.claude.rejectedSessions, ["old-session"], "the tombstone is still in place");
 
   fire("new-session", "startup");
   const after = loadState(project);
   assert.equal(after.agents.claude.id, "new-session", "a genuinely new session links normally");
-  assert.equal(after.agents.claude.unlinked ?? null, null, "and the spent tombstone is cleared");
+  // The new session is a different id, so the old one STAYS rejected: a later stale
+  // hook from old-session must still be turned away, not welcomed back by a fresh link.
+  assert.deepEqual(after.agents.claude.rejectedSessions, ["old-session"], "the old session stays rejected after a new one links");
 
   fs.rmSync(project, { recursive: true });
 });
@@ -263,7 +265,7 @@ test("a stale Codex hook for an unlinked session neither stamps hookSeen nor con
 
   const state = defaultState(project);
   // codex was unlinked: an empty slot with a tombstone for its old session.
-  state.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "old-codex" };
+  state.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, rejectedSessions: ["old-codex"] };
   // A hook delivery is pending for codex (bound to a NEW session, delivered by hook).
   state.pendingInjection = { agent: "codex", via: "hook", id: "new-codex", deltaFile: path.join(".bridge", "checkpoints", deltaName), createdAt: "2026-01-01T00:00:00.000Z", sources: {} };
   saveState(project, state);

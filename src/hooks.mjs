@@ -128,7 +128,8 @@ export async function runHook(event, agent = "claude") {
     // hook-eligible) or consume a pending delta meant for a real session — silently
     // reclaiming or erasing context. So the tombstoned id touches nothing. A genuine
     // re-adopt of that id sets the slot deliberately, which clears the tombstone.
-    if (sessionId && st.agents?.[agent]?.unlinked === sessionId) return;
+    const slotNow = st.agents?.[agent];
+    if (sessionId && (slotNow?.rejectedSessions?.includes(sessionId) || slotNow?.unlinked === sessionId)) return;
     // Codex hooks record their own agent. Delta delivery still travels by prompt
     // for it: the hook can inject context (proven), but hooks do not run until the
     // user trusts them once and that trust cannot be read back, so binding
@@ -184,7 +185,9 @@ function linkClaudeSession(s, input) {
   s.agents.claude.transcriptPath = transcriptPath;
   delete s.agents.claude.pendingId;
   delete s.agents.claude.pendingPath;
-  delete s.agents.claude.unlinked; // a genuinely new session linked; the tombstone is spent
+  // No rejectedSessions handling here: the top-of-dispatch gate already dropped any
+  // hook for a rejected id, so `id` reaching this point is never one of them, and
+  // the other rejected ids must stay rejected.
   return true;
 }
 
