@@ -48,8 +48,12 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
   // Accepts either a bare array (older callers) or the split the CLI produces.
   const forwardArgs = Array.isArray(forward) ? forward : (forward?.agentArgs ?? []);
   const bridgeFlags = Array.isArray(forward) ? {} : (forward?.bridgeFlags ?? {});
+  // `--resume <lane>` resolves to a lane this launcher pins for its whole life,
+  // overriding the on-disk default. It has already been validated to exist and made
+  // the active lane by the CLI, so here it is only the pin.
+  const wantLane = Array.isArray(forward) ? null : (forward?.lane ?? null);
   let s = ensureState(projectDir);
-  launcherLane = s.activeLane ?? DEFAULT_LANE;
+  launcherLane = wantLane ?? s.activeLane ?? DEFAULT_LANE;
   s.activeLane = launcherLane;
   let agent = startAgent || s.activeAgent || "claude";
 

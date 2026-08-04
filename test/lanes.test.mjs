@@ -792,3 +792,87 @@ test("recordLauncher preserves a still-live legacy launcher so every lane stays 
   assert.equal(laneHasLiveLauncher(disk, "feature"), true, "feature is still guarded by the live legacy launcher");
   assert.equal(laneHasLiveLauncher(disk, "main"), true, "and so is main");
 });
+
+// Phase 5.2: --resume selects a lane. The parsing and resolution are pure and
+// tested here; the interactive picker itself is exercised by hand.
+
+test("extractResume pulls --resume and its lane out of forwarded args in every form", async () => {
+  const { extractResume } = await import("../src/cli.mjs");
+  assert.deepEqual(extractResume(["--model", "x"]), { resume: undefined, rest: ["--model", "x"] });
+  assert.deepEqual(extractResume(["--resume"]), { resume: true, rest: [] });
+  assert.deepEqual(extractResume(["--resume", "auth"]), { resume: "auth", rest: [] });
+  assert.deepEqual(extractResume(["--resume=auth"]), { resume: "auth", rest: [] });
+  // a flag right after --resume means the bare picker form, and the flag survives
+  assert.deepEqual(extractResume(["--resume", "--model", "x"]), { resume: true, rest: ["--model", "x"] });
+  // surrounding agent args are preserved in order
+  assert.deepEqual(extractResume(["--model", "x", "--resume", "auth", "-v"]), { resume: "auth", rest: ["--model", "x", "-v"] });
+});
+
+test("resolveResumeLane requires an existing lane, falls back, or asks to pick", async () => {
+  const { resolveResumeLane } = await import("../src/cli.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resume-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+
+  assert.deepEqual(resolveResumeLane(project, undefined), { lane: null }, "no --resume resumes the last lane");
+  assert.deepEqual(resolveResumeLane(project, "feature"), { lane: "feature" }, "a named, existing lane opens directly");
+  assert.equal(resolveResumeLane(project, "ghost").error !== undefined, true, "a lane that does not exist is refused, not created");
+  assert.equal(resolveResumeLane(project, "../evil").error !== undefined, true, "an invalid lane name is refused");
+  assert.deepEqual(resolveResumeLane(project, true), { pick: true }, "the bare form asks to pick when there is more than one lane");
+
+  // single-lane project: nothing to choose, so the bare form just opens it
+  const solo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resume1-")));
+  fs.mkdirSync(bridgeDir(solo), { recursive: true });
+  fs.writeFileSync(
+    statePath(solo),
+    JSON.stringify({ version: STATE_VERSION, project: solo, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+  assert.deepEqual(resolveResumeLane(solo, true), { lane: null }, "the bare form does not prompt when there is only one lane");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(solo, { recursive: true });
+});
+
+test("bridge <agent> --resume <missing> refuses before launching anything", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resumecli-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "claude", "--resume", "ghost"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 1, "an unknown lane is an error, and the agent never starts");
+  assert.match(res.stdout, /No lane named 'ghost'/);
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("extractResume refuses a duplicate or empty --resume instead of leaking it to the agent", async () => {
+  const { extractResume } = await import("../src/cli.mjs");
+  // Two --resume: without this, feature is chosen and `--resume other` is left in
+  // rest, reaching an agent (Codex/OpenCode) that does not drop it.
+  assert.ok(extractResume(["--resume", "feature", "--resume", "other"]).error, "two --resume is refused");
+  assert.ok(extractResume(["--resume=a", "--resume=b"]).error, "two --resume= is refused");
+  assert.ok(extractResume(["--resume", "a", "--resume=b"]).error, "a mixed pair is refused");
+  // A second --resume never survives into rest.
+  const dup = extractResume(["--resume", "feature", "--resume", "other", "--model", "x"]);
+  assert.ok(dup.error);
+  assert.equal(dup.rest, undefined, "no forwarded args are handed back when the input is refused");
+  // Empty --resume= is ambiguous, refused rather than silently treated as a picker.
+  assert.ok(extractResume(["--resume="]).error, "an empty --resume= is refused");
+});
+
+test("parseChoice takes only a whole number in range, not 1abc or out-of-range", async () => {
+  const { parseChoice } = await import("../src/cli.mjs");
+  assert.equal(parseChoice("1abc", 3), null, "a trailing non-digit is rejected, not read as 1");
+  assert.equal(parseChoice("2", 3), 2);
+  assert.equal(parseChoice("0", 3), 0, "0 is the New lane slot");
+  assert.equal(parseChoice("  2 ", 3), 2, "surrounding space is fine");
+  assert.equal(parseChoice("4", 3), null, "out of range is rejected");
+  assert.equal(parseChoice("-1", 3), null, "a sign is not a digit run");
+  assert.equal(parseChoice("", 3), null);
+});

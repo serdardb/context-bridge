@@ -26,6 +26,7 @@ import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 // Read from the manifest rather than repeating it. This was a hardcoded string,
@@ -73,6 +74,8 @@ Agent flags:
   --cb-save-args         Keep the flags typed with this launch in .bridge/config.json
                          and use them every time this agent opens in this project
   --cb-clear-args        Forget them again
+  --resume [lane]        Open a specific lane; with no name, pick one from a list
+                         ( a bare 'bridge' resumes the lane you were last in )
 
 Recovering a dead agent:
   If an agent hits a quota limit or crashes mid-switch, it cannot run the handoff
@@ -110,14 +113,14 @@ export async function main(argv) {
   }
 
   if (AGENT_IDS.includes(cmd)) {
-    process.exitCode = await runLoop(projectDir, cmd, splitLauncherArgs(tailAfter(argv, cmd)));
+    process.exitCode = await launchAgent(projectDir, cmd, argv);
     return;
   }
 
   switch (cmd) {
     case undefined:
       // Anything after the agent name is the agent's own flag, forwarded as-is.
-      process.exitCode = await runLoop(projectDir, null, splitLauncherArgs(tailAfter(argv, cmd)));
+      process.exitCode = await launchAgent(projectDir, null, argv);
       return;
 
     case "doctor":
@@ -694,4 +697,148 @@ function runUnlink(projectDir, agentId) {
   log(`${OK} Unlinked ${name} from lane ${bold(lane)}. Its session and every watermark that named it are cleared.`);
   log(dim("  The next switch to it links a fresh session."));
   return 0;
+}
+
+/**
+ * Resolve which lane to open, then start the launcher on it. `--resume <lane>`
+ * enters a named lane, `--resume` alone opens a picker, and no flag resumes the lane
+ * the project was last in. Entering a lane also makes it the active one, so a later
+ * bare `bridge` comes back to it. `agent` is null for a bare `bridge`.
+ */
+async function launchAgent(projectDir, agent, argv) {
+  const parsed = extractResume(tailAfter(argv, agent));
+  if (parsed.error) {
+    log(`${BAD} ${parsed.error}`);
+    return 1;
+  }
+  const { resume, rest } = parsed;
+  const r = resolveResumeLane(projectDir, resume);
+  if (r.error) {
+    log(`${BAD} ${r.error}`);
+    return 1;
+  }
+  let lane = r.lane;
+  if (r.pick) {
+    lane = await pickLane(projectDir);
+    if (!lane) {
+      log(`${NONE} No lane chosen.`);
+      return 0;
+    }
+  }
+  if (lane) {
+    // Entering a lane makes it the default too, so "the lane you were last in" is
+    // true next time. A launcher already running on another lane is pinned and
+    // unaffected by this move.
+    mutateProject(projectDir, (disk) => switchActiveLane(disk, lane));
+  }
+  return runLoop(projectDir, agent, { ...splitLauncherArgs(rest), lane });
+}
+
+/**
+ * Pull the bridge-owned `--resume [lane]` out of an agent's forwarded args. The
+ * bridge holds `--resume` back from the agent anyway (it manages the session), so
+ * here it selects a lane. Returns { resume, rest }: `resume` is undefined when
+ * absent, a lane name when one follows, or `true` for the bare picker form; `rest`
+ * is the remaining args to forward to the agent.
+ */
+export function extractResume(tail) {
+  const hits = [];
+  const rest = [];
+  for (let i = 0; i < tail.length; i++) {
+    const a = tail[i];
+    if (a === "--resume") {
+      const next = tail[i + 1];
+      const hasName = next !== undefined && !next.startsWith("-");
+      hits.push(hasName ? next : true);
+      if (hasName) i++; // consume the lane name too, so it never reaches the agent
+    } else if (a.startsWith("--resume=")) {
+      hits.push(a.slice("--resume=".length)); // may be "" for a bare --resume=
+    } else {
+      rest.push(a);
+    }
+  }
+  if (hits.length === 0) return { resume: undefined, rest };
+  // More than one --resume is ambiguous, and leaving a second one in `rest` would
+  // hand it to an agent that does not drop it (Codex, OpenCode). Refuse instead of
+  // guessing which lane was meant.
+  if (hits.length > 1) return { error: "Use --resume at most once." };
+  const only = hits[0];
+  if (only === "") return { error: "Empty --resume=; give it a lane name, or use --resume with no value to pick one." };
+  return { resume: only, rest };
+}
+
+/**
+ * A picker answer to a whole number 0..count, or null for anything else. Parsing
+ * with parseInt alone accepted "1abc" as 1, silently choosing a lane the user did
+ * not type; the whole string must be digits.
+ */
+export function parseChoice(answer, count) {
+  const t = String(answer).trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= 0 && n <= count ? n : null;
+}
+
+/**
+ * Resolve `--resume`'s value: a lane to open, null to fall back to the lane the
+ * project was last in, or a picker request. A named lane must already exist — new
+ * lanes are made deliberately with `lane new`, never conjured by a resume typo.
+ * Returns { lane } | { pick: true } | { error }.
+ */
+export function resolveResumeLane(projectDir, resume) {
+  if (resume === undefined) return { lane: null };
+  const s = loadState(projectDir);
+  if (resume === true) {
+    // Nothing to choose between yet: open the one lane there is.
+    if (!s || Object.keys(s.lanes ?? {}).length <= 1) return { lane: null };
+    return { pick: true };
+  }
+  if (!isValidLaneName(resume)) return { error: `Invalid lane name '${resume}'.` };
+  if (!s?.lanes?.[resume]) {
+    return { error: `No lane named '${resume}'. Start it with 'bridge lane new ${resume}', or 'bridge lane' to list them.` };
+  }
+  return { lane: resume };
+}
+
+function prompt(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+/**
+ * Interactive lane picker for a bare `bridge <agent> --resume`. Lists the lanes
+ * newest-active first with "New lane" on top, and returns the chosen lane's name, a
+ * freshly created one, or null if the choice was empty or invalid (the caller treats
+ * null as cancel).
+ */
+async function pickLane(projectDir) {
+  const s = loadState(projectDir);
+  const summaries = laneSummaries(projectDir, s);
+  log(bold("Which lane?"));
+  log(`  ${dim("0)")} New lane`);
+  summaries.forEach((l, idx) => {
+    const when = l.lastActive ? ago(new Date(l.lastActive)) : "no activity yet";
+    log(`  ${dim(`${idx + 1})`)} ${l.name}${l.active ? dim(" (current)") : ""}  ${dim(when)}`);
+  });
+  const answer = (await prompt(`Lane [0-${summaries.length}, Enter = ${summaries[0].name}]: `)).trim();
+  if (!answer) return summaries[0].name;
+  const n = parseChoice(answer, summaries.length);
+  if (n === null) return null;
+  if (n === 0) {
+    const name = (await prompt("New lane name: ")).trim();
+    if (!isValidLaneName(name)) {
+      log(`${BAD} Invalid lane name '${name}'.`);
+      return null;
+    }
+    if (s.lanes?.[name]) return name; // already exists: just open it
+    mutateProject(projectDir, (disk) => createLane(disk, name));
+    log(`${OK} Created lane ${bold(name)}.`);
+    return name;
+  }
+  return summaries[n - 1].name;
 }
