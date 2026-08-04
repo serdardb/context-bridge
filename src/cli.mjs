@@ -7,9 +7,11 @@ import {
   ensureState,
   readableCheckpointsDir,
   mutateProject,
+  mutateState,
   createLane,
   switchActiveLane,
   removeLaneFromState,
+  unlinkAgent,
   laneSummaries,
   isValidLaneName,
   isInsideDir,
@@ -58,6 +60,8 @@ ${cont}--days N, --all; a pending injection is never deleted)
 ${cmd("lane")}List lines of work in this project ( lane new <name> starts a
 ${cont}separate one, lane switch <name> moves the default, lane rm <name>
 ${cont}--yes deletes one; lanes share files, not sessions )
+${cmd("unlink <agent>")}Forget one agent's session in the active lane, and every
+${cont}watermark that named it, so the next switch links it fresh
 
 Agent flags:
   bridge claude --dangerously-skip-permissions --model claude-fable-5
@@ -83,7 +87,7 @@ Inside the agents:
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "lane", "internal-hook", "help", "version"];
+const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -392,6 +396,11 @@ export async function main(argv) {
       return;
     }
 
+    case "unlink": {
+      process.exitCode = runUnlink(projectDir, args[1]);
+      return;
+    }
+
     case "internal-hook": {
       // The hook command names the agent it was installed for, so the identity
       // guard can compare that against the environment it actually woke up in.
@@ -644,4 +653,46 @@ function runLane(projectDir, args, flags) {
 
   log(`${BAD} Unknown 'bridge lane' subcommand '${sub}'. Try: bridge lane [new|switch|rm] <name>.`);
   return 1;
+}
+
+/**
+ * `bridge unlink <agent>`: forget one agent's session in the active lane. Clears
+ * its slot and every watermark that names it, in both directions, so the next
+ * switch links a fresh session instead of resuming a dead one. Replaces the old
+ * `rm -rf .bridge` sledgehammer, which took every agent's link, not just one.
+ */
+function runUnlink(projectDir, agentId) {
+  if (!AGENT_IDS.includes(agentId)) {
+    log(`Usage: bridge unlink <${AGENT_IDS.join("|")}>`);
+    return 1;
+  }
+  const s = loadState(projectDir);
+  if (!s) {
+    log(`${NONE} No bridge state in this project yet.`);
+    return 1;
+  }
+  const name = adapterFor(agentId)?.displayName ?? agentId;
+  const lane = s.activeLane ?? DEFAULT_LANE;
+  // Unlink is for a session you have finished with. If a launcher is live, the
+  // session may still be running, and its next hook, or a handoff already in flight,
+  // would re-link the very agent you just forgot, from a snapshot taken before the
+  // unlink. Same reachable race as `lane rm`, closed the same way: refuse while a
+  // launcher is alive, since with none there is no writer left to relink it. The
+  // precise per-session generation barrier is the deferred follow-up.
+  if (s.launcher?.pid && processAlive(s.launcher.pid)) {
+    log(`${BAD} A bridge launcher (pid ${s.launcher.pid}) is running in this project.`);
+    log(dim("  Unlink is for a session you are done with. Close the bridge terminals first, so a live session cannot re-link the agent you forget."));
+    return 1;
+  }
+  let changed = false;
+  mutateState(projectDir, null, (disk) => {
+    changed = unlinkAgent(disk, agentId);
+  });
+  if (!changed) {
+    log(`${NONE} ${name} is not linked in lane ${lane}; nothing to unlink.`);
+    return 0;
+  }
+  log(`${OK} Unlinked ${name} from lane ${bold(lane)}. Its session and every watermark that named it are cleared.`);
+  log(dim("  The next switch to it links a fresh session."));
+  return 0;
 }

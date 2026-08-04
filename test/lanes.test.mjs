@@ -619,3 +619,97 @@ test("a stale mutateState after lane rm does not resurrect the lane, but a fresh
   fs.rmSync(project, { recursive: true });
   fs.rmSync(fresh, { recursive: true });
 });
+
+// Phase 6: bridge unlink. The point is BOTH directions of the watermark matrix.
+
+test("unlinkAgent clears the slot and every watermark that names the agent, both directions", async () => {
+  const { unlinkAgent } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  lane.activeAgent = "codex";
+  lane.agents.claude = { id: "c1", transcriptPath: "/c", mark: "mc", idle: false };
+  lane.agents.codex = { id: "x1", transcriptPath: "/x", mark: "mx", idle: false };
+  lane.knownBy = { claude: { codex: "a", grok: "b" }, codex: { claude: "c" } };
+  lane.pendingHandoff = { target: "codex", ready: true };
+
+  const changed = unlinkAgent(lane, "codex");
+  assert.equal(changed, true);
+  assert.equal(lane.agents.codex.id, null, "codex's session is forgotten");
+  assert.equal(lane.agents.codex.mark ?? null, null, "and so is its watermark");
+  // The whole reason unlink is not just 'clear the slot': a leftover mark points at
+  // a session that no longer exists, and the next handoff sends nothing 'since' it.
+  assert.equal(lane.knownBy.codex, undefined, "codex as a TARGET is cleared");
+  assert.equal("codex" in lane.knownBy.claude, false, "codex as a SOURCE is cleared from claude");
+  assert.equal(lane.knownBy.claude.grok, "b", "an unrelated watermark survives");
+  assert.equal(lane.agents.claude.id, "c1", "another agent's link is untouched");
+  assert.equal(lane.pendingHandoff, null, "a pending handoff naming codex is dropped, not left dangling");
+  assert.equal(lane.activeAgent, null, "codex was active; the pointer is cleared");
+  assert.equal(unlinkAgent(lane, "codex"), false, "unlinking an already-unlinked agent changes nothing");
+});
+
+test("bridge unlink clears one agent in the active lane and reports it", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlink-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  const main = emptyLane();
+  main.activeAgent = "claude";
+  main.agents.claude = { id: "c1", transcriptPath: "/c", mark: "mc", idle: false };
+  main.agents.codex = { id: "x1", transcriptPath: "/x", mark: "mx", idle: false };
+  main.knownBy = { claude: { codex: "a" }, codex: { claude: "b" } };
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main }, launcher: null, updatedAt: null }, null, 2)
+  );
+
+  const bogus = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "nope"], { cwd: project, encoding: "utf8" });
+  assert.equal(bogus.status, 1, "an unknown agent is a usage error");
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "codex"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 0);
+  const after = loadState(project);
+  assert.equal(after.agents.codex.id, null, "codex is unlinked");
+  assert.equal(after.agents.claude.id, "c1", "claude is left linked");
+  assert.equal(after.knownBy.codex, undefined, "codex's target row is gone");
+  assert.equal("codex" in (after.knownBy.claude ?? {}), false, "and its source column too");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("unlinkAgent forgets a slot carrying only hook or pending metadata, not just a session id", async () => {
+  const { unlinkAgent, emptyAgent } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  // Codex stamps hookSeen the moment its hook fires, before any valid session link.
+  // Such a slot has no id/transcriptPath/mark, yet it still keeps the agent
+  // hook-eligible, so unlink must forget it and count it as a change.
+  lane.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, hookSeen: "2026-01-01T00:00:00.000Z" };
+
+  const changed = unlinkAgent(lane, "codex");
+  assert.equal(changed, true, "a slot with only hookSeen is still linked enough to forget");
+  assert.equal("hookSeen" in lane.agents.codex, false, "the whole slot is reset, so hookSeen is dropped");
+  assert.deepEqual(lane.agents.codex, emptyAgent(), "reset to a clean empty slot");
+  assert.equal(unlinkAgent(lane, "codex"), false, "unlinking it again changes nothing");
+});
+
+test("bridge unlink refuses while a launcher is alive, so a live session cannot relink after", () => {
+  // Codex's concurrency finding: unlink clears the slot, but an in-flight handoff's
+  // stale snapshot, or a delayed hook, could re-link the old session. Both need a
+  // live session; refuse while a launcher is alive (same guard as lane rm). This
+  // process stands in for the launcher.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlinklive-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  const main = emptyLane();
+  main.agents.codex = { id: "x1", transcriptPath: "/x", mark: "mx", idle: false };
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify(
+      { version: STATE_VERSION, project, activeLane: "main", lanes: { main }, launcher: { pid: process.pid, recordedAt: "2026-01-01T00:00:00.000Z", stateVersion: STATE_VERSION }, updatedAt: null },
+      null,
+      2
+    )
+  );
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "codex"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 1, "unlink is refused while a launcher is alive");
+  assert.match(res.stdout, /launcher .* is running/i);
+  assert.equal(loadState(project).agents.codex.id, "x1", "codex is still linked, not half-unlinked");
+
+  fs.rmSync(project, { recursive: true });
+});

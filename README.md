@@ -328,7 +328,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Known limitations
 
 - Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
-- One linked session per agent per project (no `bridge unlink` yet — delete `.bridge/` to relink).
+- One linked session per agent per lane. `bridge unlink <agent>` forgets just that agent, and every watermark that named it, so the next switch links it fresh — no more deleting `.bridge/` to relink one agent. It is for a session you are done with, and refuses while a bridge launcher is running, so a live session's next hook cannot re-link the agent you just forgot.
 - Lanes isolate context, not the working tree: every lane shares one checkout, so they are parallel conversations, not parallel code. Editing the same files from two lanes collides as two plain agents would.
 - `bridge lane rm` refuses while any bridge launcher is running in the project. It cannot yet tell which lane each launcher holds, so it stays safe by asking you to close the bridge terminals first.
 - Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
@@ -346,7 +346,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Roadmap
 
 - Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- `bridge unlink` / multi-pair support
+- Seeding a new lane from another (`lane new --seed`), and a `--resume` lane picker
 - Linux verification, Windows support
 - Optional MCP quick-question mode (ask the other agent without switching)
 

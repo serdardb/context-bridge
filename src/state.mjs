@@ -918,3 +918,56 @@ export function commitKnown(s, injection) {
   }
   return changed;
 }
+
+/**
+ * Unlink one agent from the active lane: forget its session and every watermark
+ * that mentions it, in BOTH directions. Clearing the slot alone would leave marks
+ * pointing at a session that no longer exists, and the next handoff could then read
+ * "nothing new since that mark" and send nothing at all — the silent context loss
+ * this project keeps designing out. So the knownBy matrix is cleared for the agent
+ * both as a target (how far others were packed for it) and as a source (how far it
+ * was packed for others), and any pending marker or active pointer that names it is
+ * dropped so nothing dangles. `s` is the active-lane view. Returns true if anything
+ * changed, false if the agent was not linked here.
+ */
+export function unlinkAgent(s, agentId) {
+  let changed = false;
+  const slot = s.agents?.[agentId];
+  // Reset on ANY agent-owned metadata, not just id/transcriptPath/mark. A slot also
+  // carries fields the adapters stamp lazily and independently of a session link:
+  // Codex writes `hookSeen` the moment its hook fires, Claude leaves `pendingId`/
+  // `pendingPath` mid-link, and `idle` flips on a stall. A slot holding only one of
+  // those still keeps the agent hook-eligible or stale, so unlink must forget it
+  // too, and count it as a change. Replacing the whole object with a fresh
+  // `emptyAgent()` also drops those extra keys, which a field-by-field clear would
+  // leave behind.
+  if (slot && Object.values(slot).some((v) => v !== null && v !== false && v !== undefined)) {
+    s.agents[agentId] = emptyAgent();
+    changed = true;
+  }
+  if (s.knownBy) {
+    if (s.knownBy[agentId]) {
+      delete s.knownBy[agentId]; // the agent as a target
+      changed = true;
+    }
+    for (const target of Object.keys(s.knownBy)) {
+      if (s.knownBy[target] && agentId in s.knownBy[target]) {
+        delete s.knownBy[target][agentId]; // the agent as a source
+        changed = true;
+      }
+    }
+  }
+  if (s.pendingInjection?.agent === agentId) {
+    s.pendingInjection = null;
+    changed = true;
+  }
+  if (s.pendingHandoff?.target === agentId) {
+    s.pendingHandoff = null;
+    changed = true;
+  }
+  if (s.activeAgent === agentId) {
+    s.activeAgent = null;
+    changed = true;
+  }
+  return changed;
+}
