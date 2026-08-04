@@ -692,3 +692,42 @@ test("supersedePending refuses a deltaFile when the .bridge root itself is a sym
   fs.rmSync(base, { recursive: true });
   fs.rmSync(evil, { recursive: true });
 });
+
+test("clean --lane deletes only the named lane's checkpoints and leaves the others", () => {
+  const project = makeProject();
+  makeGroups(project, { count: 2, ageDays: 30, startIndex: 0 }); // two old groups in main (flat)
+
+  const featureDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  fs.mkdirSync(featureDir, { recursive: true });
+  const ff = path.join(featureDir, "2026-02-02T00-00-00-000Z-claude-to-codex.md");
+  fs.writeFileSync(ff, "x");
+  const old = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(ff, old, old);
+
+  const s = loadState(project);
+  s.lanes.feature = { title: null, activeAgent: null, agents: {}, knownBy: {}, pendingHandoff: null, pendingInjection: null, git: { sha: null, recordedAt: null } };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true, lane: "feature" });
+  assert.ok(!fs.existsSync(ff), "feature's old group was pruned");
+  assert.equal(remainingGroups(project), 2, "main's groups were left alone (the prune was scoped to feature)");
+  assert.equal(res.deletedGroups, 1, "only feature's group was counted");
+});
+
+test("clean --lane still protects a delta another lane's pending marker points at", () => {
+  const project = makeProject();
+  const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
+  const victim = path.join(checkpointsDir(project), `${stem}.md`); // in flat main, old
+  fs.writeFileSync(victim, "protected across lanes");
+  const old = new Date(Date.now() - 30 * DAY);
+  fs.utimesSync(victim, old, old);
+
+  // feature's pending marker points into main's flat dir; pruning main must respect it.
+  const s = loadState(project);
+  s.lanes.feature = { title: null, activeAgent: null, agents: {}, knownBy: {}, pendingHandoff: null, pendingInjection: { agent: "claude", deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`) }, git: { sha: null, recordedAt: null } };
+  saveState(project, s);
+
+  const res = pruneCheckpoints(project, { all: true, lane: "main" });
+  assert.ok(fs.existsSync(victim), "the cross-lane pending still protects the delta, even when the prune is scoped to main");
+  assert.equal(res.deletedGroups, 0);
+});

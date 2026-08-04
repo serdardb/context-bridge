@@ -181,8 +181,13 @@ export function pruneCheckpoints(projectDir, opts = {}) {
   }
 
   // ── Phase 2: everything validated, delete ─────────────────────────────────
+  // `--lane` scopes DELETION to one lane, but protection above still scanned every
+  // lane's pending marker, so a delta in this lane that another lane's handoff is
+  // waiting on is still safe.
+  const onlyLane = opts.lane ?? null;
+  const toPrune = onlyLane ? laneNames.filter((l) => l === onlyLane) : laneNames;
   const total = { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0 };
-  for (const lane of laneNames) {
+  for (const lane of toPrune) {
     const protectedStems = protectedByDir.get(dirOf.get(lane)) ?? new Set();
     const r = pruneLaneCheckpoints(checkpointsDir(projectDir, lane), protectedStems, opts);
     total.groups += r.groups;

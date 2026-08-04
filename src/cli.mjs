@@ -56,10 +56,10 @@ ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstrap
 ${cont}--deep asks each agent a real one-line question )
 ${cmd("status")}Show project bridge status
 ${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
-${cont}--json for the raw manifest )
+${cont}--json for the raw manifest; --lane <name> for another lane )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
 ${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
-${cont}--days N, --all; a pending injection is never deleted)
+${cont}--days N, --all, --lane <name>; a pending injection is never deleted)
 ${cmd("lane")}List lines of work in this project ( lane new <name> starts a
 ${cont}separate one, --seed <lane> gives it another lane's decisions and git
 ${cont}state to start from, lane switch <name> moves the default, lane rm
@@ -303,11 +303,30 @@ export async function main(argv) {
 
     case "inspect": {
       const { latestManifest, renderManifest } = await import("./audit.mjs");
-      const { loadState } = await import("./state.mjs");
-      let lane;
+      let s = null;
+      let corrupt = false;
       try {
-        lane = loadState(projectDir)?.activeLane;
-      } catch {}
+        s = loadState(projectDir);
+      } catch {
+        corrupt = true;
+      }
+      // --lane inspects a specific lane's newest audit; without it, the active lane's.
+      // Resolving a named lane needs readable state, so corrupt state is its own clear
+      // error rather than a misleading 'unknown lane'. Plain inspect stays lenient.
+      const wantLane = valueOf(argv, "--lane") || null;
+      if (wantLane) {
+        if (corrupt) {
+          log(`${BAD} .bridge/state.json could not be read, so a lane cannot be resolved. Run 'bridge doctor'.`);
+          process.exitCode = 1;
+          return;
+        }
+        if (!s?.lanes?.[wantLane]) {
+          log(`${BAD} No lane named '${wantLane}'. 'bridge lane' lists them.`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const lane = wantLane || s?.activeLane;
       const found = latestManifest(projectDir, lane);
       if (!found) {
         log(`${NONE} No audit manifest yet. One is written beside the delta on the next handoff.`);
@@ -358,11 +377,31 @@ export async function main(argv) {
     }
 
     case "clean": {
+      // --lane scopes the prune to one lane; without it, every lane is pruned.
+      // Read state through a guard: corrupt or unreadable state must NOT crash here,
+      // it must fall through to pruneCheckpoints, whose fail-closed path reports it
+      // clearly and deletes nothing. Only a readable state with the lane genuinely
+      // absent is an 'unknown lane' error.
+      const laneFlag = valueOf(argv, "--lane") || null;
+      if (laneFlag) {
+        let known = null;
+        try {
+          known = loadState(projectDir);
+        } catch {
+          known = null; // corrupt: let pruneCheckpoints fail-close below
+        }
+        if (known && !known.lanes?.[laneFlag]) {
+          log(`${BAD} No lane named '${laneFlag}'. 'bridge lane' lists them.`);
+          process.exitCode = 1;
+          return;
+        }
+      }
       const res = pruneCheckpoints(projectDir, {
         keep: intFlag(argv, "--keep"),
         days: intFlag(argv, "--days"),
         all: flags.has("--all"),
         dryRun: flags.has("--dry-run"),
+        lane: laneFlag,
       });
       if (
         res.skippedCorruptState ||
@@ -388,13 +427,14 @@ export async function main(argv) {
         return;
       }
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
+      const scope = laneFlag ? ` in lane ${bold(laneFlag)}` : "";
       // There is one schedule now. This used to report two, because the full
       // context files were pruned on their own clock and counting groups alone
       // said "nothing to prune" while dozens of files were going.
       if (res.deletedGroups === 0) {
-        log(`${NONE} Nothing to prune (${res.groups} checkpoint groups, all recent or protected).`);
+        log(`${NONE} Nothing to prune${scope} (${res.groups} checkpoint groups, all recent or protected).`);
       } else {
-        log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files). ${res.groups - res.deletedGroups} kept.`);
+        log(`${OK} ${verb} ${res.deletedGroups} checkpoint groups (${res.deletedFiles} files)${scope}. ${res.groups - res.deletedGroups} kept.`);
       }
       return;
     }

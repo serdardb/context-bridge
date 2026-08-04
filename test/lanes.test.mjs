@@ -906,3 +906,50 @@ test("a deliberate link (adopt) of the same unlinked id clears the tombstone", a
   assert.equal(lane.agents.codex.unlinked ?? null, null, "the deliberate link cleared the tombstone");
   assert.equal(lane.agents.codex.id, "old", "and the session is linked again");
 });
+
+test("bridge clean --lane and inspect --lane target one lane and reject an unknown one", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanescope-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+  // An old, prunable group in feature only.
+  const fdir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  fs.mkdirSync(fdir, { recursive: true });
+  const ff = path.join(fdir, "2026-01-01T00-00-00-000Z-claude-to-codex.md");
+  fs.writeFileSync(ff, "x");
+  const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+  fs.utimesSync(ff, old, old);
+
+  const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, ...a], { cwd: project, encoding: "utf8" });
+
+  assert.equal(run("clean", "--lane", "ghost", "--all").status, 1, "clean rejects an unknown lane");
+  assert.equal(run("inspect", "--lane", "ghost").status, 1, "inspect rejects an unknown lane");
+  assert.ok(fs.existsSync(ff), "a rejected clean deletes nothing");
+
+  const ok = run("clean", "--lane", "feature", "--all");
+  assert.equal(ok.status, 0);
+  assert.match(ok.stdout, /in lane feature/, "the report names the scoped lane");
+  assert.equal(fs.existsSync(ff), false, "feature's group is pruned");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("clean --lane and inspect --lane fail closed on corrupt state instead of crashing", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-corruptlane-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(statePath(project), "{ this is not, valid json"); // corrupt, not missing
+  const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, ...a], { cwd: project, encoding: "utf8" });
+
+  const cleaned = run("clean", "--lane", "feature", "--all");
+  assert.equal(cleaned.status, 1, "clean --lane exits 1 on corrupt state");
+  assert.match(cleaned.stdout, /could not be read/i, "it prints the fail-closed report, not a stack trace or 'unknown lane'");
+  assert.doesNotMatch(cleaned.stdout, /No lane named/, "corrupt state is not mislabelled as an unknown lane");
+
+  const inspected = run("inspect", "--lane", "feature");
+  assert.equal(inspected.status, 1, "inspect --lane exits 1 on corrupt state");
+  assert.match(inspected.stdout, /could not be read/i, "inspect reports corrupt state clearly, not 'unknown lane'");
+
+  fs.rmSync(project, { recursive: true });
+});
