@@ -456,3 +456,166 @@ test("writeCheckpoint refuses to write through a symlinked lane checkpoints dire
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
 });
+
+// Phase 5: lane management. The state layer first, pure and lock-safe.
+
+test("createLane adds an empty lane and refuses a duplicate or a bad name", async () => {
+  const { createLane, emptyLane: mk } = await import("../src/state.mjs");
+  const disk = { version: STATE_VERSION, project: "/p", activeLane: "main", lanes: { main: mk() }, launcher: null, updatedAt: null };
+
+  createLane(disk, "feature");
+  assert.deepEqual(disk.lanes.feature, mk(), "a new lane starts empty, inheriting nothing");
+  assert.throws(() => createLane(disk, "feature"), /already exists/, "a duplicate name is refused");
+  assert.throws(() => createLane(disk, "../evil"), /Invalid lane name/, "a traversing name never becomes a directory");
+});
+
+test("switchActiveLane moves the pointer only to an existing lane", async () => {
+  const { switchActiveLane, emptyLane: mk } = await import("../src/state.mjs");
+  const disk = { version: STATE_VERSION, project: "/p", activeLane: "main", lanes: { main: mk(), feature: mk() }, launcher: null, updatedAt: null };
+
+  switchActiveLane(disk, "feature");
+  assert.equal(disk.activeLane, "feature");
+  assert.throws(() => switchActiveLane(disk, "ghost"), /No lane named/, "you cannot switch to a lane that is not there");
+});
+
+test("removeLaneFromState refuses main and the active lane, removes any other", async () => {
+  const { removeLaneFromState, emptyLane: mk } = await import("../src/state.mjs");
+  const disk = { version: STATE_VERSION, project: "/p", activeLane: "feature", lanes: { main: mk(), feature: mk(), api: mk() }, launcher: null, updatedAt: null };
+
+  assert.throws(() => removeLaneFromState(disk, "main"), /cannot be removed/, "a project always keeps a main lane");
+  assert.throws(() => removeLaneFromState(disk, "feature"), /is active/, "the active lane cannot be pulled from under the pointer");
+  removeLaneFromState(disk, "api");
+  assert.equal(disk.lanes.api, undefined, "an idle, non-default lane is removed");
+});
+
+test("mutateProject persists a lane creation and an activeLane move, unlike mutateState", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-laneproj-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+
+  return import("../src/state.mjs").then(({ mutateProject, createLane, switchActiveLane }) => {
+    mutateProject(project, (disk) => {
+      createLane(disk, "feature");
+      switchActiveLane(disk, "feature");
+    });
+    const reloaded = JSON.parse(fs.readFileSync(statePath(project), "utf8"));
+    assert.ok(reloaded.lanes.feature, "the new lane was written");
+    assert.equal(reloaded.activeLane, "feature", "mutateProject does NOT restore activeLane the way a lane-scoped mutate does");
+    fs.rmSync(project, { recursive: true });
+  });
+});
+
+test("laneSummaries marks the active lane, lists linked agents, and orders by recency", async () => {
+  const { laneSummaries } = await import("../src/state.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanesum-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+
+  const main = emptyLane();
+  main.agents.claude = { id: "claude-1", transcriptPath: "/m/c.jsonl", mark: null, idle: false };
+  const feature = emptyLane();
+  const s = { version: STATE_VERSION, project, activeLane: "feature", lanes: { main, feature }, launcher: null, updatedAt: null };
+  fs.writeFileSync(statePath(project), JSON.stringify(s, null, 2));
+
+  // main has an older checkpoint; feature a newer one -> feature is more recent.
+  const older = writeCheckpoint(project, "main", "2026-01-01T00-00-00-000Z-claude-to-codex.md", "x");
+  const newer = writeCheckpoint(project, "feature", "2026-02-02T00-00-00-000Z-codex-to-claude.md", "x");
+  fs.utimesSync(path.join(project, older), new Date("2026-01-01"), new Date("2026-01-01"));
+  fs.utimesSync(path.join(project, newer), new Date("2026-02-02"), new Date("2026-02-02"));
+
+  const summaries = laneSummaries(project, s);
+  assert.deepEqual(summaries.map((l) => l.name), ["feature", "main"], "newest activity first");
+  assert.equal(summaries.find((l) => l.name === "feature").active, true, "the active lane is marked");
+  assert.deepEqual(summaries.find((l) => l.name === "main").agents, ["claude"], "linked agents are listed");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("bridge lane rm deletes the lane directory only after --yes, and never main", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanerm-")));
+  const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, "lane", ...a], { cwd: project, encoding: "utf8" });
+
+  run("new", "feature");
+  const laneDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  fs.mkdirSync(laneDir, { recursive: true });
+  fs.writeFileSync(path.join(laneDir, "2026-01-01T00-00-00-000Z-claude-to-codex.md"), "x");
+  run("switch", "main"); // cannot remove the active lane
+
+  const refused = run("rm", "feature"); // no --yes
+  assert.equal(refused.status, 1, "rm without --yes refuses");
+  assert.ok(fs.existsSync(laneDir), "and deletes nothing");
+
+  const removed = run("rm", "feature", "--yes");
+  assert.equal(removed.status, 0);
+  assert.equal(fs.existsSync(path.join(project, ".bridge", "lanes", "feature")), false, "the whole lane directory is gone");
+
+  const main = run("rm", "main", "--yes");
+  assert.equal(main.status, 1, "main is never removable");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("bridge lane rm refuses while a launcher is alive, so a live session cannot resurrect it", () => {
+  // Codex's blocker: mutateState recreates a missing target lane (it must, to
+  // bootstrap the first one), so a launcher pinned to a removed lane writes it back
+  // empty on its next hook. Until a per-lane launcher record exists, rm refuses
+  // whenever any launcher is alive. This process is alive, so it stands in for one.
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-rmlive-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify(
+      {
+        version: STATE_VERSION,
+        project,
+        activeLane: "main",
+        lanes: { main: emptyLane(), feature: emptyLane() },
+        launcher: { pid: process.pid, recordedAt: "2026-01-01T00:00:00.000Z", stateVersion: STATE_VERSION },
+        updatedAt: null,
+      },
+      null,
+      2
+    )
+  );
+
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "lane", "rm", "feature", "--yes"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 1, "rm is refused while a launcher is alive");
+  assert.match(res.stdout, /launcher .* is running/i);
+  assert.ok(loadState(project).lanes.feature, "the lane is still there, not half-removed");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("a stale mutateState after lane rm does not resurrect the lane, but a fresh project still bootstraps", async () => {
+  // Codex's deeper blocker: the any-live-launcher guard could not close resurrection,
+  // because a hook calls mutateState(project, pinnedLane, ...) directly and a delayed
+  // one can fire after rm. The real fix is in mutateState: it refuses to recreate a
+  // lane that an EXISTING project no longer has. Remove that rule and `feature`
+  // reappears here. The one legitimate auto-create, a brand-new project's first lane,
+  // still works because there is no state file at all in that case.
+  const { mutateProject, removeLaneFromState } = await import("../src/state.mjs");
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resurrect-")));
+  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  fs.writeFileSync(
+    statePath(project),
+    JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
+  );
+
+  mutateProject(project, (disk) => removeLaneFromState(disk, "feature"));
+  assert.equal(loadState(project).lanes.feature, undefined, "feature was removed");
+
+  // A delayed hook / still-pinned launcher writes to the removed lane.
+  mutateState(project, "feature", (st) => (st.agents.claude.id = "ghost"));
+  assert.equal(loadState(project).lanes.feature, undefined, "the removed lane was not resurrected by a stale write");
+
+  // Bootstrap still works: a project with no state file at all gets its first lane.
+  const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-bootstrap-")));
+  fs.mkdirSync(bridgeDir(fresh), { recursive: true });
+  mutateState(fresh, "main", (st) => (st.activeAgent = "claude"));
+  assert.equal(loadState(fresh)?.lanes?.main?.activeAgent, "claude", "a brand-new project's first lane is still created");
+
+  fs.rmSync(project, { recursive: true });
+  fs.rmSync(fresh, { recursive: true });
+});

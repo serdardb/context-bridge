@@ -2,12 +2,25 @@ import { runLoop } from "./launcher.mjs";
 import { runDoctor } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoff } from "./handoff.mjs";
-import { loadState, readableCheckpointsDir } from "./state.mjs";
+import {
+  loadState,
+  ensureState,
+  readableCheckpointsDir,
+  mutateProject,
+  createLane,
+  switchActiveLane,
+  removeLaneFromState,
+  laneSummaries,
+  isValidLaneName,
+  isInsideDir,
+  bridgeDir,
+  DEFAULT_LANE,
+} from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { splitLauncherArgs } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
+import { log, bold, dim, OK, BAD, NONE, WARN, processAlive } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +55,9 @@ ${cont}--json for the raw manifest )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
 ${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
 ${cont}--days N, --all; a pending injection is never deleted)
+${cmd("lane")}List lines of work in this project ( lane new <name> starts a
+${cont}separate one, lane switch <name> moves the default, lane rm <name>
+${cont}--yes deletes one; lanes share files, not sessions )
 
 Agent flags:
   bridge claude --dangerously-skip-permissions --model claude-fable-5
@@ -67,7 +83,7 @@ Inside the agents:
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "internal-hook", "help", "version"];
+const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "lane", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -371,6 +387,11 @@ export async function main(argv) {
       return;
     }
 
+    case "lane": {
+      process.exitCode = runLane(projectDir, args.slice(1), flags);
+      return;
+    }
+
     case "internal-hook": {
       // The hook command names the agent it was installed for, so the identity
       // guard can compare that against the environment it actually woke up in.
@@ -479,4 +500,148 @@ function valueOf(argv, name) {
   if (i !== -1 && argv[i + 1] !== undefined) return argv[i + 1];
   const pref = argv.find((a) => a.startsWith(name + "="));
   return pref ? pref.slice(name.length + 1) : "";
+}
+
+/**
+ * `bridge lane` and its subcommands: the user-facing surface for lines of work.
+ *   bridge lane                 list every lane, the active one marked, newest first
+ *   bridge lane new <name>      create an empty lane and switch to it
+ *   bridge lane switch <name>   point the default lane at an existing one
+ *   bridge lane rm <name>       delete a lane and its checkpoints (guarded)
+ * Returns a process exit code. `args` is the tail after `lane`.
+ */
+function runLane(projectDir, args, flags) {
+  const sub = args[0];
+  const name = args[1];
+
+  if (sub === undefined) {
+    const s = loadState(projectDir);
+    if (!s) {
+      log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
+      return 0;
+    }
+    const summaries = laneSummaries(projectDir, s);
+    log(bold("Lanes") + dim(` · ${s.project}`));
+    log("");
+    const width = Math.max(...summaries.map((l) => l.name.length));
+    for (const l of summaries) {
+      const marker = l.active ? bold("* ") : "  ";
+      const when = l.lastActive ? ago(new Date(l.lastActive)) : "no activity yet";
+      const who = l.agents.length
+        ? l.agents.map((id) => adapterFor(id)?.displayName ?? id).join(", ")
+        : "no agents linked";
+      const title = l.title ? dim(` (${l.title})`) : "";
+      log(`  ${marker}${l.name.padEnd(width)}${title}  ${dim(when)}  ${dim(who)}`);
+    }
+    if (summaries.length === 1) {
+      log("");
+      log(dim("  One lane. 'bridge lane new <name>' starts a second, separate line of work."));
+    }
+    return 0;
+  }
+
+  if (sub === "new") {
+    if (!name) {
+      log("Usage: bridge lane new <name>");
+      return 1;
+    }
+    if (!isValidLaneName(name)) {
+      log(`${BAD} Invalid lane name '${name}'. Use letters, digits, dot, dash or underscore, starting with a letter or digit.`);
+      return 1;
+    }
+    ensureState(projectDir);
+    try {
+      mutateProject(projectDir, (disk) => {
+        createLane(disk, name);
+        switchActiveLane(disk, name);
+      });
+    } catch (e) {
+      log(`${BAD} ${e.message}`);
+      return 1;
+    }
+    log(`${OK} Created lane ${bold(name)} and switched to it. The next 'bridge' opens here.`);
+    log(dim("  It starts empty on purpose: a new line of work carries no context from another."));
+    return 0;
+  }
+
+  if (sub === "switch") {
+    if (!name) {
+      log("Usage: bridge lane switch <name>");
+      return 1;
+    }
+    try {
+      mutateProject(projectDir, (disk) => switchActiveLane(disk, name));
+    } catch (e) {
+      log(`${BAD} ${e.message}`);
+      return 1;
+    }
+    log(`${OK} Switched to lane ${bold(name)}. A bare 'bridge' with no launcher running opens here.`);
+    return 0;
+  }
+
+  if (sub === "rm") {
+    if (!name) {
+      log("Usage: bridge lane rm <name> [--dry-run] [--yes]");
+      return 1;
+    }
+    const s = loadState(projectDir);
+    if (!s) {
+      log(`${NONE} No bridge state in this project yet.`);
+      return 1;
+    }
+    if (name === DEFAULT_LANE) {
+      log(`${BAD} The ${DEFAULT_LANE} lane cannot be removed.`);
+      return 1;
+    }
+    if (!s.lanes?.[name]) {
+      log(`${BAD} No lane named '${name}'.`);
+      return 1;
+    }
+    if (name === s.activeLane) {
+      log(`${BAD} Lane '${name}' is active. Switch away first: bridge lane switch <other>.`);
+      return 1;
+    }
+    // Best-effort courtesy, not the correctness guarantee. Resurrection itself is
+    // now blocked in mutateState, which refuses to recreate a removed lane. But
+    // removing a lane a live session is still working in would silently drop that
+    // session's later writes, so where a launcher is visibly alive we stop and say
+    // so. It is only project-level and cannot see a second concurrent launcher, so
+    // it is a helpful warning, not a wall; the per-lane launcher record that makes
+    // it exact is the deferred Phase-5.2 item.
+    if (s.launcher?.pid && processAlive(s.launcher.pid)) {
+      log(`${BAD} A bridge launcher (pid ${s.launcher.pid}) is running in this project.`);
+      log(dim("  Close the bridge terminals first, so a live session's work is not lost under the removal."));
+      return 1;
+    }
+    const laneDir = path.join(bridgeDir(projectDir), "lanes", name);
+    if (flags.has("--dry-run")) {
+      log(`${WARN} Would remove lane ${bold(name)} and its checkpoints (${path.relative(projectDir, laneDir)}/).`);
+      return 0;
+    }
+    if (!flags.has("--yes")) {
+      log(`${WARN} Removing lane '${name}' deletes it and its checkpoints, and cannot be undone.`);
+      log(dim("  Re-run with --yes to confirm, or --dry-run to preview."));
+      return 1;
+    }
+    try {
+      mutateProject(projectDir, (disk) => removeLaneFromState(disk, name));
+    } catch (e) {
+      log(`${BAD} ${e.message}`);
+      return 1;
+    }
+    // Delete the lane's own directory, but only when it truly resolves inside this
+    // project's .bridge — never follow a symlink out on the way to an rm -rf.
+    if (isInsideDir(bridgeDir(projectDir), projectDir) && isInsideDir(laneDir, bridgeDir(projectDir))) {
+      try {
+        fs.rmSync(laneDir, { recursive: true, force: true });
+      } catch {
+        // the state entry is already gone; a leftover directory is not fatal
+      }
+    }
+    log(`${OK} Removed lane ${bold(name)}.`);
+    return 0;
+  }
+
+  log(`${BAD} Unknown 'bridge lane' subcommand '${sub}'. Try: bridge lane [new|switch|rm] <name>.`);
+  return 1;
 }

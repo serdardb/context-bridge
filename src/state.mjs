@@ -386,6 +386,96 @@ export function lanes(s) {
 }
 
 /**
+ * A lane's last activity: the mtime of its newest checkpoint, or 0 if it has none.
+ * `bridge lane` orders by this, because recency is what "which was I last in"
+ * actually asks — a lane made yesterday but worked in an hour ago belongs above one
+ * made this morning and abandoned. Read through the containment gate so a symlinked
+ * lane directory cannot report an outside file's time as this project's.
+ */
+export function laneLastActive(projectDir, lane) {
+  const dir = readableCheckpointsDir(projectDir, lane);
+  if (!dir) return 0;
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let newest = 0;
+  for (const name of names) {
+    try {
+      newest = Math.max(newest, fs.statSync(path.join(dir, name)).mtimeMs);
+    } catch {
+      // a file that vanished between readdir and stat is simply not the newest
+    }
+  }
+  return newest;
+}
+
+/**
+ * Every lane summarised for `bridge lane`: which agents are linked, which is the
+ * active one, and when it was last touched. Newest activity first, ties broken by
+ * name so the order is stable between reads.
+ */
+export function laneSummaries(projectDir, s) {
+  return Object.keys(s?.lanes ?? {})
+    .map((name) => {
+      const lane = s.lanes[name];
+      return {
+        name,
+        title: lane.title ?? null,
+        active: name === s.activeLane,
+        activeAgent: lane.activeAgent ?? null,
+        agents: AGENT_IDS.filter((id) => lane.agents?.[id]?.id),
+        lastActive: laneLastActive(projectDir, name),
+      };
+    })
+    .sort((a, b) => b.lastActive - a.lastActive || a.name.localeCompare(b.name));
+}
+
+/**
+ * Add a new, empty lane to `disk` and return it. Throws on a bad or already-taken
+ * name. A new lane starts empty on purpose: a different line of work inherits
+ * nothing, which is the whole reason lanes exist (seeding, later, is the one
+ * deliberate exception). Call inside `mutateProject` so it is written under the lock.
+ */
+export function createLane(disk, name) {
+  assertLaneName(name);
+  if (disk.lanes[name]) throw new Error(`Lane ${JSON.stringify(name)} already exists.`);
+  disk.lanes[name] = emptyLane();
+  return disk.lanes[name];
+}
+
+/**
+ * Point `activeLane` at an existing lane. Throws if it does not exist. `activeLane`
+ * is only "which lane a bare `bridge` resumes when no launcher is running"; a
+ * running launcher stays pinned to the lane it opened, so this never moves a lane
+ * under a live terminal.
+ */
+export function switchActiveLane(disk, name) {
+  if (!disk.lanes[name]) throw new Error(`No lane named ${JSON.stringify(name)}.`);
+  disk.activeLane = name;
+  return name;
+}
+
+/**
+ * Remove a lane from `disk` and return it. Refuses the default lane and the active
+ * lane (switch away first), so a project always has a lane and the pointer never
+ * dangles. The lane's checkpoint files are deleted by the caller, which owns the
+ * filesystem containment checks.
+ */
+export function removeLaneFromState(disk, name) {
+  if (name === DEFAULT_LANE) throw new Error(`The ${DEFAULT_LANE} lane cannot be removed.`);
+  if (!disk.lanes[name]) throw new Error(`No lane named ${JSON.stringify(name)}.`);
+  if (name === disk.activeLane) {
+    throw new Error(`Lane ${JSON.stringify(name)} is active; switch to another lane before removing it.`);
+  }
+  const removed = disk.lanes[name];
+  delete disk.lanes[name];
+  return removed;
+}
+
+/**
  * Load state; returns null when no .bridge/state.json exists.
  * Older files are migrated in place, keeping a one-time backup of the original.
  * A file from a NEWER bridge is refused rather than guessed at.
@@ -625,7 +715,8 @@ function stealLock(lock) {
  */
 export function mutateState(projectDir, laneName, fn) {
   return withStateLock(projectDir, () => {
-    let disk = readStateFile(projectDir) ?? {
+    const existing = readStateFile(projectDir);
+    let disk = existing ?? {
       version: STATE_VERSION,
       project: projectDir,
       activeLane: laneName ?? DEFAULT_LANE,
@@ -640,7 +731,17 @@ export function mutateState(projectDir, laneName, fn) {
     }
     if (!disk.lanes) disk.lanes = {};
     const key = laneName ?? disk.activeLane ?? DEFAULT_LANE;
-    if (!disk.lanes[key]) disk.lanes[key] = emptyLane();
+    if (!disk.lanes[key]) {
+      // A lane absent from an EXISTING project was removed by `lane rm`. Do not
+      // recreate it. A launcher still pinned to it, or a hook that fires after the
+      // removal, would otherwise write the deleted lane back empty on its next
+      // mutate and silently undo the removal — the resurrection a review found. The
+      // write is dropped, because its lane is gone and there is nowhere it belongs.
+      // Auto-create is only for the one legitimate case: bootstrapping the very
+      // first lane of a brand-new project, which has no state file at all yet.
+      if (existing) return disk;
+      disk.lanes[key] = emptyLane();
+    }
     const originalActive = disk.activeLane ?? key;
     disk.activeLane = key; // point the view at the lane being mutated
     withActiveLaneView(disk);
@@ -657,6 +758,31 @@ export function mutateState(projectDir, laneName, fn) {
 export function updateState(projectDir, fn) {
   ensureState(projectDir); // create the .bridge/ layout on first use
   return mutateState(projectDir, null, fn);
+}
+
+/**
+ * Read-modify-write the WHOLE state under the lock, for project-level changes that
+ * are not scoped to one lane: creating, switching or removing a lane. Unlike
+ * `mutateState` it neither pins a lane view nor restores `activeLane` afterwards,
+ * because moving the active lane IS the point here, and it never auto-creates the
+ * lane it is handed. The same exclusive lock makes it safe against a launcher's
+ * concurrent per-lane writes.
+ */
+export function mutateProject(projectDir, fn) {
+  return withStateLock(projectDir, () => {
+    let disk = readStateFile(projectDir);
+    if (!disk) throw new Error("No .bridge/state.json in this project yet. Run 'bridge' first.");
+    while (disk.version < STATE_VERSION) {
+      const migrate = MIGRATIONS[disk.version];
+      if (!migrate) throw new Error(`.bridge/state.json version ${disk.version} cannot be upgraded by this bridge.`);
+      disk = migrate(disk);
+    }
+    if (!disk.lanes) disk.lanes = {};
+    fn(disk);
+    disk.updatedAt = nowIso();
+    writeJsonAtomic(statePath(projectDir), disk);
+    return disk;
+  });
 }
 
 /** Make sure .bridge/ is git-ignored; append if repo exists and entry missing. */
