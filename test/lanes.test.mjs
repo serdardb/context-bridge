@@ -876,3 +876,33 @@ test("parseChoice takes only a whole number in range, not 1abc or out-of-range",
   assert.equal(parseChoice("-1", 3), null, "a sign is not a digit run");
   assert.equal(parseChoice("", 3), null);
 });
+
+test("unlinkAgent tombstones the forgotten session, and a re-unlink preserves the tombstone", async () => {
+  const { unlinkAgent } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  lane.agents.codex = { id: "sess-1", transcriptPath: "/t", mark: "m", idle: false };
+
+  assert.equal(unlinkAgent(lane, "codex"), true, "the first unlink forgets the session");
+  assert.equal(lane.agents.codex.id, null, "the session is forgotten");
+  assert.equal(lane.agents.codex.unlinked, "sess-1", "and its id is tombstoned so a stale hook cannot relink it");
+
+  // The tombstone is not 'content' to forget, so re-unlinking is still a no-op AND
+  // keeps the tombstone (a re-unlink must not reopen the relink window).
+  assert.equal(unlinkAgent(lane, "codex"), false, "re-unlinking an already-forgotten agent changes nothing");
+  assert.equal(lane.agents.codex.unlinked, "sess-1", "the tombstone survives the re-unlink");
+});
+
+test("a deliberate link (adopt) of the same unlinked id clears the tombstone", async () => {
+  const { unlinkAgent, agentSlot } = await import("../src/state.mjs");
+  const lane = emptyLane();
+  lane.agents.codex = { id: "old", transcriptPath: "/t", mark: "m", idle: false };
+  unlinkAgent(lane, "codex");
+  assert.equal(lane.agents.codex.unlinked, "old", "tombstoned after unlink");
+
+  // The user deliberately re-adopts the SAME id. Every intentional link goes through
+  // agentSlot.set, which must retire the tombstone so the re-adopted session's own
+  // hooks are not blocked forever.
+  agentSlot(lane, "codex").set({ id: "old", transcriptPath: "/t" });
+  assert.equal(lane.agents.codex.unlinked ?? null, null, "the deliberate link cleared the tombstone");
+  assert.equal(lane.agents.codex.id, "old", "and the session is linked again");
+});

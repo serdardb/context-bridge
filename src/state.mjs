@@ -245,6 +245,11 @@ export function agentSlot(s, agentId) {
     },
     set(values) {
       Object.assign(slot, values);
+      // A deliberate link (launcher, handoff, adopt, import all set an id through
+      // here) retires any unlink tombstone: the user chose to link this session, so
+      // even re-adopting the exact id that was unlinked must work, and its hooks must
+      // stop being treated as stale.
+      if (values.id) delete slot.unlinked;
       return slot;
     },
   };
@@ -1003,9 +1008,21 @@ export function unlinkAgent(s, agentId) {
   // those still keeps the agent hook-eligible or stale, so unlink must forget it
   // too, and count it as a change. Replacing the whole object with a fresh
   // `emptyAgent()` also drops those extra keys, which a field-by-field clear would
-  // leave behind.
-  if (slot && Object.values(slot).some((v) => v !== null && v !== false && v !== undefined)) {
+  // leave behind. `unlinked` is the exception: it is the TOMBSTONE this unlink
+  // leaves, not linked content, so it does not count as something to forget and a
+  // re-unlink of an already-forgotten agent stays a no-op.
+  const priorId = slot?.id ?? null;
+  const priorTombstone = slot?.unlinked ?? null;
+  const hasLinkContent =
+    slot && Object.entries(slot).some(([k, v]) => k !== "unlinked" && v !== null && v !== false && v !== undefined);
+  if (hasLinkContent) {
     s.agents[agentId] = emptyAgent();
+    // Tombstone the session id just forgotten (or preserve an existing tombstone),
+    // so a stale hook from a directly-run agent cannot re-link the very session that
+    // was unlinked. A later, different session clears it; the launcher-alive guard
+    // covers bridge-managed sessions, and this covers the ones run outside it.
+    const tombstone = priorId ?? priorTombstone;
+    if (tombstone) s.agents[agentId].unlinked = tombstone;
     changed = true;
   }
   if (s.knownBy) {

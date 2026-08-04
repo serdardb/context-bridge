@@ -224,3 +224,66 @@ test("SessionStart refuses a pending deltaFile that escapes .bridge and never re
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
 });
+
+test("a Claude SessionStart hook refuses to relink a session that was unlinked, but links a new one", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tombstone-")));
+  const transcript = path.join(project, "claude.jsonl");
+  fs.writeFileSync(transcript, "{}");
+
+  const state = defaultState(project);
+  // claude was unlinked: an empty slot carrying only the tombstone for its old session.
+  state.agents.claude = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "old-session" };
+  saveState(project, state);
+
+  const fire = (session_id, source) =>
+    spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start"], {
+      input: JSON.stringify({ cwd: project, source, session_id, transcript_path: transcript }),
+      env: { ...cleanEnv(), CLAUDECODE: "1" },
+      encoding: "utf8",
+    });
+
+  fire("old-session", "resume");
+  assert.equal(loadState(project).agents.claude.id, null, "the unlinked session was NOT relinked by its stale hook");
+  assert.equal(loadState(project).agents.claude.unlinked, "old-session", "the tombstone is still in place");
+
+  fire("new-session", "startup");
+  const after = loadState(project);
+  assert.equal(after.agents.claude.id, "new-session", "a genuinely new session links normally");
+  assert.equal(after.agents.claude.unlinked ?? null, null, "and the spent tombstone is cleared");
+
+  fs.rmSync(project, { recursive: true });
+});
+
+test("a stale Codex hook for an unlinked session neither stamps hookSeen nor consumes a pending delta", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codextomb-")));
+  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  fs.mkdirSync(checkpoints, { recursive: true });
+  const deltaName = "2026-08-04T00-00-00-000Z-codex-to-claude.md";
+  fs.writeFileSync(path.join(checkpoints, deltaName), "[Bridge] context for the NEW codex session");
+
+  const state = defaultState(project);
+  // codex was unlinked: an empty slot with a tombstone for its old session.
+  state.agents.codex = { id: null, transcriptPath: null, mark: null, idle: false, unlinked: "old-codex" };
+  // A hook delivery is pending for codex (bound to a NEW session, delivered by hook).
+  state.pendingInjection = { agent: "codex", via: "hook", id: "new-codex", deltaFile: path.join(".bridge", "checkpoints", deltaName), createdAt: "2026-01-01T00:00:00.000Z", sources: {} };
+  saveState(project, state);
+
+  const transcript = path.join(project, "codex.jsonl");
+  fs.writeFileSync(transcript, "{}");
+  const fireCodex = (session_id) =>
+    spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start", "--agent", "codex"], {
+      input: JSON.stringify({ cwd: project, session_id, transcript_path: transcript }),
+      env: cleanEnv(),
+      encoding: "utf8",
+    });
+
+  // The stale unlinked session's hook fires: it must be a complete no-op.
+  fireCodex("old-codex");
+  const after = loadState(project);
+  assert.equal(after.agents.codex.id, null, "the stale session is not relinked");
+  assert.equal(after.agents.codex.hookSeen ?? null, null, "and it does not stamp hookSeen, so the empty slot is not made hook-eligible");
+  assert.ok(after.pendingInjection, "the pending delta is NOT consumed by the stale session");
+  assert.ok(fs.existsSync(path.join(checkpoints, deltaName)), "the delta file survives, not renamed to .consumed");
+
+  fs.rmSync(project, { recursive: true });
+});

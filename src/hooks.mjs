@@ -118,9 +118,17 @@ export async function runHook(event, agent = "claude") {
   // the file as it is and neither overwrites the other's fields. The hook handlers
   // mutate the state they are handed and no longer save themselves; the one write
   // is here.
-  const lane = resolveHookLane(s, agent, input?.session_id ?? input?.sessionId ?? null);
+  const sessionId = input?.session_id ?? input?.sessionId ?? null;
+  const lane = resolveHookLane(s, agent, sessionId);
   let code = 0;
   mutateState(projectDir, lane, (st) => {
+    // A session `bridge unlink` forgot must be a COMPLETE no-op, not just skip
+    // relinking. A directly-run agent keeps firing hooks for the unlinked session,
+    // and letting one through here would stamp `hookSeen` (making an empty slot look
+    // hook-eligible) or consume a pending delta meant for a real session — silently
+    // reclaiming or erasing context. So the tombstoned id touches nothing. A genuine
+    // re-adopt of that id sets the slot deliberately, which clears the tombstone.
+    if (sessionId && st.agents?.[agent]?.unlinked === sessionId) return;
     // Codex hooks record their own agent. Delta delivery still travels by prompt
     // for it: the hook can inject context (proven), but hooks do not run until the
     // user trusts them once and that trust cannot be read back, so binding
@@ -176,6 +184,7 @@ function linkClaudeSession(s, input) {
   s.agents.claude.transcriptPath = transcriptPath;
   delete s.agents.claude.pendingId;
   delete s.agents.claude.pendingPath;
+  delete s.agents.claude.unlinked; // a genuinely new session linked; the tombstone is spent
   return true;
 }
 
@@ -321,7 +330,7 @@ function codexHook(projectDir, s, event, input) {
   const id = input?.session_id;
   const transcriptPath = input?.transcript_path || null;
   if (id && !slot.id && transcriptPath && fileExists(transcriptPath)) {
-    slot.set({ id, transcriptPath });
+    slot.set({ id, transcriptPath }); // agentSlot.set retires any tombstone on a real link
     dirty = true;
   } else if (id && slot.id === id && transcriptPath && slot.transcriptPath !== transcriptPath) {
     slot.set({ transcriptPath });
