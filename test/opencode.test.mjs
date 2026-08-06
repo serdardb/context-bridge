@@ -8,6 +8,8 @@ import {
   injectionSql,
   preResume,
   fabricateSession,
+  selectDiscovered,
+  bridgeTouchedSessionIds,
   parseExportMessages,
   parseAudit,
 } from "../src/agents/opencode.mjs";
@@ -360,5 +362,71 @@ test("fabricateSession returns null when there is no store to write into", () =>
     if (prev === undefined) delete process.env.OPENCODE_HOME;
     else process.env.OPENCODE_HOME = prev;
     fs.rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+// discover() must not blindly link the newest session in a directory. OpenCode's
+// store, unlike the file-based agents, lets any `opencode run` in a directory
+// leave a session there, so a busy project dir fills with stray model-call
+// remnants. selectDiscovered prefers a session the bridge actually manages.
+
+const sess = (id, updated) => ({ id, time: { updated } });
+
+test("selectDiscovered: a lone session is unambiguous", () => {
+  assert.deepEqual(selectDiscovered([sess("ses_x", 5)], new Set()), {
+    id: "ses_x",
+    transcriptPath: null,
+    updatedAt: 5,
+    deterministic: true,
+  });
+  assert.equal(selectDiscovered([], new Set()), null);
+});
+
+test("selectDiscovered: the newest is NOT taken when it is stray litter and a bridge session exists", () => {
+  // The reported failure: 1 real 82-message chat the bridge handed off into, and a
+  // newer 2-message `opencode run` remnant. Newest-wins would adopt the remnant.
+  const sessions = [sess("ses_run_remnant", 200), sess("ses_real", 100)];
+  const touched = new Set(["ses_real"]);
+  const got = selectDiscovered(sessions, touched);
+  assert.equal(got.id, "ses_real", "the bridge-touched session wins over the newer stray");
+  assert.equal(got.deterministic, true, "and being provably ours, it is adopted silently");
+});
+
+test("selectDiscovered: a fabricated ses_bridge* id counts as the bridge's own", () => {
+  const sessions = [sess("ses_run_remnant", 200), sess("ses_bridgeabc123", 100)];
+  const got = selectDiscovered(sessions, new Set());
+  assert.equal(got.id, "ses_bridgeabc123", "a fabricated session is recognised by its id alone");
+  assert.equal(got.deterministic, true);
+});
+
+test("selectDiscovered: several bridge sessions narrow to the newest but ask for --adopt", () => {
+  const sessions = [sess("ses_bridgeA", 300), sess("ses_bridgeB", 200), sess("ses_stray", 400)];
+  const got = selectDiscovered(sessions, new Set());
+  assert.equal(got.id, "ses_bridgeA", "newest of the bridge's own, not the newer stray");
+  assert.equal(got.deterministic, false, "more than one of ours means the human confirms");
+});
+
+test("selectDiscovered: with no bridge session it keeps the old newest-wins guess", () => {
+  const sessions = [sess("ses_p", 200), sess("ses_q", 100)];
+  const got = selectDiscovered(sessions, new Set());
+  assert.equal(got.id, "ses_p", "backwards compatible: newest");
+  assert.equal(got.deterministic, false, "and still behind --adopt for a genuine first adoption");
+});
+
+test("bridgeTouchedSessionIds reads the sessions the bridge has injected into", () => {
+  const prev = process.env.OPENCODE_HOME;
+  const { dir, db } = freshDb();
+  try {
+    process.env.OPENCODE_HOME = path.dirname(db);
+    // A bridge handoff into ses_real, and an untouched app session ses_app.
+    execFileSync("sqlite3", [db, injectionSql("ses_real", "a handoff", 1000)]);
+    execFileSync("sqlite3", [db, "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES ('msg_app_1', 'ses_app', 1, 1, '{}');"]);
+    const touched = bridgeTouchedSessionIds();
+    assert.ok(touched.has("ses_real"), "a session with an injected msg_bridge_* message is touched");
+    assert.equal(touched.has("ses_app"), false, "an app's own session is not");
+  } finally {
+    if (prev === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

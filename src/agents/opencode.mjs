@@ -135,9 +135,52 @@ function listSessionsViaServer() {
   }
 }
 
+// The session ids the bridge has delivered a handoff into: any session carrying a
+// message it injected (msg_bridge_*). One cheap read of the same store preResume
+// writes to, so discover can tell the sessions the bridge MANAGES apart from ones
+// an app spawned with its own `opencode run` calls in the project directory —
+// those share the directory but were never a handoff target. Empty set when the
+// store is absent, which collapses discover to its old newest-wins behaviour.
+export function bridgeTouchedSessionIds() {
+  const dbPath = path.join(opencodeHome(), "opencode.db");
+  if (!fileExists(dbPath)) return new Set();
+  const out = tryExec("sqlite3", [dbPath, "SELECT DISTINCT session_id FROM message WHERE id LIKE 'msg_bridge_%';"]);
+  if (!out) return new Set();
+  return new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
+}
+
 /**
- * Deterministic: OpenCode records the project directory in each session.
- * Returns the newest session whose directory matches, or null.
+ * Pick which directory-matching session to link, and whether the choice is
+ * unambiguous. Pure so it can be tested without a live store: it is handed the
+ * candidate sessions (newest first) and the set of ids the bridge has touched.
+ *
+ * Unlike the file-based agents, OpenCode's store lets any `opencode run` from a
+ * directory leave a session there, so "newest in this directory" is not enough —
+ * it will happily be a stray model-call remnant. When more than one session
+ * matches, the bridge prefers one it manages: a session it delivered a handoff
+ * into (msg_bridge_*) or itself fabricated (ses_bridge*). Exactly one of those is
+ * provably the right session and is adopted silently; several, or none, still
+ * pick the newest but leave the confirmation to `--adopt`.
+ */
+export function selectDiscovered(sessions, touchedIds) {
+  if (!sessions.length) return null;
+  const asRef = (s, deterministic) => ({
+    id: s.id,
+    transcriptPath: null,
+    updatedAt: s.time?.updated ?? s.updated ?? null,
+    deterministic,
+  });
+  if (sessions.length === 1) return asRef(sessions[0], true);
+  const mine = sessions.filter((s) => s.id.startsWith("ses_bridge") || touchedIds.has(s.id));
+  if (mine.length === 1) return asRef(mine[0], true);
+  if (mine.length > 1) return asRef(mine[0], false);
+  return asRef(sessions[0], false);
+}
+
+/**
+ * OpenCode records the project directory in each session. Returns the session to
+ * link whose directory matches, preferring one the bridge manages when a busy
+ * directory holds more than one, or null when none match.
  */
 export function discover(projectDir) {
   const want = path.resolve(projectDir);
@@ -148,14 +191,10 @@ export function discover(projectDir) {
       return dir && path.resolve(dir) === want;
     })
     .sort((a, b) => (b.time?.updated ?? b.updated ?? 0) - (a.time?.updated ?? a.updated ?? 0));
-  if (!sessions.length) return null;
-  const s = sessions[0];
-  return {
-    id: s.id,
-    transcriptPath: null,
-    updatedAt: s.time?.updated ?? s.updated ?? null,
-    deterministic: sessions.length === 1,
-  };
+  // Only reach into the store to tell bridge sessions apart when the directory is
+  // actually ambiguous; a single (or no) candidate never needs it.
+  const touched = sessions.length > 1 ? bridgeTouchedSessionIds() : new Set();
+  return selectDiscovered(sessions, touched);
 }
 
 /**
