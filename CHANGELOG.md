@@ -6,6 +6,25 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.12.2] — 2026-08-06
+
+### Fixed
+
+- **Re-linking OpenCode no longer grabs a stray session.** Unlike the file-based
+  agents, OpenCode keeps every session in one SQLite store, and any `opencode run`
+  from a directory — an app making its own model calls, for instance — leaves a
+  session filed under it. So a busy project directory fills with two-message
+  remnants, and when the bridge had to rediscover OpenCode's session (after an
+  unlink, a seed, or a `doctor` relink) it took the newest by time, which was
+  usually one of those remnants, and `--adopt` bound to it. Discovery now prefers
+  the session the bridge actually manages — one it delivered a handoff into (its
+  message carries a `msg_bridge_*` id) or itself fabricated (a `ses_bridge*` id).
+  Exactly one such session is adopted silently; several fall back to the newest of
+  them behind `--adopt`; none keeps the old newest-wins guess for a genuine first
+  adoption. The extra store read happens only when a directory is ambiguous. This
+  is independent of git — it matters most in projects that are not git repos, which
+  OpenCode files together under its `global` project.
+
 ## [0.12.1] — 2026-08-06
 
 ### Fixed
