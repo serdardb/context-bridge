@@ -19,7 +19,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 🎥 **Walkthrough:** [watch the original install-and-switch demo on X](https://x.com/SerdarDB/status/2078981172080574900). It was recorded with Claude Code and Codex, before Grok, Antigravity and `bridge inspect` were added, so it shows the flow rather than the current full set.
 
-> **Status: developer preview (0.12.0).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.12.1).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 

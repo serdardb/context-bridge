@@ -6,6 +6,26 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.12.1] — 2026-08-06
+
+### Fixed
+
+- **The first handoff into OpenCode now arrives.** In a project where OpenCode
+  had never been linked, the first switch to it delivered nothing: OpenCode has
+  no hook and no openable prompt, so a delta is written straight into its SQLite
+  store, but a message there has a foreign key to a session and on a first switch
+  no session exists yet, so the delta sat pending and the session was never
+  linked. The bridge now fabricates that first session directly — one
+  transaction inserting the session row and the delta's message and part — then
+  resumes it by id and links it, so the first switch delivers exactly like every
+  later one. The fabricated session's `project_id` is read from the store
+  (`COALESCE((SELECT id FROM project WHERE worktree = …), 'global')`), so a
+  projected git repo uses its own project and an un-projected directory falls
+  back to the global project as OpenCode's own sessions do. The write is
+  idempotent (the session id is derived from the delta) and delivery still
+  commits only after it succeeds. Only OpenCode's first switch is affected; every
+  other agent and every later OpenCode switch is unchanged.
+
 ## [0.12.0] — 2026-08-04
 
 Lanes: two lines of work in one project directory, each with its own agent links,
