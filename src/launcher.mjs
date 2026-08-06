@@ -116,7 +116,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       boundSeedThisLaunch = true;
       s = loadPinned(projectDir);
     }
-    const { cmd, args, note, carries, preResume } = buildCommand(projectDir, s, agent, agentArgs[agent]);
+    const { cmd, args, note, carries, preResume, fabricatedId } = buildCommand(projectDir, s, agent, agentArgs[agent]);
     if (agentArgs[agent]?.length) {
       const armed = agentArgs[agent].filter(isDangerous);
       // Dim for ordinary flags, plain for the ones that change what the agent may
@@ -170,6 +170,16 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
         log(`${WARN} Could not inject context into ${agent}; it stays pending and the next launch will deliver it.`);
       }
       if (injected && carries) commitDelivery(projectDir, carries);
+      // A fabricated session (OpenCode's first switch) has an id we minted rather
+      // than discovered, and no adoptStartedSession to find it. Link it here, on a
+      // successful write, so status/doctor/read-back see the session immediately
+      // and the next switch resumes it instead of minting another. The mark stays
+      // null so this session's first handoff carries from its start.
+      if (injected && fabricatedId) {
+        mutateState(projectDir, launcherLane, (st) => {
+          agentSlot(st, agent).set({ id: fabricatedId, transcriptPath: null });
+        });
+      }
     }
     // A session we are about to create belongs to this project, and until it is
     // written into state it cannot be resumed: `bridge <agent>` would refuse and
@@ -472,11 +482,23 @@ export function buildCommand(projectDir, s, agent, extra = []) {
     }
     if (inj?.via === "hook") return { cmd, args, note };
     const seeded = readDelta(projectDir, inj);
+    // An agent with no openable prompt and no session yet (OpenCode) cannot take a
+    // first handoff the normal way: promptArgs is empty and there is nothing to
+    // inject into. If it can fabricate its own session, create that session, inject
+    // the delta into it, and resume it by id, so the first switch delivers like
+    // every later one. The launcher runs the returned write, links the minted id
+    // and commits on success; a failed write leaves the delta pending, unchanged.
+    if (seeded && typeof adapter.fabricateSession === "function") {
+      const fab = adapter.fabricateSession(projectDir, seeded);
+      if (fab) {
+        const resume = adapter.resumeCommand({ id: fab.id, transcriptPath: null }, extra);
+        return { cmd: resume.cmd, args: resume.args, note, carries: inj, preResume: fab.preResume, fabricatedId: fab.id };
+      }
+    }
     // Carry the delta only if `promptArgs` actually put it on the command line.
-    // An agent like OpenCode returns nothing here because a fresh session has no
-    // store to inject into yet, so the delta must stay pending rather than be
-    // marked delivered by a blank session; once the session exists and is linked,
-    // the resume branch below injects it through preResume.
+    // An agent that returns nothing here (and cannot fabricate) leaves the delta
+    // pending rather than letting a blank session mark it delivered; once a session
+    // exists and is linked, the resume branch below injects it through preResume.
     const carried = seeded ? adapter.promptArgs(seeded) : [];
     args.push(...carried);
     return { cmd, args, note, carries: carried.length ? inj : null };

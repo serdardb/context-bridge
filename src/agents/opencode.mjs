@@ -191,7 +191,11 @@ function sqlStr(s) {
  * context twice — which happens if the launcher recomputes the command before
  * delivery is committed — is a harmless no-op rather than a duplicate message.
  */
-export function injectionSql(sessionId, delta, now) {
+// The message and its text part, as two INSERT OR IGNORE statements with no
+// transaction of their own, so both `injectionSql` (message into an existing
+// session) and `fabricateSession` (session + message together) can wrap them in
+// one BEGIN/COMMIT with whatever else they insert.
+function messagePartInserts(sessionId, delta, now) {
   const key = createHash("sha1").update(`${sessionId}\n${delta}`).digest("hex").slice(0, 16);
   const msgId = `msg_bridge_${key}`;
   const partId = `part_bridge_${key}`;
@@ -206,11 +210,73 @@ export function injectionSql(sessionId, delta, now) {
   });
   const partData = JSON.stringify({ type: "text", text: delta, time: { start: now, end: now } });
   return (
-    "BEGIN;\n" +
     `INSERT OR IGNORE INTO message (id, session_id, time_created, time_updated, data) VALUES (${sqlStr(msgId)}, ${sqlStr(sessionId)}, ${now}, ${now}, ${sqlStr(messageData)});\n` +
-    `INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (${sqlStr(partId)}, ${sqlStr(msgId)}, ${sqlStr(sessionId)}, ${now}, ${now}, ${sqlStr(partData)});\n` +
-    "COMMIT;"
+    `INSERT OR IGNORE INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (${sqlStr(partId)}, ${sqlStr(msgId)}, ${sqlStr(sessionId)}, ${now}, ${now}, ${sqlStr(partData)});\n`
   );
+}
+
+export function injectionSql(sessionId, delta, now) {
+  return "BEGIN;\n" + messagePartInserts(sessionId, delta, now) + "COMMIT;";
+}
+
+// The version string OpenCode stamps every session with. Read from the live CLI
+// so a fabricated session matches whatever is installed; a session row carrying a
+// stale version could read wrong to a future migration. Falls back to copying the
+// newest existing session's version through the SQL when the CLI cannot be run.
+function opencodeVersion() {
+  const out = tryExec("opencode", ["--version"]);
+  if (!out) return null;
+  // `opencode --version` prints just the version (e.g. "1.18.14"); take the last
+  // whitespace-separated token defensively in case a banner is ever added.
+  return out.split(/\s+/).filter(Boolean).pop() ?? null;
+}
+
+/**
+ * The FIRST switch to OpenCode in a project has nowhere to inject: its message
+ * table has a foreign key to `session`, and no session exists yet, so the delta
+ * would otherwise sit pending until a later launch created and linked one. This
+ * fabricates that session directly in the store — the one authless path, since
+ * OpenCode has no headless "create session" command (only `opencode run`, a paid,
+ * authenticated model call) — then injects the handoff into it, so `resumeCommand`
+ * can open it by id and the first switch delivers like every later one.
+ *
+ * `project_id` is resolved in SQL, not guessed: a directory OpenCode has already
+ * projected has its own row, and one it has not falls back to the `global` project
+ * (worktree `/`) exactly as OpenCode's own sessions in an un-projected directory
+ * do. The id is derived from the delta so a recompute before delivery is committed
+ * yields the same id and the OR IGNORE inserts are a no-op, never a second ghost
+ * session. Returns null when there is no store to write to, so the caller keeps
+ * the old leave-it-pending behaviour.
+ */
+export function fabricateSession(projectDir, delta, now = Date.now()) {
+  if (!delta) return null;
+  const dbPath = path.join(opencodeHome(), "opencode.db");
+  if (!fileExists(dbPath)) return null;
+  const dir = path.resolve(projectDir);
+  const seed = createHash("sha256").update(`${dir}\n${delta}`).digest("hex");
+  // `ses_` + 26 chars, matching the shape OpenCode mints, so nothing downstream
+  // that assumes that length is surprised by a bridge-made session.
+  const id = `ses_bridge${seed.slice(0, 20)}`;
+  const slug = `bridge-${seed.slice(0, 6)}`;
+  const version = opencodeVersion();
+  // Prefer the live CLI version; if it could not be read, copy the newest session's
+  // version in SQL, and only if the store is empty fall back to a neutral literal.
+  const versionExpr = version
+    ? sqlStr(version)
+    : "COALESCE((SELECT version FROM session ORDER BY time_created DESC LIMIT 1), '0.0.0')";
+  const sessionInsert =
+    "INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (" +
+    `${sqlStr(id)}, COALESCE((SELECT id FROM project WHERE worktree = ${sqlStr(dir)}), 'global'), ` +
+    `${sqlStr(slug)}, ${sqlStr(dir)}, ${sqlStr("Context bridge handoff")}, ${versionExpr}, ${now}, ${now});\n`;
+  const sql = "BEGIN;\n" + sessionInsert + messagePartInserts(id, delta, now) + "COMMIT;";
+  return {
+    id,
+    preResume: {
+      cmd: "sqlite3",
+      args: [dbPath, sql],
+      note: "Creating an OpenCode session and injecting the handoff into it (authless)…",
+    },
+  };
 }
 
 /**
