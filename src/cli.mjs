@@ -90,6 +90,8 @@ Inside the agents:
   ${AGENT_IDS.filter((a) => a !== "claude")
     .map((a) => adapterFor(a).displayName)
     .join(", ")}:  $bridge <agent>   hand off to another agent
+
+Docs and write-ups: https://dogrubakar.com/projects/context-bridge
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;

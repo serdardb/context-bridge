@@ -19,6 +19,8 @@ Developers increasingly use multiple coding agents — but switching between the
 
 🎥 **Walkthrough:** [watch the original install-and-switch demo on X](https://x.com/SerdarDB/status/2078981172080574900). It was recorded with Claude Code and Codex, before Grok, Antigravity and `bridge inspect` were added, so it shows the flow rather than the current full set.
 
+**Project page:** [dogrubakar.com/projects/context-bridge](https://dogrubakar.com/projects/context-bridge) — what it is, why it exists, and the write-ups behind each release.
+
 > **Status: developer preview (0.12.2).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
@@ -383,5 +385,16 @@ Since the first release:
 - **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting `.bridge/` to relink one
 
 What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+## Written about
+
+The thinking behind this tool, and what broke along the way:
+
+- [Building context-bridge with context-bridge](https://dogrubakar.com/blog/building-context-bridge-with-context-bridge) — five agents reviewing the tool they were being carried by
+- [The day an agent ran clean in the wrong directory](https://dogrubakar.com/blog/clean-in-the-wrong-directory) — a clean run, every guard held, and it was true about somewhere else
+- [The first switch into OpenCode](https://dogrubakar.com/blog/context-bridge-0-12-1) and [The wrong OpenCode session](https://dogrubakar.com/blog/context-bridge-0-12-2) — reaching an agent that keeps its sessions in a database
+- [The next learning layer for AI agents may not be the model](https://dogrubakar.com/blog/the-next-learning-layer) — where an agent's experience actually accumulates
+
+More at [dogrubakar.com](https://dogrubakar.com).
 
 MIT © SerdarDB
