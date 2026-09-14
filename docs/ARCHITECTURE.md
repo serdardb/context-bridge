@@ -86,11 +86,13 @@ it back untouched, never compare one agent's to another's, and never look inside
 
 ## What crosses, and what does not
 
-A delta is a bounded plain-text block with four sections:
+A delta is a bounded plain-text block with a reading followed by four evidence
+sections:
 
 ```
 [Bridge Context Update]
 
+Summary        what the departing agent thinks matters and why
 Conversation   what was said, from the native session files
 Decisions      what was decided, and what was rejected and why
 Work           files touched, commits, diffstat, from git
@@ -101,9 +103,10 @@ Conversation and Work are deterministic: session records newer than the
 watermark, plus `git status --porcelain` and `log`/`diff --stat` since the
 recorded checkpoint. No summarisation call is added anywhere.
 
-Decisions and Next come from the departing agent, written in the same turn the
-user triggered the switch. They carry intent, which neither files nor git can
-show.
+Summary, Decisions and Next come from the departing agent, written in the same
+turn the user triggered the switch. They carry intent, which neither files nor
+git can show. When the agent cannot provide a summary, the bridge labels the
+mechanical extract as a record rather than pretending it is a reading.
 
 **Tool calls and their output never cross.** They are enormous, shaped
 differently by every vendor, and not replayable in another agent. On this
@@ -113,10 +116,11 @@ itself rather than against a stale account of somebody else's run. The honest
 cost is that a failure which lived only in tool output, and which nobody wrote
 down, does not travel.
 
-Each bounded delta is capped, and the middle is cut rather than the ends, so the
-beginning and the latest exchange both survive. Beside it, every handoff also
-writes an **un-truncated companion** holding every message verbatim. That exists
-because a size cap once clipped long prose in the middle of drafting it.
+Each bounded delta is budgeted. The summary and non-trimmable evidence are
+reserved first; conversation is carried as whole messages and omitted messages
+are counted rather than cut mid-message. Beside it, every handoff also writes a
+**full-context checkpoint** holding every message verbatim. That exists because
+a size cap once clipped long prose in the middle of drafting it.
 
 ## knownBy: why chains keep their history
 
@@ -253,12 +257,9 @@ Checkpoint files are packages in transit, not memory. The canonical record is
 each agent's native transcript plus `knownBy`.
 
 So retention follows the delivery lifecycle rather than a clock: an un-truncated
-companion is dropped once its reader hands off. That is an event, not a proof.
-It means the agent had a live session in which the companion was available to
-it, which is the strongest thing anything here can observe; nobody watches
-whether a file was opened. A small newest-N cap backstops a target that never
-hands off again. Bounded deltas are kept longer for auditing, and a
-pending injection is never deleted under any flag. Re-issuing a handoff
+full-context checkpoint is retained with the delta and audit manifest, then
+pruned by the checkpoint group's retention policy. A pending injection is never
+deleted under any flag. Re-issuing a handoff
 supersedes the previous undelivered one instead of leaving it on disk forever.
 
 ## Session linking

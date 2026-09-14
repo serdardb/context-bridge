@@ -151,7 +151,7 @@ export function prepareSeed(projectDir, sourceLane) {
 
 /**
  * Write a prepared seed into `newLane` and mark it for delivery. The same document
- * is written as BOTH the delta and its full-context companion, so delivery's road
+ * is written as BOTH the delta and its full-context checkpoint, so delivery's road
  * fit can trim the delta to a hook's 8KB or a prompt's 128KB and still point at the
  * whole thing — an oversized seed loses nothing. Sets an UNBOUND seed injection the
  * launcher binds to whichever agent opens the lane first. Returns the delta's path.

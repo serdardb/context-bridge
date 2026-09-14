@@ -94,8 +94,8 @@ export function currentGitSha(projectDir) {
 }
 
 /**
- * Compose the bounded 4-section bridge delta.
- * sections: {fromAgent, conversation: [{role,text}], decisions: [], work: [], next: []}
+ * Compose the bounded bridge delta.
+ * sections: {fromAgent, summary, conversation: [{role,text}], decisions: [], work: [], next: []}
  */
 export function composeDelta(sections, budget) {
   const plan = planDelta(sections, budget);
