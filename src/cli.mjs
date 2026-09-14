@@ -550,7 +550,10 @@ function ago(date, now = Date.now()) {
  * gets believed. Serdar caught it by asking the obvious question nobody had.
  */
 function clock(date) {
-  const day = date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  // Keep status output stable across Node/ICU versions: some runtimes render
+  // September as "Sep", others as "Sept" for the same en-GB request.
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const day = `${String(date.getDate()).padStart(2, "0")} ${months[date.getMonth()]}`;
   return `${day} ${date.toTimeString().slice(0, 5)}`;
 }
 
