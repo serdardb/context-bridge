@@ -83,7 +83,15 @@ function detectSource(s, target) {
   }
   // Nothing linked yet: only one agent has a session in this project, so a
   // first handoff from a bare session still works (adoption rules still apply).
-  const discovered = others.filter((agentId) => adapterFor(agentId).discover(projectDirOf(s)));
+  // Source detection must stay bounded and side-effect-free. OpenCode's normal
+  // discovery may start a temporary server when its CLI cannot list sessions;
+  // probing every unlinked agent here would start that server on every handoff
+  // and can leave a child behind when the vendor CLI is unavailable. Full
+  // discovery still runs when the source is known and needs to be adopted.
+  const discovered = others.filter((agentId) => adapterFor(agentId).discover(projectDirOf(s), {
+    allowServerFallback: false,
+    timeout: 1000,
+  }));
   if (discovered.length === 1) return discovered[0];
   throw new BridgeError(
     `Cannot tell which agent is handing off to ${target}: no linked or discoverable ` +

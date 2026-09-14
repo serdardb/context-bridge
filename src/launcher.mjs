@@ -163,11 +163,16 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
           stdio: "ignore",
           cwd: projectDir,
           env: childEnv(launcherLane),
-          timeout: 15000,
+          timeout: preResume.timeout ?? 15000,
         });
         injected = true;
-      } catch {
-        log(`${WARN} Could not inject context into ${agent}; it stays pending and the next launch will deliver it.`);
+      } catch (error) {
+        const timedOut = error?.code === "ETIMEDOUT" || error?.signal === "SIGTERM";
+        const operation = preResume.operation ?? `context injection into ${agent}`;
+        const detail = timedOut
+          ? `${operation} timed out after ${preResume.timeout ?? 15000}ms`
+          : `${operation} failed`;
+        log(`${WARN} ${detail}; it stays pending. Retry with: bridge ${agent} --resume`);
       }
       if (injected && carries) commitDelivery(projectDir, carries);
       // A fabricated session (OpenCode's first switch) has an id we minted rather

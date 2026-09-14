@@ -1,7 +1,8 @@
 // OpenCode adapter.
 //
 // Storage: ~/.local/share/opencode/opencode.db (SQLite, never read directly)
-// Session list: opencode serve + HTTP API (GET /api/session)
+// Session list: opencode session list --format json (server fallback retained
+// only for normal discovery when the CLI cannot list sessions).
 // CLI export:   opencode export <sessionID>
 // CLI resume:   opencode --session <sessionID>
 // CLI start:    opencode  (TUI) or opencode run "prompt" (headless)
@@ -22,6 +23,14 @@ import { isBridgeProtocolNoise } from "../delta.mjs";
 export const id = "opencode";
 export const displayName = "OpenCode";
 export const injection = "prompt";
+export const SQLITE_OPERATION_TIMEOUT_MS = 15000;
+
+const REQUIRED_SCHEMA = {
+  project: ["id", "worktree"],
+  session: ["id", "project_id", "slug", "directory", "title", "version", "time_created", "time_updated"],
+  message: ["id", "session_id", "time_created", "time_updated", "data"],
+  part: ["id", "message_id", "session_id", "time_created", "time_updated", "data"],
+};
 
 // Conflict flags
 export const conflictFlags = [
@@ -80,8 +89,8 @@ function exportSession(sessionId) {
  * CLI has no such split brain. The server path stays only as a fallback, now
  * with a trap so even a timeout takes its server down with it.
  */
-function listSessions() {
-  const raw = tryExec("opencode", ["session", "list", "--format", "json"], { timeout: 10000 });
+function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
+  const raw = tryExec("opencode", ["session", "list", "--format", "json"], { timeout });
   if (raw) {
     const start = raw.indexOf("[");
     if (start >= 0) {
@@ -93,7 +102,7 @@ function listSessions() {
       }
     }
   }
-  return listSessionsViaServer();
+  return allowServerFallback ? listSessionsViaServer() : [];
 }
 
 /**
@@ -182,9 +191,9 @@ export function selectDiscovered(sessions, touchedIds) {
  * link whose directory matches, preferring one the bridge manages when a busy
  * directory holds more than one, or null when none match.
  */
-export function discover(projectDir) {
+export function discover(projectDir, { allowServerFallback = true, timeout = 10000 } = {}) {
   const want = path.resolve(projectDir);
-  const sessions = listSessions()
+  const sessions = listSessions({ allowServerFallback, timeout })
     .filter((s) => {
       if (!s?.id) return false;
       const dir = s?.location?.directory ?? s?.directory;
@@ -314,6 +323,8 @@ export function fabricateSession(projectDir, delta, now = Date.now()) {
       cmd: "sqlite3",
       args: [dbPath, sql],
       note: "Creating an OpenCode session and injecting the handoff into it (authless)…",
+      operation: "OpenCode session creation and context injection",
+      timeout: SQLITE_OPERATION_TIMEOUT_MS,
     },
   };
 }
@@ -342,6 +353,8 @@ export function preResume(ref, delta) {
     cmd: "sqlite3",
     args: [dbPath, injectionSql(ref.id, delta, Date.now())],
     note: "Injecting context into OpenCode's session store (authless)…",
+    operation: "OpenCode context injection",
+    timeout: SQLITE_OPERATION_TIMEOUT_MS,
   };
 }
 
@@ -496,6 +509,7 @@ export function health() {
   // not stop the session opening, but the handoff cannot be injected and stays
   // pending, so say so rather than let it fail quietly at switch time.
   const hasSqlite = !!tryExec("sqlite3", ["--version"]);
+  const schema = hasSqlite ? schemaHealth() : { status: "unavailable", missing: [] };
   return {
     version,
     auth: { ok: authConfigured, via: "opencode auth login", account: null },
@@ -512,10 +526,41 @@ export function health() {
           ? "sqlite3 present (used to inject a handoff into OpenCode's session store)"
           : "sqlite3 not found — a handoff into OpenCode needs it to inject context; the session still opens but the delta stays pending until it is installed",
       },
+      {
+        ok: schema.status === "compatible" || schema.status === "none",
+        info: schema.status === "none",
+        label:
+          schema.status === "compatible"
+            ? "OpenCode store schema compatible with bridge injection"
+            : schema.status === "none"
+              ? "OpenCode store not created yet (schema will be checked on first use)"
+              : schema.status === "incompatible"
+                ? `OpenCode store schema is missing: ${schema.missing.join(", ")}`
+                : `OpenCode store schema could not be checked${schema.detail ? ` (${schema.detail})` : ""}`,
+      },
     ],
     ready: !!(version),
     installHint: "npm install -g opencode-ai",
   };
+}
+
+/** Check only the tables and columns used by discovery and handoff injection. */
+export function schemaHealth() {
+  const dbPath = path.join(opencodeHome(), "opencode.db");
+  if (!fileExists(dbPath)) return { status: "none", missing: [] };
+
+  const missing = [];
+  for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
+    const raw = tryExec(
+      "sqlite3",
+      [dbPath, `SELECT group_concat(name, ',') FROM pragma_table_info('${table}');`],
+      { timeout: 2000 },
+    );
+    if (raw === null) return { status: "unreadable", missing: [], detail: table };
+    const found = new Set(raw.split(",").map((name) => name.trim()).filter(Boolean));
+    for (const column of columns) if (!found.has(column)) missing.push(`${table}.${column}`);
+  }
+  return missing.length ? { status: "incompatible", missing } : { status: "compatible", missing: [] };
 }
 
 export function smokeCommand() {

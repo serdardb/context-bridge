@@ -8,10 +8,13 @@ import {
   injectionSql,
   preResume,
   fabricateSession,
+  discover,
+  schemaHealth,
   selectDiscovered,
   bridgeTouchedSessionIds,
   parseExportMessages,
   parseAudit,
+  SQLITE_OPERATION_TIMEOUT_MS,
 } from "../src/agents/opencode.mjs";
 import { buildCommand } from "../src/launcher.mjs";
 import { defaultState, saveState, checkpointsDir, writeCheckpoint } from "../src/state.mjs";
@@ -115,6 +118,8 @@ test("preResume returns a runnable write when the store exists, and nothing when
     const pre = preResume({ id: "ses_a" }, "delta");
     assert.equal(pre.cmd, "sqlite3", "the launcher runs the write, so the write is not a side effect of building it");
     assert.equal(pre.args[0], db);
+    assert.equal(pre.timeout, SQLITE_OPERATION_TIMEOUT_MS);
+    assert.equal(pre.operation, "OpenCode context injection");
     assert.match(pre.args[1], /INSERT OR IGNORE INTO message/);
     assert.equal(preResume({ id: null }, "delta"), null);
     assert.equal(preResume({ id: "ses_a" }, ""), null, "no delta, nothing to inject");
@@ -361,6 +366,59 @@ test("fabricateSession returns null when there is no store to write into", () =>
   } finally {
     if (prev === undefined) delete process.env.OPENCODE_HOME;
     else process.env.OPENCODE_HOME = prev;
+    fs.rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("bounded discovery does not start the OpenCode server fallback", () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "oc-discovery-bin-"));
+  const marker = path.join(bin, "server-started");
+  const previousPath = process.env.PATH;
+  fs.writeFileSync(
+    path.join(bin, "opencode"),
+    `#!/bin/sh
+if [ "$1" = "serve" ]; then
+  touch ${JSON.stringify(marker)}
+  sleep 5
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+  try {
+    assert.equal(discover("/tmp/no-open-code-session", { allowServerFallback: false, timeout: 100 }), null);
+    assert.equal(fs.existsSync(marker), false, "bounded source discovery must not spawn a server fallback");
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("schemaHealth distinguishes a compatible, missing and incompatible store", () => {
+  const previous = process.env.OPENCODE_HOME;
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-none-"));
+  try {
+    process.env.OPENCODE_HOME = empty;
+    assert.deepEqual(schemaHealth(), { status: "none", missing: [] });
+
+    const compatible = freshDb();
+    process.env.OPENCODE_HOME = compatible.dir;
+    assert.deepEqual(schemaHealth(), { status: "compatible", missing: [] });
+    fs.rmSync(compatible.dir, { recursive: true, force: true });
+
+    const incompatible = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-bad-"));
+    process.env.OPENCODE_HOME = incompatible;
+    execFileSync("sqlite3", [path.join(incompatible, "opencode.db"), "CREATE TABLE project (id text);"]);
+    const result = schemaHealth();
+    assert.equal(result.status, "incompatible");
+    assert.ok(result.missing.includes("project.worktree"));
+    assert.ok(result.missing.includes("session.id"));
+    fs.rmSync(incompatible, { recursive: true, force: true });
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = previous;
     fs.rmSync(empty, { recursive: true, force: true });
   }
 });
