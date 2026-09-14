@@ -102,7 +102,7 @@ function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
       }
     }
   }
-  return allowServerFallback ? listSessionsViaServer() : [];
+  return allowServerFallback ? listSessionsViaServer(timeout) : [];
 }
 
 /**
@@ -112,15 +112,17 @@ function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
  * `timeout` that SIGTERM'd bash never reached them and orphaned the server. On
  * EXIT/INT/TERM the trap always fires.
  */
-function listSessionsViaServer() {
+function listSessionsViaServer(timeout = 10000) {
   try {
     const port = 4096 + Math.floor(Math.random() * 1000);
     const script = [
-      `opencode serve --hostname=127.0.0.1 --port=${port} &`,
+      `opencode serve --hostname=127.0.0.1 --port=${port} >/dev/null 2>&1 &`,
       `SERVER_PID=$!`,
-      `trap 'kill $SERVER_PID 2>/dev/null' EXIT INT TERM`,
+      `cleanup() { kill $SERVER_PID 2>/dev/null; }`,
+      `trap cleanup EXIT`,
+      `trap 'exit 124' INT TERM`,
       `for i in $(seq 1 40); do`,
-      `  sleep 0.2`,
+      `  sleep 0.2 </dev/null >/dev/null 2>&1`,
       `  RESP=$(curl -sf http://127.0.0.1:${port}/api/session 2>/dev/null)`,
       `  if [ -n "$RESP" ]; then`,
       `    echo "$RESP" | grep '^{' || true`,
@@ -131,7 +133,7 @@ function listSessionsViaServer() {
     ].join("\n");
     const raw = execFileSync("/bin/bash", ["-c", script], {
       encoding: "utf8",
-      timeout: 15000,
+      timeout,
       stdio: ["ignore", "pipe", "pipe"],
     });
     // Server output mixes with curl output; extract the JSON line

@@ -396,6 +396,28 @@ exit 1
   }
 });
 
+test("fallback discovery obeys the caller timeout", () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "oc-discovery-timeout-bin-"));
+  const previousPath = process.env.PATH;
+  fs.writeFileSync(
+    path.join(bin, "opencode"),
+    `#!/bin/sh
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+  try {
+    const started = Date.now();
+    assert.equal(discover("/tmp/no-open-code-session", { allowServerFallback: true, timeout: 100 }), null);
+    assert.ok(Date.now() - started < 1000, "fallback discovery must honor the caller's hard timeout");
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
 test("schemaHealth distinguishes a compatible, missing and incompatible store", () => {
   const previous = process.env.OPENCODE_HOME;
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-none-"));
