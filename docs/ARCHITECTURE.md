@@ -125,7 +125,7 @@ a size cap once clipped long prose in the middle of drafting it.
 ## knownBy: why chains keep their history
 
 The naive model is a single sync timestamp per agent, and it loses material as
-soon as there are three agents: hand from Claude to Grok to Codex, and Codex
+soon as there are multiple agents: hand from Claude to Grok to Codex, and Codex
 receives only what Grok said.
 
 State therefore holds `knownBy[target][source]`: for each pair, how far into the

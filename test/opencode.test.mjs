@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   injectionSql,
   preResume,
@@ -93,6 +93,32 @@ test("the two inserts are one transaction, so a failure leaves no orphan message
   }
 });
 
+test("fabricating a session rolls back the session when its message write fails", () => {
+  const previous = process.env.OPENCODE_HOME;
+  const { dir, db } = freshDb();
+  const project = path.join(dir, "project");
+  fs.mkdirSync(project);
+  try {
+    process.env.OPENCODE_HOME = path.dirname(db);
+    const fabricated = fabricateSession(project, "delta", 1000);
+    assert.ok(fabricated, "the fixture has a store, so fabrication reaches SQLite");
+
+    // The session and message are one transaction. Removing the message table
+    // forces the second write to fail; the session must not survive as a ghost.
+    execFileSync("sqlite3", [db, "DROP TABLE message;"]);
+    assert.throws(() => execFileSync("sqlite3", [db, fabricated.preResume.args[1]], { stdio: "ignore" }));
+    assert.equal(
+      execFileSync("sqlite3", [db, "SELECT count(*) FROM session WHERE id LIKE 'ses_bridge%';"]).toString().trim(),
+      "0",
+      "a failed message write rolls back the fabricated session"
+    );
+  } finally {
+    if (previous === undefined) delete process.env.OPENCODE_HOME;
+    else process.env.OPENCODE_HOME = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a delta full of quotes and SQL is stored verbatim, not executed", () => {
   const { dir, db } = freshDb();
   try {
@@ -128,6 +154,27 @@ test("preResume returns a runnable write when the store exists, and nothing when
     if (prev === undefined) delete process.env.OPENCODE_HOME;
     else process.env.OPENCODE_HOME = prev;
     fs.rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("a locked OpenCode store fails quickly instead of hanging the injection", async () => {
+  const { dir, db } = freshDb();
+  const holder = spawn("sqlite3", [db], { stdio: ["pipe", "ignore", "ignore"] });
+  try {
+    holder.stdin.write("BEGIN EXCLUSIVE;\n");
+    // Give SQLite the turn needed to acquire the exclusive lock before the
+    // competing bridge write starts.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const started = Date.now();
+    const result = spawnSync("sqlite3", [db, injectionSql("ses_a", "locked", 1000)], {
+      encoding: "utf8",
+      timeout: 1000,
+    });
+    assert.equal(result.status, 5, "SQLite reports a locked database");
+    assert.ok(Date.now() - started < 1000, "a locked store must fail before the bridge timeout");
+  } finally {
+    holder.kill("SIGTERM");
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

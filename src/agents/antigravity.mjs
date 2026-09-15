@@ -54,12 +54,12 @@ function transcriptFor(conversationId) {
  *
  * `history.jsonl` records every prompt with the `workspace` it was typed in and,
  * from the second prompt of a conversation onward, its `conversationId`. That is
- * the whole mapping, in the same shape the other three adapters use: the project
+ * the whole mapping, in the same shape the other file-backed adapters use: the project
  * is written down, not inferred.
  *
  * There is also a `conversation_summaries.db` holding the same association in
  * SQLite, and the first version of this adapter shelled out to `sqlite3` to read
- * it. Serdar asked the obvious question: three agents needed no such thing, why
+ * it. Serdar asked the obvious question: the other agents needed no such thing, why
  * does this one. It does not. Reading a JSONL file we already know how to read
  * beats requiring a binary that may not be installed.
  */

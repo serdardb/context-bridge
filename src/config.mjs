@@ -129,7 +129,7 @@ export function clearArgs(projectDir, agent) {
  * word, which is what makes the moment able to override the default.
  *
  * That override rests on an assumption worth naming: repeating a flag makes the
- * last occurrence win. It holds for all three agents today and it is how CLIs
+ * last occurrence win. It holds for the currently supported agents and is how CLIs
  * conventionally behave, but it is convention rather than law. The alternative
  * was a merge language of our own that knows which flags supersede which, and
  * that is a lot of vendor knowledge to invent and then maintain for a case that

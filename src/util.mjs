@@ -162,7 +162,7 @@ export function oneLine(s, max = 200) {
  * Status of a file installed from a repo original: missing, stale or current.
  * Existence alone is not health — an installed copy that has drifted behind the
  * repo silently teaches the agent the wrong instructions, which is how a stale
- * Codex-only skill survived the move to three agents.
+ * Codex-only skill survived the move to multiple agents.
  */
 export function installedCopyStatus(installedPath, sourcePath) {
   let installed;
