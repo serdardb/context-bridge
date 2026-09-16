@@ -5,7 +5,7 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION, DEFAULT_LANE } from "./state.mjs";
+import { ensureState, loadState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { transferClaudeSession } from "./transfer.mjs";
 import {
@@ -150,6 +150,83 @@ function kb(bytes) {
 }
 
 /**
+ * Preview a handoff without linking, importing, pruning, or writing anything.
+ * This deliberately reports the plan rather than pretending a dry run is a
+ * transaction: vendor discovery and git inspection are read-only, while the
+ * official Claude→Codex import and checkpoint creation are not performed.
+ */
+export function previewHandoff(projectDir, target, { summary = "", decisions = "", next: nextNotes = "", from = null } = {}) {
+  const targetAdapter = adapterFor(target);
+  if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
+  checkSummaryFits(summary);
+  const s = loadStateForPreview(projectDir);
+  const lane = process.env.CONTEXT_BRIDGE_LANE && s.lanes?.[process.env.CONTEXT_BRIDGE_LANE]
+    ? process.env.CONTEXT_BRIDGE_LANE
+    : s.activeLane;
+  const sourceId = from ?? detectSource(s, target);
+  if (sourceId === target) throw new BridgeError(`Already in ${targetAdapter.displayName}; nothing to hand off.`);
+  const sourceAdapter = adapterFor(sourceId);
+  const sourceSlot = agentSlot(s, sourceId);
+  const targetSlot = agentSlot(s, target);
+  const streams = [];
+  const work = [];
+  let messageCount = 0;
+  for (const otherId of AGENT_IDS) {
+    if (otherId === target) continue;
+    const slot = agentSlot(s, otherId);
+    if (!slot.id) continue;
+    const adapter = adapterFor(otherId);
+    const ref = adapter.hydrate(projectDir, slot);
+    if (!ref) continue;
+    const activity = adapter.activitySince(ref, knownMark(s, target, otherId));
+    if (!activity.messages.length && !activity.patchedFiles.length) continue;
+    streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
+    messageCount += activity.messages.length;
+    work.push(...activity.patchedFiles.map((f) => `Modified via ${adapter.displayName}: ${f}`));
+  }
+  const git = gitDelta(projectDir, s.git.sha);
+  const sections = {
+    summary,
+    sources: streams.length ? streams : [{ id: sourceId, label: sourceAdapter.displayName, messages: [] }],
+    decisions: splitNotes(decisions),
+    work: [...work, ...git.lines],
+    next: splitNotes(nextNotes),
+  };
+  const now = nowIso();
+  const stem = `${ts(now)}-${sourceId}-to-${target}`;
+  const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
+  const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
+  const roadBudget = deliverableBudget(
+    via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
+    fullRel,
+    sourceAdapter.displayName
+  );
+  const trailingFor = (lost) => {
+    const omission = lost ? "What did not fit above is whole there. " : "Nothing above was left out, so it holds the same conversation in its original form. ";
+    return `\n\nFull context checkpoint: ${fullRel}\n${omission}It is kept with this handoff's other checkpoints until they are pruned together.` +
+      (targetAdapter.injection === "prompt" ? "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back." : "");
+  };
+  const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
+  checkSummaryFits(summary, summaryBudget);
+  const delta = composeForRoad({ ...sections, summaryBudget }, roadBudget, trailingFor);
+  const manifest = buildManifest(projectDir, { source: sourceId, target, sources: {} }, {});
+  return [
+    `${OK} Dry run: would prepare ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta.`,
+    `  Road: ${via} (${kb(via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES)} limit), estimated delta ${kb(Buffer.byteLength(delta))}.`,
+    `  Content: ${messageCount} conversation message(s), ${sections.work.length} work item(s), ${sections.decisions.length} decision note(s), ${sections.next.length} next note(s).`,
+    `  Files: ${fullRel}${manifest && Object.keys(manifest.agents ?? {}).length ? ` and audit manifest` : ""}.`,
+    "  No state, checkpoint, pending marker, prune, or vendor session/import was changed.",
+    `  Run without --dry-run to create the handoff for ${targetAdapter.displayName}.`,
+  ].join("\n");
+}
+
+function loadStateForPreview(projectDir) {
+  const s = loadState(projectDir);
+  if (!s) throw new BridgeError("No bridge state in this project yet. Run 'bridge' once, then retry the dry run.");
+  return s;
+}
+
+/**
  * A handoff only records state; the launcher is what starts the target later.
  * So a missing target binary is a warning, not a failure — the work is still
  * saved, and the launcher reports the missing command clearly when it tries.
@@ -274,12 +351,14 @@ export function handoff(
     next: nextNotes = "",
     adopt = false,
     from = null,
+    dryRun = false,
     transfer = transferClaudeSession,
     checkTarget = preflight,
   } = {}
 ) {
   const targetAdapter = adapterFor(target);
   if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
+  if (dryRun) return previewHandoff(projectDir, target, { summary, decisions, next: nextNotes, from });
 
   // Before anything at all, including reading state off disk.
   //

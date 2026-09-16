@@ -34,6 +34,20 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(delta, /grok found the bug/);
 });
 
+test("handoff dry-run previews the route without changing state or checkpoints", async () => {
+  const { project } = fixture();
+  const before = fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8");
+  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  const beforeFiles = fs.existsSync(checkpoints) ? fs.readdirSync(checkpoints).sort() : null;
+  const out = handoff(project, "codex", { from: "grok", decisions: "inspect", next: "continue", dryRun: true, checkTarget: () => {} });
+  assert.match(out, /Dry run: would prepare Grok→Codex/);
+  assert.match(out, /No state, checkpoint, pending marker/);
+  assert.equal(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"), before);
+  assert.equal(fs.existsSync(checkpoints), beforeFiles !== null);
+  if (beforeFiles) assert.deepEqual(fs.readdirSync(checkpoints).sort(), beforeFiles);
+  assert.equal(loadState(project).pendingInjection, null);
+});
+
 test("what a target already received is not sent to it twice", async () => {
   const { project } = fixture();
   const s = loadState(project);

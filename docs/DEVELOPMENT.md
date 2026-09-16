@@ -108,6 +108,12 @@ the active lane, linked agent identifiers, pending work kind and recent switch
 directions without exposing vendor watermarks, session identifiers or full
 filesystem paths.
 
+`bridge handoff <agent> --dry-run` is read-only. It calculates the route and
+payload from current state, session and git data, but never creates checkpoints,
+changes pending state, prunes files or invokes a vendor import. It is intended
+for release checks and scripts that need to inspect a handoff before committing
+to it.
+
 Read the wording as load-bearing. A route says `CONFIGURED`, meaning installed, configured, and its session still parses; it used to say `READY`, which people reasonably read as proof that a switch would work. `--deep` asks each agent a real one-line question and reports `LIVE` or `BROKEN`. Two canaries run by default and cost about 98ms: one checks that each adapter can still read its linked session, the other that its discovery reader can still name what is stored on disk. An unreadable session takes its routes off green and the exit code with it.
 
 `--json` prints the raw object; `--fix` offers confirmed bootstraps using official mechanisms only. Auth checks are existence-only (Keychain entry name, `codex login status` exit code) and never read or print secret values. Keep it that way.

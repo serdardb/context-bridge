@@ -22,6 +22,8 @@ half.
 
 - Failed atomic state writes now remove their temporary file without replacing
   the existing destination.
+- Handoffs now support a read-only `--dry-run` preview that reports the selected
+  road and estimated payload without changing project state or vendor sessions.
 - Verification tests cover both non-responsive agents and missing directed
   routes, including the empty-project status shape.
 

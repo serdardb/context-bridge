@@ -41,7 +41,14 @@ const VERSION = JSON.parse(
 // Wide enough for the longest command label there actually is. This was a fixed
 // 16, which fitted every agent until one was called antigravity and its
 // description ran into its name. A fifth agent would have found it again.
-const LABEL_WIDTH = Math.max(...AGENT_IDS.map((a) => a.length + " [flags]".length), "doctor [--fix]".length) + 2;
+const LABEL_WIDTH = Math.max(
+  ...AGENT_IDS.map((a) => a.length + " [flags]".length),
+  "doctor [--fix]".length,
+  "verify [--json]".length,
+  "status [--json]".length,
+  "handoff <agent> [flags]".length,
+  "internal-hook <event>".length
+) + 2;
 /** Column the descriptions start in: "  " + "bridge " + the widest label. */
 const COL = 2 + "bridge ".length + LABEL_WIDTH;
 const cmd = (label) => `  ${`bridge ${label}`.padEnd(COL - 2)}`;
@@ -56,6 +63,7 @@ ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstrap
 ${cont}--deep asks each agent a real one-line question )
 ${cmd("verify [--json]")}Run strict real-agent smoke checks for every installed agent and route
 ${cmd("status [--json]")}Show project bridge status
+${cmd("handoff <agent> [flags]")}Prepare a handoff; --dry-run previews without changing state
 ${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
 ${cont}--json for the raw manifest; --lane <name> for another lane )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
@@ -388,11 +396,12 @@ export async function main(argv) {
         decisions: valueOf(argv, "--decisions"),
         next: valueOf(argv, "--next"),
         adopt: flags.has("--adopt"),
+        dryRun: flags.has("--dry-run"),
         from,
       };
       const usage =
         `Usage: bridge handoff <${AGENT_IDS.join("|")}> [--summary "…"] [--decisions "…"] [--next "…"]` +
-        " [--from <agent>] [--adopt]";
+        " [--from <agent>] [--adopt] [--dry-run]";
       if (!AGENT_IDS.includes(target)) {
         log(usage);
         process.exitCode = 1;
