@@ -6,7 +6,7 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
-## [Unreleased]
+## [0.12.3] — 2026-09-16
 
 ### Added
 
