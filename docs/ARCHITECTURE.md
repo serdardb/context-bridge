@@ -409,6 +409,16 @@ is not readable and claiming otherwise would be a green tick over an unknown.
   never print secret values.
 - State holds references, timestamps and bounded delta files. Transcripts stay
   where the vendors put them.
+- Full-context checkpoints and audit manifests are local evidence, not canonical
+  memory: they may contain sensitive conversation text, command arguments and
+  file names. They are excluded from git and npm packages, retained with their
+  handoff group (newest 20 and younger than 7 days by default), and removable
+  with `bridge clean`; pending handoffs are protected until delivered or
+  deliberately superseded.
+- Do not share a checkpoint or audit manifest without reviewing it for secrets,
+  personal paths and project data. The bridge's opt-in debug logger redacts these
+  classes, but stored handoff artifacts preserve the evidence needed for local
+  recovery and are not a redaction boundary.
 - Deltas travel only inside the CLIs' own subscription-authenticated calls.
 - Global CLI configuration is never mutated without confirmation.
 
