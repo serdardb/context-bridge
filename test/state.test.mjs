@@ -141,6 +141,35 @@ test("a migration says what it did and where the original went, exactly once", (
   assert.ok(fs.existsSync(path.join(project, ".bridge", "state.json.v4.backup")));
 });
 
+test("every intermediate state version migrates to the current schema with its own backup", () => {
+  for (const version of [2, 3]) {
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `bridge-v${version}-`)));
+    fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+    const common = {
+      version,
+      project,
+      activeAgent: "codex",
+      agents: {
+        claude: { id: "claude-1", transcriptPath: "/tmp/claude.jsonl", mark: "claude-mark", idle: false },
+        codex: { id: "codex-1", transcriptPath: "/tmp/codex.jsonl", mark: "codex-mark", idle: true },
+      },
+      pendingHandoff: { target: "claude", ready: true },
+      pendingInjection: { agent: "claude", id: null, deltaFile: ".bridge/checkpoints/pending.md" },
+      git: { sha: "abc", recordedAt: "2026-07-20T00:00:00.000Z" },
+    };
+    fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(common));
+    const loaded = loadState(project);
+    const raw = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+    assert.equal(loaded.version, STATE_VERSION);
+    assert.equal(raw.version, STATE_VERSION);
+    assert.ok(fs.existsSync(path.join(project, ".bridge", `state.json.v${version}.backup`)));
+    assert.equal(loaded.agents.claude.id, "claude-1");
+    assert.equal(loaded.agents.codex.id, "codex-1");
+    assert.deepEqual(loaded.pendingInjection, common.pendingInjection);
+    assert.deepEqual(loaded.pendingHandoff, common.pendingHandoff);
+  }
+});
+
 // safeCheckpointPath is the single gate every state-derived checkpoint path passes
 // through before it is read, renamed, appended to or deleted. State can be corrupt
 // or hostile, so each of these shapes must be refused (null), and the legitimate
