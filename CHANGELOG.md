@@ -17,6 +17,20 @@ half.
 - **Machine-readable project status.** `bridge status --json` reports the
   active lane, linked agents, pending work kind and recent switch directions
   without exposing vendor watermarks, session identifiers or absolute paths.
+- **Agent-written handoff summaries.** Handoffs can carry the departing agent's
+  own reading before the mechanical transcript. Missing summaries fall back
+  explicitly; summaries that cannot fit the selected delivery road are refused
+  before any state or session is changed.
+- **Whole-message context and durable evidence.** Conversation messages are no
+  longer clipped by the bridge's old fixed message limits. Omitted messages are
+  counted, and the full context checkpoint remains available under group
+  retention instead of being deleted after delivery.
+- **Lanes and recovery hardening.** Lane state is isolated and guarded across
+  resume, seed, unlink, clean and inspect; state migrations keep backups and
+  fail without replacing the last valid state when an atomic write fails.
+- **Actionable diagnostics.** Supported handoff and state/import failures now
+  identify the operation, affected path and next command. `BRIDGE_DEBUG=1`
+  enables opt-in stderr diagnostics with sensitive values redacted.
 
 ### Fixed
 
@@ -26,6 +40,12 @@ half.
   road and estimated payload without changing project state or vendor sessions.
 - Verification tests cover both non-responsive agents and missing directed
   routes, including the empty-project status shape.
+- **Codex hook delivery is reachable and budgeted.** Recent hook activity is
+  forwarded through the agent facade and the hook road uses an 8KB operating
+  point, with explicit omission and full-context fallback when a body overflows.
+- **OpenCode first delivery and recovery are guarded.** First-switch writes are
+  transactional and idempotent, bounded discovery does not hang on a locked or
+  slow store, and incompatible internal schemas fail closed with a diagnostic.
 
 ### Release Notes
 
