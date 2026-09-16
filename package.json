@@ -25,7 +25,10 @@
   "engines": {
     "node": ">=18.18"
   },
-  "repository": "github:SerdarDB/context-bridge",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SerdarDB/context-bridge.git"
+  },
   "license": "MIT",
   "author": "SerdarDB",
   "homepage": "https://dogrubakar.com/projects/context-bridge",
