@@ -8,25 +8,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
 
-function section(version) {
-  const part = changelog.split(/^## \[/m).find((entry) => entry.startsWith(`${version}]`));
-  assert.ok(part, `CHANGELOG.md must contain a section for ${version}`);
-  return part;
+function versions() {
+  return [...changelog.matchAll(/^## \[([^\]]+)\]/gm)].map((match) => match[1]);
+}
+
+function releaseTitles() {
+  const parts = changelog.split(/^## \[/m).slice(1);
+  return parts.flatMap((part) => {
+    const version = part.match(/^([^\]]+)\]/)?.[1];
+    return [...part.matchAll(/^- \*\*([^*]+)\*\*/gm)].map((match) => ({ version, title: match[1].trim() }));
+  });
 }
 
 test("the current package version is the first changelog version", () => {
-  assert.match(changelog, new RegExp(`^## \\[${pkg.version.replaceAll(".", "\\.")}\\]`, "m"));
+  assert.equal(versions()[0], pkg.version, "the newest changelog entry must match package.json");
 });
 
-test("release notes do not reannounce the old whole-message release as current", () => {
-  const current = section(pkg.version);
-  assert.match(current, /Corrected the 0\.12\.3 release notes/);
-  for (const phrase of [
-    "Agent-written handoff summaries",
-    "Whole-message context and durable evidence",
-    "Lanes and recovery hardening",
-    "Codex hook delivery is reachable and budgeted",
-  ]) {
-    assert.doesNotMatch(current, new RegExp(phrase));
+test("a release title appears in only one changelog version", () => {
+  const seen = new Map();
+  for (const { version, title } of releaseTitles()) {
+    const previous = seen.get(title);
+    assert.equal(previous, undefined, `release title '${title}' is repeated in ${previous} and ${version}`);
+    seen.set(title, version);
   }
 });
