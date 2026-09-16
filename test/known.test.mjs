@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { handoff } from "../src/handoff.mjs";
-import { appendFinalWords } from "../src/launcher.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { handoff } from "../src/handoff.mjs";
+import { appendFinalWords } from "../src/launcher.mjs";
 import { defaultState, saveState, loadState, knownMark, commitKnown } from "../src/state.mjs";
 
 const BRIDGE_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
@@ -47,6 +47,18 @@ test("handoff dry-run previews the route without changing state or checkpoints",
   assert.equal(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"), before);
   assert.equal(fs.existsSync(checkpoints), beforeFiles !== null);
   if (beforeFiles) assert.deepEqual(fs.readdirSync(checkpoints).sort(), beforeFiles);
+  assert.equal(loadState(project).pendingInjection, null);
+});
+
+test("the CLI dry-run flag reaches the read-only handoff path", () => {
+  const { project } = fixture();
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "codex", "--from", "grok", "--dry-run"], {
+    cwd: project,
+    encoding: "utf8",
+  });
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /Dry run: would prepare Grok→Codex/);
+  assert.doesNotMatch(res.stdout, /Handoff is ready/);
   assert.equal(loadState(project).pendingInjection, null);
 });
 
