@@ -21,7 +21,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 **Project page:** [dogrubakar.com/projects/context-bridge](https://dogrubakar.com/projects/context-bridge) — what it is, why it exists, and the write-ups behind each release.
 
-> **Status: developer preview (0.12.2).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
+> **Status: developer preview (0.12.4).** The core flow is tested and used daily, but vendor session formats can change under it — treat it as a private-beta tool, not a hardened production release.
 
 ## The core UX
 

@@ -6,6 +6,14 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.12.4] — 2026-09-16
+
+### Fixed
+
+- **Corrected the 0.12.3 release notes.** The previous entry incorrectly
+  repeated features that shipped in 0.10.0. This entry is the documentation
+  correction; the implementation changes described below belong to 0.12.3.
+
 ## [0.12.3] — 2026-09-16
 
 ### Added
@@ -17,17 +25,9 @@ half.
 - **Machine-readable project status.** `bridge status --json` reports the
   active lane, linked agents, pending work kind and recent switch directions
   without exposing vendor watermarks, session identifiers or absolute paths.
-- **Agent-written handoff summaries.** Handoffs can carry the departing agent's
-  own reading before the mechanical transcript. Missing summaries fall back
-  explicitly; summaries that cannot fit the selected delivery road are refused
-  before any state or session is changed.
-- **Whole-message context and durable evidence.** Conversation messages are no
-  longer clipped by the bridge's old fixed message limits. Omitted messages are
-  counted, and the full context checkpoint remains available under group
-  retention instead of being deleted after delivery.
-- **Lanes and recovery hardening.** Lane state is isolated and guarded across
-  resume, seed, unlink, clean and inspect; state migrations keep backups and
-  fail without replacing the last valid state when an atomic write fails.
+- **Read-only handoff previews.** `bridge handoff <target> --dry-run` reports
+  the selected delivery road, estimated payload and planned artifacts without
+  changing bridge state, checkpoints or vendor sessions.
 - **Actionable diagnostics.** Supported handoff and state/import failures now
   identify the operation, affected path and next command. `BRIDGE_DEBUG=1`
   enables opt-in stderr diagnostics with sensitive values redacted.
@@ -36,22 +36,14 @@ half.
 
 - Failed atomic state writes now remove their temporary file without replacing
   the existing destination.
-- Handoffs now support a read-only `--dry-run` preview that reports the selected
-  road and estimated payload without changing project state or vendor sessions.
-- Verification tests cover both non-responsive agents and missing directed
-  routes, including the empty-project status shape.
-- **Codex hook delivery is reachable and budgeted.** Recent hook activity is
-  forwarded through the agent facade and the hook road uses an 8KB operating
-  point, with explicit omission and full-context fallback when a body overflows.
-- **OpenCode first delivery and recovery are guarded.** First-switch writes are
-  transactional and idempotent, bounded discovery does not hang on a locked or
-  slow store, and incompatible internal schemas fail closed with a diagnostic.
+- **OpenCode discovery and recovery are bounded.** CLI discovery is preferred,
+  fallback server probes honor their caller timeout and clean up, and the
+  bridge checks the internal SQLite schema before relying on it.
 
 ### Release Notes
 
-- The package is a developer preview at `0.12.3`; the release roadmap gates
-  passed before publication, and the published package passed a clean-install
-  smoke test.
+- The package is a developer preview at `0.12.3`; this release passed the
+  project test suite, syntax checks, clean-install smoke testing and CI.
 - OpenCode still relies on its internal SQLite store schema. Doctor reports
   schema compatibility and bounded timeout failures; a supported vendor API
   boundary is not available yet.
