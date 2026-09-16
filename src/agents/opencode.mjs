@@ -124,15 +124,22 @@ function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
 function listSessionsViaServer(timeout = 10000) {
   try {
     const port = 4096 + Math.floor(Math.random() * 1000);
+    // A timeout on execFileSync cannot stop a child that bash is waiting on.
+    // Keep curl and the polling sleep inside the caller's budget as well, or a
+    // failed probe can outlive the nominal timeout by curl's own fixed wait.
+    const budgetSeconds = Math.max(0.05, timeout / 1000);
+    const probeSeconds = Math.max(0.05, Math.min(2, budgetSeconds / 2));
+    const sleepSeconds = Math.max(0.01, Math.min(0.2, budgetSeconds / 8));
+    const attempts = Math.max(1, Math.ceil(budgetSeconds / (probeSeconds + sleepSeconds)));
     const script = [
       `opencode serve --hostname=127.0.0.1 --port=${port} >/dev/null 2>&1 &`,
       `SERVER_PID=$!`,
       `cleanup() { kill $SERVER_PID 2>/dev/null; }`,
       `trap cleanup EXIT`,
       `trap 'exit 124' INT TERM`,
-      `for i in $(seq 1 40); do`,
-      `  sleep 0.2 </dev/null >/dev/null 2>&1`,
-      `  RESP=$(curl -sf --connect-timeout 1 --max-time 2 http://127.0.0.1:${port}/api/session 2>/dev/null)`,
+      `for i in $(seq 1 ${attempts}); do`,
+      `  sleep ${sleepSeconds} </dev/null >/dev/null 2>&1`,
+      `  RESP=$(curl -sf --connect-timeout ${probeSeconds} --max-time ${probeSeconds} http://127.0.0.1:${port}/api/session 2>/dev/null)`,
       `  if [ -n "$RESP" ]; then`,
       `    echo "$RESP" | grep '^{' || true`,
       `    exit 0`,
