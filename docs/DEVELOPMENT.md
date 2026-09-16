@@ -54,6 +54,10 @@ node bin/bridge.mjs verify
 node bin/bridge.mjs status --json
 ```
 
+For opt-in operational diagnostics, set `BRIDGE_DEBUG=1`. Debug records go to
+stderr and redact prompts, message content, tokens, transcript paths and home
+directories before writing; the default is silent.
+
 or via the linked global `bridge`.
 
 ## Installing the Claude plugin locally

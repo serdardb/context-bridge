@@ -20,6 +20,22 @@ test("expected bridge errors carry diagnostic context without changing their mes
   );
 });
 
+test("debug records redact content, secrets and personal paths", async () => {
+  const { debugRecord } = await import("../src/util.mjs");
+  const record = debugRecord("handoff", {
+    prompt: "private conversation",
+    token: "sk-live-secret",
+    transcriptPath: "/Users/serdar/private/session.jsonl",
+    operation: "prepare handoff",
+    count: 3,
+  });
+  assert.equal(record.prompt, "[redacted]");
+  assert.equal(record.token, "[redacted]");
+  assert.equal(record.transcriptPath, "[redacted]");
+  assert.equal(record.operation, "prepare handoff");
+  assert.equal(record.count, 3);
+});
+
 // The need is a moment, not a preference: you are working with approvals on and
 // then decide, now, that this agent should stop asking. So flags are typed when
 // the moment arrives and only become permanent when you say so.

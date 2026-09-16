@@ -48,6 +48,37 @@ export function log(msg = "") {
   console.log(msg);
 }
 
+/** Opt-in diagnostics; sensitive fields are redacted before reaching stderr. */
+export function debugRecord(event, fields = {}) {
+  const safe = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (/prompt|token|secret|password|content|message|transcript/i.test(key)) {
+      safe[key] = "[redacted]";
+      continue;
+    }
+    safe[key] = safeDebugValue(value);
+  }
+  return { event: String(event), ...safe };
+}
+
+export function debugLog(event, fields = {}) {
+  if (process.env.BRIDGE_DEBUG !== "1") return;
+  process.stderr.write(`[context-bridge] ${JSON.stringify(debugRecord(event, fields))}\n`);
+}
+
+function safeDebugValue(value) {
+  if (typeof value !== "string") return value;
+  return value
+    .replace(new RegExp(`${escapeRegExp(os.homedir())}(?=/|$)`, "g"), "~")
+    .replace(new RegExp(`${escapeRegExp(process.cwd())}(?=/|$)`, "g"), ".")
+    .replace(/\/Users\/[^/\s]+/g, "~")
+    .replace(/\b(?:sk|ghp|xox[baprs])-[-_A-Za-z0-9]+\b/g, "[redacted]");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Expected, user-facing CLI failure: printed without a stack trace.
  * exitCode 2 = a confirmation is needed (e.g. heuristic adopt), not a hard error.

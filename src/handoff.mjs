@@ -20,7 +20,7 @@ import {
 import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
-import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log } from "./util.mjs";
+import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log, debugLog } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
 function underLauncher() {
@@ -375,6 +375,7 @@ export function handoff(
 ) {
   const targetAdapter = adapterFor(target);
   if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
+  debugLog("handoff.start", { target, source: from, operation: "prepare handoff" });
   if (dryRun) return previewHandoff(projectDir, target, { summary, decisions, next: nextNotes, from });
 
   // Before anything at all, including reading state off disk.
