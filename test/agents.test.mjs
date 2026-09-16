@@ -334,7 +334,7 @@ test("doctor reports every agent and every directed route from the registry", as
   const r = collect(project);
 
   assert.deepEqual(Object.keys(r.agents).sort(), [...AGENT_IDS].sort());
-  // Three agents mean six directed routes, not three.
+  // Five agents mean twenty directed routes, not five.
   assert.equal(Object.keys(r.routes).length, AGENT_IDS.length * (AGENT_IDS.length - 1));
   assert.ok(r.routes["claude->grok"], "a route to the newest agent exists without touching doctor");
   assert.equal(r.routes["claude->codex"].firstSwitch.startsWith("official import"), true);

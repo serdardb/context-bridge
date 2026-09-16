@@ -366,13 +366,13 @@ than leaving an empty column to be misread as nothing happened.
 
 ## Development status
 
-0.12.0 — developer preview. Round-trips across all five agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok, Antigravity and OpenCode hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed; OpenCode joined as the fifth and its whole delivery path, an authless write into its own session database, was built and hardened over a night of live switches through the bridge.
+0.12.2 — developer preview. Round-trips across all five agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok, Antigravity and OpenCode hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed; OpenCode joined as the fifth and its whole delivery path, an authless write into its own session database, was built and hardened over a night of live switches through the bridge.
 
 Since the first release:
 
 - **Adopt flow** — sessions started outside the bridge can be linked mid-flight (deterministic via `CODEX_THREAD_ID`, confirmed when heuristic)
 - **Full-context checkpoints** — every delta ships with a retained un-truncated record, so long prose survives a handoff and recovery
-- **Three agents, six directions** — Grok joined behind an adapter contract, and a `knownBy` matrix keeps chains from dropping the hop before last
+- **Five agents, twenty directions** — Grok, Antigravity and OpenCode joined behind the adapter contract, and a `knownBy` matrix keeps chains from dropping the hop before last
 - **Codex is hook-driven too** — it records its own session, receives deltas inside the conversation rather than in front of it, and reports the end of a turn instead of having it inferred from a 3MB transcript
 - **Per-agent launch flags** — typed when you want them, saved with `--cb-save-args` when you want them to stick, announced loudly when they change what an agent may do without asking
 - **Sessions the bridge starts are linked** — Codex and Grok used to be unreachable until they handed off once, so `bridge grok` refused to resume the session it had just created

@@ -144,7 +144,7 @@ export async function main(argv) {
       // What this used to print was true and unreadable. Every agent's progress
       // was shown as its raw watermark, and a watermark is opaque by design:
       // Claude's is an ISO instant, Grok's a {rows, ts} object printed as JSON,
-      // Antigravity's a bare step number. Three agents, three shapes, one column
+      // Antigravity's a bare step number. Each adapter has its own opaque mark shape; one column
       // labelled "synced", and nobody could say synced from what, to whom, or
       // when. The fix is not to format the watermark better. It is to stop
       // showing it: what a person wants is who handed to whom and how recently,

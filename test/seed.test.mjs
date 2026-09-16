@@ -147,13 +147,13 @@ test("bindSeed gives the seed to the first opener and refuses a second racer", (
   fs.rmSync(project, { recursive: true });
 });
 
-test("writeSeed writes the seed as both a delta and a full companion, so an oversized one can be trimmed", () => {
+test("writeSeed writes the seed as both a delta and a full-context checkpoint, so an oversized one can be trimmed", () => {
   const project = seededProject();
   const prepared = prepareSeed(project, "main");
   const deltaRel = writeSeed(project, "target", prepared);
   const fullRel = deltaRel.replace(/\.md$/, "-full.md");
 
-  assert.ok(fs.existsSync(path.join(project, fullRel)), "the full companion was written beside the delta");
+  assert.ok(fs.existsSync(path.join(project, fullRel)), "the full-context checkpoint was written beside the delta");
   assert.equal(fullContextFor(project, deltaRel), fullRel, "delivery can point a road-trimmed seed at the full one");
 
   fs.rmSync(project, { recursive: true });
