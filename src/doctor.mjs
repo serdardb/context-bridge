@@ -33,6 +33,7 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   // agent a harmless one-line question and reports what actually came back.
   r.deep = deep;
   if (deep) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+  refreshIntegration(r);
   if (json) {
     log(JSON.stringify(r, null, 2));
     return anyRouteReady(r) ? 0 : 1;
@@ -49,6 +50,7 @@ export async function runVerify(projectDir, { json = false } = {}) {
   for (const agentId of AGENT_IDS) {
     if (r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   }
+  refreshIntegration(r);
   r.verify = verifyReport(r);
   if (json) {
     log(JSON.stringify(r, null, 2));
@@ -138,6 +140,15 @@ export function collect(projectDir) {
   // like too. So the reader is checked against what is actually on disk.
   for (const agentId of AGENT_IDS) agents[agentId].discovery = probeDiscovery(projectDir, agentId);
 
+  // Keep these dimensions separate. A binary's presence is not configuration,
+  // configuration is not permission to use the bridge integration, and neither
+  // proves that the live agent answered. The distinction is especially important
+  // for optional hooks: an agent can be fully usable on the prompt road without
+  // being trusted for hook delivery.
+  for (const agentId of AGENT_IDS) {
+    agents[agentId].integration = integrationStatus(agentId, agents[agentId]);
+  }
+
   // A route is ready when both ends are. Claude to Codex additionally has the
   // official import for its first switch; every other first switch opens a new
   // session seeded with the delta, which is weaker and says so.
@@ -175,6 +186,34 @@ export function collect(projectDir) {
     bridge: { onPath: bridgeOnPath, state: !!state, stateError, linked },
     routes,
   };
+}
+
+/** Pure, machine-readable integration state used by doctor output and tests. */
+export function integrationStatus(agentId, health) {
+  const installed = !!health?.version;
+  const configured = !!health?.ready;
+  let trusted = "not-applicable";
+  if (agentId === "claude") trusted = extraOk(health, "context-bridge plugin installed");
+  if (agentId === "codex") {
+    const skill = extraOk(health, "$bridge skill installed and current");
+    const rule = extraOk(health, "bridge command pre-allowed");
+    trusted = skill && rule;
+  }
+  if (agentId === "grok") trusted = extraOk(health, "$bridge skill installed and current");
+  const verified = !!health?.smoke?.ok &&
+    !["missing", "mismatch"].includes(health?.session?.status) &&
+    health?.discovery?.status !== "blind";
+  return { installed, configured, trusted, verified };
+}
+
+function refreshIntegration(report) {
+  for (const agentId of AGENT_IDS) {
+    report.agents[agentId].integration = integrationStatus(agentId, report.agents[agentId]);
+  }
+}
+
+function extraOk(health, fragment) {
+  return !!health?.extras?.find((extra) => extra.label?.includes(fragment))?.ok;
 }
 
 
@@ -285,6 +324,10 @@ function render(r) {
     for (const extra of a.extras ?? []) {
       if (extra.info) rowInfo(extra.ok, extra.label);
       else row(extra.ok, extra.label, extra.fix);
+    }
+    if (a.integration) {
+      const trust = a.integration.trusted === "not-applicable" ? "n/a" : a.integration.trusted ? "yes" : "no";
+      log(dim(`  Integration state: installed=${a.integration.installed ? "yes" : "no"}, configured=${a.integration.configured ? "yes" : "no"}, trusted=${trust}, verified=${a.integration.verified ? "yes" : "no"}`));
     }
     if (agentId === "claude") {
       row(

@@ -370,6 +370,30 @@ test("verify requires a real smoke result and every installed route", async () =
   assert.ok(routeReport.failures.includes("claude->codex is not configured"));
 });
 
+test("doctor keeps installed, configured, trusted and verified states distinct", async () => {
+  const { integrationStatus } = await import("../src/doctor.mjs");
+  const health = {
+    version: "codex 1",
+    ready: true,
+    smoke: { ok: true },
+    session: { status: "readable" },
+    discovery: { status: "readable" },
+    extras: [
+      { ok: true, label: "$bridge skill installed and current (~/.agents/skills/bridge)" },
+      { ok: false, label: "No Codex allow-rule for `bridge`" },
+    ],
+  };
+  assert.deepEqual(integrationStatus("codex", health), {
+    installed: true,
+    configured: true,
+    trusted: false,
+    verified: true,
+  });
+  health.smoke = { ok: false };
+  assert.equal(integrationStatus("codex", health).verified, false, "a live failure is not hidden by installation or configuration");
+  assert.equal(integrationStatus("opencode", health).trusted, "not-applicable", "no fake trust signal for adapters without a trust mechanism");
+});
+
 test("an installed skill that drifted behind the repo is reported as stale, not ok", async () => {
   const { installedCopyStatus } = await import("../src/util.mjs");
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-skill-")));
