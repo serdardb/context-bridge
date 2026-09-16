@@ -112,6 +112,21 @@ Read the wording as load-bearing. A route says `CONFIGURED`, meaning installed, 
 
 `--json` prints the raw object; `--fix` offers confirmed bootstraps using official mechanisms only. Auth checks are existence-only (Keychain entry name, `codex login status` exit code) and never read or print secret values. Keep it that way.
 
+## CLI exit codes
+
+The command-line contract is intentionally small and stable:
+
+- `0`: the requested operation completed, or a read-only check found no issue.
+- `1`: the operation failed, the requested integration is unavailable, or a
+  diagnostic check found a problem.
+- `2`: the operation needs explicit user confirmation before it can continue;
+  today this is the heuristic session adoption path. The command prints the
+  exact confirmation and retry form.
+
+Expected operational failures are printed as one actionable line without a
+stack trace. Unexpected programming failures retain the stack trace so they
+remain diagnosable during development.
+
 ## Testing a handoff end-to-end
 
 Use a throwaway git repository:
