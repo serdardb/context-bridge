@@ -230,7 +230,11 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
 
 function loadStateForPreview(projectDir) {
   const s = loadState(projectDir);
-  if (!s) throw new BridgeError("No bridge state in this project yet. Run 'bridge' once, then retry the dry run.");
+  if (!s) throw new BridgeError("No bridge state in this project yet. Run 'bridge' once, then retry the dry run.", {
+    operation: "prepare handoff preview",
+    path: path.join(projectDir, ".bridge", "state.json"),
+    nextCommand: "bridge",
+  });
   return s;
 }
 
@@ -259,11 +263,15 @@ function preflight(agentId, lines = []) {
  */
 function preflightOfficialImport() {
   if (!tryExec("codex", ["--version"])) {
-    throw new BridgeError("Codex CLI is not installed. Install with: npm install -g @openai/codex, then try again");
+    throw new BridgeError("Codex CLI is not installed. Install with: npm install -g @openai/codex, then try again", {
+      operation: "official Claude to Codex import",
+      nextCommand: "npm install -g @openai/codex",
+    });
   }
   if (tryExec("codex", ["login", "status"]) === null) {
     throw new BridgeError(
-      "Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then try again"
+      "Codex is installed but not authenticated. Run: codex login  (your ChatGPT subscription can be used), then try again",
+      { operation: "official Claude to Codex import", nextCommand: "codex login" }
     );
   }
 }
@@ -320,7 +328,8 @@ function ensureSourceLinked(projectDir, s, sourceId, adopt, lines) {
   if (!found) {
     throw new BridgeError(
       `No ${adapter.displayName} session found for this project, and none is linked. ` +
-        `Start ${adapter.displayName} in this directory, or hand off from an agent that is linked.`
+        `Start ${adapter.displayName} in this directory, or hand off from an agent that is linked.`,
+      { operation: `link ${adapter.displayName} source session`, path: projectDir, nextCommand: `bridge ${sourceId}` }
     );
   }
   if (found.deterministic !== true && !adopt) {

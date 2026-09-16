@@ -53,12 +53,15 @@ export function log(msg = "") {
  * exitCode 2 = a confirmation is needed (e.g. heuristic adopt), not a hard error.
  */
 export class BridgeError extends Error {
-  constructor(message, { exitCode = 1, code = null } = {}) {
+  constructor(message, { exitCode = 1, code = null, operation = null, path = null, nextCommand = null } = {}) {
     super(message);
     this.name = "BridgeError";
     this.expected = true;
     this.exitCode = exitCode;
     this.code = code;
+    this.operation = operation;
+    this.path = path;
+    this.nextCommand = nextCommand;
   }
 }
 

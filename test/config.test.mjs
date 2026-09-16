@@ -5,6 +5,21 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig, saveArgs, clearArgs, savedArgs, resolveArgs, isDangerous } from "../src/config.mjs";
 
+test("expected bridge errors carry diagnostic context without changing their message", async () => {
+  const { BridgeError } = await import("../src/util.mjs");
+  const error = new BridgeError("cannot continue", {
+    code: "fixture-failure",
+    operation: "test operation",
+    path: ".bridge/state.json",
+    nextCommand: "bridge doctor",
+  });
+  assert.equal(error.message, "cannot continue");
+  assert.deepEqual(
+    { code: error.code, operation: error.operation, path: error.path, nextCommand: error.nextCommand },
+    { code: "fixture-failure", operation: "test operation", path: ".bridge/state.json", nextCommand: "bridge doctor" }
+  );
+});
+
 // The need is a moment, not a preference: you are working with approvals on and
 // then decide, now, that this agent should stop asking. So flags are typed when
 // the moment arrives and only become permanent when you say so.
