@@ -30,6 +30,26 @@ test("everything hidden by default is still there under --debug", () => {
   assert.match(out, /mark/, "and so does the watermark it was hiding");
 });
 
+test("status JSON is stable and does not expose raw agent watermarks", () => {
+  const project = fixture();
+  const res = spawnSync(process.execPath, [BRIDGE, "status", "--json"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 0);
+  const report = JSON.parse(res.stdout);
+  assert.equal(report.state, "present");
+  assert.equal(report.activeLane, "main");
+  assert.deepEqual(report.linkedAgents, ["claude", "codex", "grok", "antigravity"]);
+  assert.ok(Array.isArray(report.recentSwitches));
+  assert.equal(report.recentSwitches[0].source, "claude");
+  assert.doesNotMatch(res.stdout, /019f-codex|2026-07-22T07:31:13/);
+});
+
+test("status JSON reports an unused project without pretending state exists", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-status-json-empty-")));
+  const res = spawnSync(process.execPath, [BRIDGE, "status", "--json"], { cwd: project, encoding: "utf8" });
+  assert.equal(res.status, 0);
+  assert.deepEqual(JSON.parse(res.stdout), { state: "absent" });
+});
+
 // The question the old output could not answer: who handed to whom, and when.
 // The answer was already on disk in the checkpoint filenames and never read.
 test("the switch history is recovered from the checkpoints themselves", () => {
