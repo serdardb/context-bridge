@@ -36,11 +36,12 @@ test("status JSON is stable and does not expose raw agent watermarks", () => {
   assert.equal(res.status, 0);
   const report = JSON.parse(res.stdout);
   assert.equal(report.state, "present");
+  assert.equal(report.project, path.basename(project));
   assert.equal(report.activeLane, "main");
   assert.deepEqual(report.linkedAgents, ["claude", "codex", "grok", "antigravity"]);
   assert.ok(Array.isArray(report.recentSwitches));
   assert.equal(report.recentSwitches[0].source, "claude");
-  assert.doesNotMatch(res.stdout, /019f-codex|2026-07-22T07:31:13/);
+  assert.doesNotMatch(res.stdout, /019f-codex|2026-07-22T07:31:13|\/private\/tmp|\/Users\//);
 });
 
 test("status JSON reports an unused project without pretending state exists", () => {

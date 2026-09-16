@@ -171,7 +171,7 @@ export async function main(argv) {
               : null;
         log(JSON.stringify({
           state: "present",
-          project: s.project,
+          project: path.basename(s.project),
           activeLane: s.activeLane,
           activeAgent: s.activeAgent,
           linkedAgents: linked,
