@@ -31,7 +31,7 @@ const SHOWN_READS = 10;
  * Build the manifest for one handoff, from every agent the target has not caught
  * up with, in the same shape the delta is gathered.
  */
-export function buildManifest(projectDir, { source, target, sources = {} }, marks = {}) {
+export function buildManifest(projectDir, { source, target, via = null, sources = {} }, marks = {}) {
   const agents = {};
   for (const [id, ref] of Object.entries(sources)) {
     const adapter = adapterFor(id);
@@ -60,7 +60,7 @@ export function buildManifest(projectDir, { source, target, sources = {} }, mark
       capabilities: adapter.capabilities ?? null,
     };
   }
-  return { manifestVersion: MANIFEST_VERSION, source, target, agents };
+  return { manifestVersion: MANIFEST_VERSION, source, target, ...(via ? { via } : {}), agents };
 }
 
 /**

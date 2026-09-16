@@ -214,7 +214,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
   checkSummaryFits(summary, summaryBudget);
   const delta = composeForRoad({ ...sections, summaryBudget }, roadBudget, trailingFor);
-  const manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
+  const manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs }, auditMarks);
   const auditRel = Object.keys(manifest.agents ?? {}).length
     ? checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`)
     : null;
@@ -526,7 +526,7 @@ export function handoff(
   let manifest = null;
   let auditRel = null;
   try {
-    manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
+    manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs }, auditMarks);
     if (Object.keys(manifest.agents).length) auditRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
   } catch {
     manifest = null;

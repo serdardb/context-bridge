@@ -49,6 +49,7 @@ test("work done in other projects stays out of this project's manifest", () => {
     {
       source: "codex",
       target: "grok",
+      via: "hook",
       sources: { codex: { transcriptPath: "unused" } },
     },
     {},
@@ -56,6 +57,7 @@ test("work done in other projects stays out of this project's manifest", () => {
     // any vendor's format, and the real formats are pinned in capabilities.test.
   );
   assert.ok(m.manifestVersion, "a manifest always declares its version");
+  assert.equal(m.via, "hook", "the manifest records the selected delivery road");
 
   const scoped = buildManifest(project, {
     source: "x",
