@@ -153,6 +153,7 @@ npm install -g @serdardb/context-bridge
 
 bridge doctor        # see what's present and what's missing
 bridge doctor --fix  # bootstrap the missing pieces (asks before each change)
+bridge verify        # run real smoke checks and verify every installed route
 ```
 
 The plain `context-bridge` name on npm belongs to an unrelated library, so the

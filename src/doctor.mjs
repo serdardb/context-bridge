@@ -42,6 +42,46 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   return anyRouteReady(r) ? 0 : 1;
 }
 
+/** Run strict real-agent verification for release and automation. */
+export async function runVerify(projectDir, { json = false } = {}) {
+  const r = collect(projectDir);
+  r.deep = true;
+  for (const agentId of AGENT_IDS) {
+    if (r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+  }
+  r.verify = verifyReport(r);
+  if (json) {
+    log(JSON.stringify(r, null, 2));
+    return r.verify.ok ? 0 : 1;
+  }
+  render(r);
+  log("");
+  log(r.verify.ok ? `${OK} Verification passed for ${r.verify.agents} installed agents and ${r.verify.routes} routes.` : `${BAD} Verification failed: ${r.verify.failures.join("; ")}`);
+  return r.verify.ok ? 0 : 1;
+}
+
+/** Pure verdict used by the CLI and tests without starting agent processes. */
+export function verifyReport(r) {
+  const installed = AGENT_IDS.filter((id) => r.agents[id]?.version);
+  const failures = [];
+  if (installed.length < 2) failures.push("fewer than two supported agents are installed");
+  for (const id of installed) {
+    const a = r.agents[id];
+    if (!a.smoke?.ok) failures.push(`${id} did not answer the smoke question`);
+    if (["missing", "mismatch"].includes(a.session?.status)) failures.push(`${id} session is ${a.session.status}`);
+    if (a.discovery?.status === "blind") failures.push(`${id} session discovery is blind`);
+  }
+  let routes = 0;
+  for (const from of installed) {
+    for (const to of installed) {
+      if (from === to) continue;
+      routes++;
+      if (!r.routes[`${from}->${to}`]?.configured) failures.push(`${from}->${to} is not configured`);
+    }
+  }
+  return { ok: failures.length === 0, agents: installed.length, routes, failures };
+}
+
 /** The two verdicts that mean a handoff through this agent would fail today. */
 const SESSION_BROKEN = new Set(["missing", "mismatch"]);
 

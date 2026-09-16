@@ -1,5 +1,5 @@
 import { runLoop } from "./launcher.mjs";
-import { runDoctor } from "./doctor.mjs";
+import { runDoctor, runVerify } from "./doctor.mjs";
 import { runHook } from "./hooks.mjs";
 import { handoff } from "./handoff.mjs";
 import {
@@ -54,6 +54,7 @@ ${cmd("")}Start the bridged session loop (resumes where you left off)
 ${AGENT_IDS.map((a) => `${cmd(`${a} [flags]`)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
 ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstraps,
 ${cont}--deep asks each agent a real one-line question )
+${cmd("verify [--json]")}Run strict real-agent smoke checks for every installed agent and route
 ${cmd("status")}Show project bridge status
 ${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
 ${cont}--json for the raw manifest; --lane <name> for another lane )
@@ -95,7 +96,7 @@ Docs and write-ups: https://dogrubakar.com/projects/context-bridge
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "status", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
+const COMMANDS = [...AGENT_IDS, "doctor", "verify", "status", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -133,6 +134,10 @@ export async function main(argv) {
         json: flags.has("--json"),
         deep: flags.has("--deep"),
       });
+      return;
+
+    case "verify":
+      process.exitCode = await runVerify(projectDir, { json: flags.has("--json") });
       return;
 
     case "status": {

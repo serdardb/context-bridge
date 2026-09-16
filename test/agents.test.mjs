@@ -346,6 +346,30 @@ test("doctor reports every agent and every directed route from the registry", as
   }
 });
 
+test("verify requires a real smoke result and every installed route", async () => {
+  const { verifyReport } = await import("../src/doctor.mjs");
+  const installed = ["claude", "codex"];
+  const agents = Object.fromEntries(
+    AGENT_IDS.map((id) => [id, {
+      version: installed.includes(id) ? id : null,
+      smoke: { ok: true },
+      session: { status: "readable" },
+      discovery: { status: "readable" },
+    }])
+  );
+  const routes = {};
+  for (const from of installed) for (const to of installed) if (from !== to) routes[`${from}->${to}`] = { configured: true };
+
+  assert.deepEqual(verifyReport({ agents, routes }), { ok: true, agents: 2, routes: 2, failures: [] });
+  agents.codex.smoke = { ok: false };
+  assert.equal(verifyReport({ agents, routes }).ok, false, "a configured but non-responsive agent cannot pass verification");
+  agents.codex.smoke = { ok: true };
+  delete routes["claude->codex"];
+  const routeReport = verifyReport({ agents, routes });
+  assert.equal(routeReport.ok, false, "a missing directed route cannot pass verification");
+  assert.ok(routeReport.failures.includes("claude->codex is not configured"));
+});
+
 test("an installed skill that drifted behind the repo is reported as stale, not ok", async () => {
   const { installedCopyStatus } = await import("../src/util.mjs");
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-skill-")));
