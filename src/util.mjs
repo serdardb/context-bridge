@@ -112,8 +112,15 @@ export function readJson(p, fallback = null) {
 export function writeJsonAtomic(p, obj) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
-  fs.renameSync(tmp, p);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
+    fs.renameSync(tmp, p);
+  } finally {
+    // A failed rename must not leave a plausible-looking state fragment behind.
+    // The destination remains untouched; the temporary file is only an
+    // implementation detail and is safe to remove whether rename succeeded or not.
+    try { fs.rmSync(tmp, { force: true }); } catch {}
+  }
 }
 
 /** Truncate a UTF-8 string in the middle, preserving head and tail. */

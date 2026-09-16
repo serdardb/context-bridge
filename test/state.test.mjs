@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureState, loadState, STATE_VERSION, safeCheckpointPath } from "../src/state.mjs";
+import { writeJsonAtomic } from "../src/util.mjs";
 
 test("ensureState creates bridge layout and appends .bridge/ to gitignore once", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-state-"));
@@ -20,6 +21,22 @@ test("ensureState creates bridge layout and appends .bridge/ to gitignore once",
   const gitignore = fs.readFileSync(path.join(project, ".gitignore"), "utf8");
   assert.equal(gitignore.match(/^\.bridge\/$/gm)?.length, 1);
   assert.equal(loadState(project).version, STATE_VERSION, "a literal here breaks on every bump; the constant is the claim");
+});
+
+test("an atomic write removes its temporary file when the destination cannot be replaced", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-atomic-")));
+  const destination = path.join(project, "state.json");
+  fs.mkdirSync(destination);
+
+  assert.throws(() => writeJsonAtomic(destination, { version: STATE_VERSION }), /EISDIR|directory/i);
+  assert.ok(fs.statSync(destination).isDirectory(), "a failed rename leaves the destination untouched");
+  assert.deepEqual(
+    fs.readdirSync(project),
+    ["state.json"],
+    "a failed atomic write must not leave a temporary state fragment"
+  );
+
+  fs.rmSync(project, { recursive: true });
 });
 
 // Lanes. The migration that folds a single-line project into its first lane is
