@@ -202,10 +202,12 @@ Every CLI's session format is vendor-internal. When a new CLI release changes be
 
 ## Release checklist
 
-1. `npm test` and `npm run check` pass. `prepublishOnly` runs both before any publish, so a broken build cannot reach the registry by accident.
-2. `npm pack --dry-run` includes `bin/`, `src/`, `plugin/`, `codex/`, `.claude-plugin/`, `docs/`.
-3. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
-4. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
-5. Hygiene scan: no machine-specific paths, no credentials, no tracked `.bridge/` state.
-6. Version bumps kept in sync across all four: `package.json`, `src/cli.mjs` `VERSION`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`.
-7. Update README and docs if user-visible behaviour changed. The published package is `@serdardb/context-bridge`, because the plain name belongs to an unrelated library; publishing needs `--access public`.
+1. Identify the previous release tag first: `git describe --tags --abbrev=0`.
+2. Write the changelog only from the actual implementation diff: `git diff --stat <previous-tag>..HEAD -- src bin plugin codex package.json package-lock.json .github`. Do not turn a session summary, roadmap or cumulative feature list into the current release notes. Every entry must be attributable to a changed file or be explicitly marked as documentation/CI/release work.
+3. `npm test` and `npm run check` pass. `prepublishOnly` runs both before any publish, so a broken build cannot reach the registry by accident.
+4. `npm pack --dry-run` includes `bin/`, `src/`, `plugin/`, `codex/`, `.claude-plugin/`, `docs/`.
+5. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
+6. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
+7. Hygiene scan: no machine-specific paths, no credentials, no tracked `.bridge/` state.
+8. Version bumps kept in sync across all four: `package.json`, `src/cli.mjs` `VERSION`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`.
+9. Update README and docs if user-visible behaviour changed. The published package is `@serdardb/context-bridge`, because the plain name belongs to an unrelated library; publishing needs `--access public`.
