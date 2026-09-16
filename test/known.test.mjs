@@ -42,6 +42,8 @@ test("handoff dry-run previews the route without changing state or checkpoints",
   const out = handoff(project, "codex", { from: "grok", decisions: "inspect", next: "continue", dryRun: true, checkTarget: () => {} });
   assert.match(out, /Dry run: would prepare Grok→Codex/);
   assert.match(out, /No state, checkpoint, pending marker/);
+  assert.match(out, /\.md/);
+  assert.match(out, /audit/);
   assert.equal(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"), before);
   assert.equal(fs.existsSync(checkpoints), beforeFiles !== null);
   if (beforeFiles) assert.deepEqual(fs.readdirSync(checkpoints).sort(), beforeFiles);

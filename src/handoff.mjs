@@ -170,6 +170,8 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const targetSlot = agentSlot(s, target);
   const streams = [];
   const work = [];
+  const auditRefs = {};
+  const auditMarks = {};
   let messageCount = 0;
   for (const otherId of AGENT_IDS) {
     if (otherId === target) continue;
@@ -178,6 +180,8 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     const adapter = adapterFor(otherId);
     const ref = adapter.hydrate(projectDir, slot);
     if (!ref) continue;
+    auditRefs[otherId] = ref;
+    auditMarks[otherId] = knownMark(s, target, otherId);
     const activity = adapter.activitySince(ref, knownMark(s, target, otherId));
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
     streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
@@ -195,6 +199,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const now = nowIso();
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
   const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
+  const deltaRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`);
   const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
   const roadBudget = deliverableBudget(
     via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
@@ -209,12 +214,15 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
   checkSummaryFits(summary, summaryBudget);
   const delta = composeForRoad({ ...sections, summaryBudget }, roadBudget, trailingFor);
-  const manifest = buildManifest(projectDir, { source: sourceId, target, sources: {} }, {});
+  const manifest = buildManifest(projectDir, { source: sourceId, target, sources: auditRefs }, auditMarks);
+  const auditRel = Object.keys(manifest.agents ?? {}).length
+    ? checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`)
+    : null;
   return [
     `${OK} Dry run: would prepare ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta.`,
     `  Road: ${via} (${kb(via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES)} limit), estimated delta ${kb(Buffer.byteLength(delta))}.`,
     `  Content: ${messageCount} conversation message(s), ${sections.work.length} work item(s), ${sections.decisions.length} decision note(s), ${sections.next.length} next note(s).`,
-    `  Files: ${fullRel}${manifest && Object.keys(manifest.agents ?? {}).length ? ` and audit manifest` : ""}.`,
+    `  Files: ${deltaRel}, ${fullRel}${auditRel ? `, ${auditRel}` : ""}.`,
     "  No state, checkpoint, pending marker, prune, or vendor session/import was changed.",
     `  Run without --dry-run to create the handoff for ${targetAdapter.displayName}.`,
   ].join("\n");
