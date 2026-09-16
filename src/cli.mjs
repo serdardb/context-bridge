@@ -55,7 +55,7 @@ ${AGENT_IDS.map((a) => `${cmd(`${a} [flags]`)}Start the loop with ${adapterFor(a
 ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstraps,
 ${cont}--deep asks each agent a real one-line question )
 ${cmd("verify [--json]")}Run strict real-agent smoke checks for every installed agent and route
-${cmd("status")}Show project bridge status
+${cmd("status [--json]")}Show project bridge status
 ${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
 ${cont}--json for the raw manifest; --lane <name> for another lane )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
@@ -143,6 +143,10 @@ export async function main(argv) {
     case "status": {
       const s = loadState(projectDir);
       if (!s) {
+        if (flags.has("--json")) {
+          log(JSON.stringify({ state: "absent" }));
+          return;
+        }
         log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
         return;
       }
@@ -156,6 +160,26 @@ export async function main(argv) {
       // and that was already on disk in the checkpoint filenames, unread.
       const debug = flags.has("--debug");
       const history = switchHistory(projectDir, s?.activeLane);
+      if (flags.has("--json")) {
+        const linked = AGENT_IDS.filter((id) => s.agents?.[id]?.id);
+        const pending = s.pendingHandoff
+          ? { kind: "handoff", target: s.pendingHandoff.target }
+          : s.pendingInjection?.seed
+            ? { kind: "seed" }
+            : s.pendingInjection
+              ? { kind: "injection", agent: s.pendingInjection.agent }
+              : null;
+        log(JSON.stringify({
+          state: "present",
+          project: s.project,
+          activeLane: s.activeLane,
+          activeAgent: s.activeAgent,
+          linkedAgents: linked,
+          pending,
+          recentSwitches: history.slice(0, 5).map((h) => ({ at: h.at, source: h.source, target: h.target })),
+        }, null, 2));
+        return;
+      }
       const lastOut = new Map(); // agent -> when it last handed its work onward
       for (const h of history) if (!lastOut.has(h.source)) lastOut.set(h.source, h.at);
 

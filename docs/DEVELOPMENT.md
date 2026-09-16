@@ -51,6 +51,7 @@ No runtime dependencies; plain Node ESM throughout.
 node bin/bridge.mjs --help
 node bin/bridge.mjs doctor
 node bin/bridge.mjs verify
+node bin/bridge.mjs status --json
 ```
 
 or via the linked global `bridge`.
@@ -101,6 +102,11 @@ question against every installed supported agent, checks that each agent's
 session and discovery readers are healthy, and verifies every directed route
 between the installed agents. Use `--json` for automation; it exits non-zero
 when any check fails.
+
+`bridge status --json` is the stable machine-readable status view. It reports
+the active lane, linked agent identifiers, pending work kind and recent switch
+directions without exposing vendor watermarks, session identifiers or full
+filesystem paths.
 
 Read the wording as load-bearing. A route says `CONFIGURED`, meaning installed, configured, and its session still parses; it used to say `READY`, which people reasonably read as proof that a switch would work. `--deep` asks each agent a real one-line question and reports `LIVE` or `BROKEN`. Two canaries run by default and cost about 98ms: one checks that each adapter can still read its linked session, the other that its discovery reader can still name what is stored on disk. An unreadable session takes its routes off green and the exit code with it.
 
