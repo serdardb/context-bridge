@@ -49,10 +49,9 @@ half.
 
 ### Release Notes
 
-- The package remains a developer preview at `0.12.2`; this section is not a
-  release announcement. Do not publish until the release roadmap gates pass,
-  the package version and tag are deliberately changed, and a clean-install
-  smoke test succeeds.
+- The package is a developer preview at `0.12.3`; the release roadmap gates
+  passed before publication, and the published package passed a clean-install
+  smoke test.
 - OpenCode still relies on its internal SQLite store schema. Doctor reports
   schema compatibility and bounded timeout failures; a supported vendor API
   boundary is not available yet.
