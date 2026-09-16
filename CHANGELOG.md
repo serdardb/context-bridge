@@ -6,6 +6,35 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [Unreleased]
+
+### Added
+
+- **Strict integration verification.** `bridge verify` runs a real headless
+  smoke question for every installed supported agent, checks session and
+  discovery readers, and verifies every directed route between installed agents.
+  `--json` is available for automation and exits non-zero on failure.
+- **Machine-readable project status.** `bridge status --json` reports the
+  active lane, linked agents, pending work kind and recent switch directions
+  without exposing vendor watermarks, session identifiers or absolute paths.
+
+### Fixed
+
+- Failed atomic state writes now remove their temporary file without replacing
+  the existing destination.
+- Verification tests cover both non-responsive agents and missing directed
+  routes, including the empty-project status shape.
+
+### Release Notes
+
+- The package remains a developer preview at `0.12.2`; this section is not a
+  release announcement. Do not publish until the release roadmap gates pass,
+  the package version and tag are deliberately changed, and a clean-install
+  smoke test succeeds.
+- OpenCode still relies on its internal SQLite store schema. Doctor reports
+  schema compatibility and bounded timeout failures; a supported vendor API
+  boundary is not available yet.
+
 ## [0.12.2] — 2026-08-06
 
 ### Fixed
