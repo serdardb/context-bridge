@@ -177,6 +177,15 @@ retries. The context is present when the TUI opens; the turn, uniquely among the
 five, is the person's to open, because OpenCode exposes no seam to open it for
 them.
 
+OpenCode's SQLite store is an intentional compatibility boundary, not a hidden
+supported API. The adapter checks the required schema before writing, bounds
+discovery and lock waits, performs writes transactionally, and reports the
+store's compatibility state through doctor. There is no alternate supported API
+to fall back to today; when the schema canary fails, delivery remains pending
+and the user is directed to update the bridge or inspect the vendor store rather
+than receiving a fabricated success. A future OpenCode API adapter is a separate
+compatibility project, not something this release silently claims to provide.
+
 The road has to be chosen *before* the agent starts, because nothing can be
 injected into a session already running, and whether a hook will fire cannot be
 known: Codex runs hooks only after the user reviews them once with `/hooks`,
