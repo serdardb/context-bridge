@@ -138,6 +138,13 @@ answer as delivered before it had been written.
 This ledger is also the difference from tools that copy a session on every
 switch. Copying needs no such bookkeeping because it starts over each time.
 
+Unlinked session ids are retained as cumulative `rejectedSessions` tombstones.
+They are deliberately not aged out by checkpoint retention: a delayed vendor hook
+must not resurrect a session the user explicitly forgot. The only removal is a
+deliberate relink of that exact id, which retires that one tombstone; unrelated
+ids remain rejected. This makes state size proportional to explicit unlink
+history, rather than silently trading correctness for a bounded file.
+
 ## Delivery: three roads, chosen in advance
 
 A delta reaches its target one of three ways.
