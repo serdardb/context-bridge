@@ -86,8 +86,8 @@ function exportSession(sessionId) {
  * (five were found alive during one debugging session), and because OpenCode is
  * client/server the TUI could attach to one of those stale servers and show its
  * state instead of the real one — old messages simply vanished on resume. The
- * CLI has no such split brain. The server path stays only as a fallback, now
- * with a trap so even a timeout takes its server down with it.
+ * CLI has no such split brain. The server path stays only as a fallback, and
+ * every probe inside it is bounded so a timeout takes its server down with it.
  */
 function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
   const raw = tryExec("opencode", ["session", "list", "--format", "json"], { timeout });
@@ -109,8 +109,17 @@ function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
  * Fallback for a machine where the CLI's `session list` cannot run (a missing
  * log dir made it error outright on one). The trap is the difference from the
  * old code: `kill` used to sit only on the success and failure lines, so a
- * `timeout` that SIGTERM'd bash never reached them and orphaned the server. On
- * EXIT/INT/TERM the trap always fires.
+ * `timeout` that SIGTERM'd bash never reached them and orphaned the server.
+ *
+ * The trap alone was not enough, because a trap only runs between commands. The
+ * server binds its port before it can answer on it, so an unbounded `curl`
+ * connected and then waited forever; bash sat inside the command substitution,
+ * the INT/TERM trap could not run, the EXIT trap that kills the server could not
+ * run, and `execFileSync`'s own timeout could not land either -- the caller hung
+ * too. Ten bash/curl/server triples were found alive on one machine, the oldest
+ * 42 hours old and still holding its port. Bounding `curl` is what makes every
+ * trap reachable again: the probe always returns, so the loop always advances to
+ * a point where a signal can be delivered and the server is always killed.
  */
 function listSessionsViaServer(timeout = 10000) {
   try {
@@ -123,7 +132,7 @@ function listSessionsViaServer(timeout = 10000) {
       `trap 'exit 124' INT TERM`,
       `for i in $(seq 1 40); do`,
       `  sleep 0.2 </dev/null >/dev/null 2>&1`,
-      `  RESP=$(curl -sf http://127.0.0.1:${port}/api/session 2>/dev/null)`,
+      `  RESP=$(curl -sf --connect-timeout 1 --max-time 2 http://127.0.0.1:${port}/api/session 2>/dev/null)`,
       `  if [ -n "$RESP" ]; then`,
       `    echo "$RESP" | grep '^{' || true`,
       `    exit 0`,

@@ -465,6 +465,72 @@ exit 1
   }
 });
 
+test("a fallback server that never answers does not outlive the discovery call", () => {
+  // The real server binds its port before it can answer on it, so `curl` connects
+  // and then waits. That is the shape that leaked: bash blocks inside the command
+  // substitution, and a trap only runs between commands, so neither the INT/TERM
+  // trap nor the EXIT trap that kills the server can fire -- and the caller's own
+  // timeout cannot land either. Ten bash/curl/server triples were found alive on
+  // one machine, the oldest 42 hours old and still holding its port.
+  //
+  // discover() is synchronous, so a regression here hangs the whole run rather
+  // than failing it. The call goes into a child process so the bug surfaces as a
+  // red test with a message instead of a CI timeout.
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "oc-leak-bin-"));
+  const pidFile = path.join(bin, "serve.pid");
+  const runner = path.join(bin, "run-discover.mjs");
+  const opencodeModule = new URL("../src/agents/opencode.mjs", import.meta.url).href;
+
+  fs.writeFileSync(
+    path.join(bin, "opencode"),
+    `#!/bin/sh
+if [ "$1" = "serve" ]; then
+  port=""
+  for arg in "$@"; do
+    case "$arg" in --port=*) port=\${arg#--port=} ;; esac
+  done
+  echo $$ > ${pidFile}
+  exec node -e 'require("net").createServer(() => {}).listen(Number(process.argv[1]), "127.0.0.1"); setInterval(() => {}, 1e9)' "$port"
+fi
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    runner,
+    `import { discover } from ${JSON.stringify(opencodeModule)};
+discover("/tmp/no-open-code-session", { allowServerFallback: true, timeout: 500 });
+`,
+  );
+
+  const alive = (pid) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  };
+
+  let servePid = null;
+  try {
+    const res = spawnSync(process.execPath, [runner], {
+      encoding: "utf8",
+      timeout: 20000,
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` },
+    });
+    assert.notEqual(res.signal, "SIGTERM", "discovery must honor its own timeout instead of blocking forever");
+    assert.equal(res.status, 0, res.stderr);
+
+    // The stub records its own pid before exec, so this is the server the fallback started.
+    servePid = Number(fs.readFileSync(pidFile, "utf8").trim());
+    assert.ok(Number.isFinite(servePid) && servePid > 0, "the stub server should have recorded its pid");
+
+    // Cleanup may land just after the call returns; allow for it, but bound the wait.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && alive(servePid)) spawnSync("sleep", ["0.1"]);
+    assert.equal(alive(servePid), false, "the fallback server must not outlive the bounded discovery call");
+  } finally {
+    if (servePid && alive(servePid)) { try { process.kill(servePid, "SIGKILL"); } catch {} }
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
 test("schemaHealth distinguishes a compatible, missing and incompatible store", () => {
   const previous = process.env.OPENCODE_HOME;
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-none-"));
