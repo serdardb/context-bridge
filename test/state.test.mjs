@@ -170,6 +170,36 @@ test("every intermediate state version migrates to the current schema with its o
   }
 });
 
+test("a migration write failure preserves the old state for every legacy version", () => {
+  for (const version of [1, 2, 3, 4]) {
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `bridge-migration-fail-v${version}-`)));
+    const bridge = path.join(project, ".bridge");
+    const stateFile = path.join(bridge, "state.json");
+    fs.mkdirSync(bridge, { recursive: true });
+    const original = JSON.stringify({
+      version,
+      project,
+      activeAgent: "claude",
+      agents: { claude: { id: "c-1", transcriptPath: "/tmp/c", mark: null, idle: false } },
+      knownBy: {},
+      git: { sha: "before" },
+    });
+    fs.writeFileSync(stateFile, original);
+
+    assert.doesNotThrow(
+      () => loadState(project, { write: () => { throw new Error("simulated migration disk failure"); } }),
+      `a failed migration write must not make v${version} unreadable in memory`
+    );
+    assert.equal(fs.readFileSync(stateFile, "utf8"), original, `v${version} source must remain intact after a failed write`);
+    assert.ok(fs.existsSync(`${stateFile}.v${version}.backup`), `v${version} backup must exist before the attempted write`);
+    assert.deepEqual(
+      fs.readdirSync(bridge).sort(),
+      ["state.json", `state.json.v${version}.backup`].sort(),
+      `v${version} migration failure must leave no partial state artifact`
+    );
+  }
+});
+
 // safeCheckpointPath is the single gate every state-derived checkpoint path passes
 // through before it is read, renamed, appended to or deleted. State can be corrupt
 // or hostile, so each of these shapes must be refused (null), and the legitimate

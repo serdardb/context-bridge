@@ -594,7 +594,7 @@ function readStateFile(projectDir) {
   return null;
 }
 
-export function loadState(projectDir) {
+export function loadState(projectDir, { write = writeJsonAtomic } = {}) {
   const p = statePath(projectDir);
   let s = readStateFile(projectDir);
   if (!s) return null;
@@ -623,7 +623,7 @@ export function loadState(projectDir) {
     } catch {
       // Backup already exists: keep it.
     }
-    writeJsonAtomic(p, s);
+    write(p, s);
     // Said once, here, because this is the only moment it is true and the only
     // moment the user can act on it. A migration is one-way: an older bridge
     // refuses a newer file outright rather than guessing at it, so somebody who
