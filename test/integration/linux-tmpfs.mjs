@@ -9,7 +9,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { projectIdentity, registeredProjects, adoptProject } from "../../src/storage.mjs";
 import { directoryIdentity } from "../../src/directory-identity.mjs";
-import { loadState, mutateProject } from "../../src/state.mjs";
+import { loadState, mutateProject, writeCheckpoint, safeCheckpointPath } from "../../src/state.mjs";
 import { watchProject } from "../../src/watch.mjs";
 
 assert.equal(process.platform, "linux");
@@ -42,6 +42,10 @@ try {
   run("lane", "new", "work");
   const original = projectIdentity(project).id;
   mutateProject(project, (state) => { state.tmpfsSecret = "retained original only"; });
+  const evidence = writeCheckpoint(project, "work", "2026-09-18T00-00-00-000Z-claude-to-codex.md", "complete evidence");
+  assert.equal(fs.readFileSync(safeCheckpointPath(project, evidence), "utf8"), "complete evidence");
+  assert.throws(() => writeCheckpoint(project, "work", "2026-09-18T00-00-00-000Z-claude-to-codex.md", "replacement"), { code: "EEXIST" });
+  assert.equal(fs.readFileSync(safeCheckpointPath(project, evidence), "utf8"), "complete evidence");
   assert.equal(registeredProjects().find((record) => record.id === original).availability, "present");
   assert.deepEqual(fs.readdirSync(project), []);
   fs.renameSync(project, moved);
@@ -86,7 +90,8 @@ try {
   assert.deepEqual(fs.readdirSync(copied), []);
   console.log(JSON.stringify({ passed: true, platform: process.platform, uid: process.getuid(),
     birthtime: false, cli: true, mcp: true, watch: true, replacementRefused: true,
-    identityRaceRefused: true, crossFilesystemAdoption: true, gitRequired: false, nativeAgents: false }));
+    identityRaceRefused: true, crossFilesystemAdoption: true, exclusivePublication: true,
+    gitRequired: false, nativeAgents: false, node: process.version, arch: process.arch }));
 } finally {
   await client?.close();
   fs.rmSync(root, { recursive: true, force: true });

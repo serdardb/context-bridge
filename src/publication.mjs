@@ -31,8 +31,17 @@ function loadRename() {
       const fn = lib.func("int renamex_np(const char *, const char *, unsigned int)");
       call = (from, to) => fn(from, to, 4); // RENAME_EXCL
     } else if (process.platform === "linux") {
-      const fn = lib.func("int renameat2(int, const char *, int, const char *, unsigned int)");
-      call = (from, to) => fn(-100, from, -100, to, 1); // AT_FDCWD, RENAME_NOREPLACE
+      try {
+        const fn = lib.func("int renameat2(int, const char *, int, const char *, unsigned int)");
+        call = (from, to) => fn(-100, from, -100, to, 1); // AT_FDCWD, RENAME_NOREPLACE
+      } catch (cause) {
+        // Older musl omits the wrapper even when the kernel supports renameat2.
+        // These numbers are Linux UAPI, not a weaker publication fallback.
+        const number = { arm64: 276, x64: 316 }[process.arch];
+        if (!number) throw cause;
+        const syscall = lib.func("long syscall(long, ...)");
+        call = (from, to) => syscall(number, "long", -100, "str", from, "long", -100, "str", to, "ulong", 1);
+      }
     } else throw new Error("No exclusive-rename backend for this platform.");
     return (from, to) => {
       if (call(from, to) === 0) return;

@@ -240,7 +240,9 @@ file, then syncs its directory. Unlike link-then-unlink publication, an exit
 immediately after the rename does not leave two names for the published inode.
 The backends are macOS `renamex_np(RENAME_EXCL)`, Linux
 `renameat2(RENAME_NOREPLACE)` and Windows `MoveFileExW` without replacement or
-copy fallback. Other platforms or unavailable native operations fail closed;
+copy fallback. On Linux arm64/x64, older libc builds lacking the `renameat2`
+wrapper use the same kernel syscall directly, retaining `RENAME_NOREPLACE`.
+Other platforms or unavailable native operations fail closed;
 there is no hardlink fallback. The Windows backend still requires native
 acceptance testing. The diagnostic lock probe also exercises exclusive
 publication and collision preservation.
