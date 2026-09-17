@@ -44,6 +44,25 @@ test("deterministic context evaluation fixtures pass", () => {
   assert.equal(report.passed, true);
   assert.equal(report.total, 3);
   assert.ok(report.results.every((result) => result.metrics.length >= 4));
+  for (const empty of [false, true]) {
+    const fixture = defaultFixtures()[1];
+    if (empty) fixture.sections.conversation = [{ role: "assistant", text: "x".repeat(9000) }];
+    const delta = composeDelta(fixture.sections, 8192);
+    const fullContext = composeFullContext(fixture.sections);
+    fixture.expected.messages = [];
+    assert.equal(evaluateArtifacts(fixture, { delta, fullContext }).passed, true);
+    const wrongCount = empty ? delta.replace(/'s 1 new message/, "'s 999 new messages") :
+      delta.replace(/\[\d+ earlier/, "[999 earlier");
+    const wrongSource = delta.replace(/from Claude |of Claude's /, empty ? "of Other's " : "from Other ");
+    const wrongTotal = empty ? wrongCount : delta.replace(/out of \d+ new/, "out of 999 new");
+    const duplicated = delta + "\n" + delta.split("\n").find((line) => /^(?:\[None of |\[\d+ earlier )/.test(line));
+    for (const damaged of [wrongCount, wrongTotal, wrongSource, duplicated]) {
+      assert.notEqual(damaged, delta);
+      const result = evaluateArtifacts(fixture, { delta: damaged, fullContext });
+      assert.equal(result.passed, false);
+      assert.ok(result.metrics.some((metric) => metric.name === "omission-counts-correct" && !metric.passed));
+    }
+  }
 });
 
 test("context evaluation fails when a required decision is absent", () => {

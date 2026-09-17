@@ -10,6 +10,19 @@ function metric(name, passed, detail) {
   return { name, passed: Boolean(passed), detail };
 }
 
+// This parses the controlled fixture's emitted notices independently of the
+// composer's wording helper. A warning's presence alone does not prove its count.
+function omissionCounts(delta) {
+  const notices = [];
+  for (const line of delta.split("\n")) {
+    const partial = /^\[(\d+) earlier messages? from (.+) are not included in this delta preview, out of (\d+) new messages?\. They are whole in the full context checkpoint\.\]$/.exec(line);
+    const empty = /^\[None of (.+)'s (\d+) new messages? could be carried: .+\. All of them are whole in the full context checkpoint\.\]$/.exec(line);
+    if (partial) notices.push({ label: partial[2], omitted: Number(partial[1]), candidates: Number(partial[3]) });
+    else if (empty) notices.push({ label: empty[1], omitted: Number(empty[2]), candidates: Number(empty[2]) });
+  }
+  return notices;
+}
+
 /**
  * Evaluate a deterministic handoff fixture. This is intentionally mechanical:
  * it does not pretend a keyword score is semantic understanding, but it catches
@@ -52,6 +65,17 @@ export function evaluateArtifacts(fixture, { delta, fullContext }) {
   const omissionExpected = expected.omission ?? omitted > 0;
   const omissionVisible = delta.includes("not included in this delta preview") || delta.includes("could be carried");
   metrics.push(metric("omission-disclosed", omissionExpected ? omissionVisible : !omissionVisible, omissionExpected ? "omitted messages are disclosed" : "no false omission notice"));
+  const notices = omissionCounts(delta);
+  const expectedNotices = plans.filter((plan) => plan.omitted > 0);
+  let countsCorrect = notices.length === expectedNotices.length;
+  for (const plan of expectedNotices) {
+    const index = notices.findIndex((notice) => notice.label === plan.label &&
+      notice.omitted === plan.omitted && notice.candidates === plan.candidates);
+    if (index < 0) countsCorrect = false;
+    else notices.splice(index, 1);
+  }
+  metrics.push(metric("omission-counts-correct", countsCorrect && notices.length === 0,
+    "each source's disclosed omitted and total counts match the selection plan"));
   metrics.push(metric("within-road-budget", Buffer.byteLength(delta) <= budget, `${Buffer.byteLength(delta)} / ${budget} bytes`));
   const layers = { summary: [], transcript: [], checkpoint: [] };
   for (const fact of expected.summary ?? []) {
