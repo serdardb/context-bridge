@@ -80,8 +80,8 @@ export function isInsideDir(child, parent) {
   let c, p;
   try {
     c = fs.realpathSync(child);
-  } catch {
-    return true; // does not exist: nothing to delete, nothing to escape
+  } catch (error) {
+    return error.code === "ENOENT"; // absent is not the same as unresolvable
   }
   try {
     p = fs.realpathSync(parent);
@@ -1004,12 +1004,18 @@ export function safeCheckpointsDir(projectDir, lane) {
     let st;
     try {
       st = fs.lstatSync(cur);
-    } catch {
-      break; // this component and everything below is absent; mkdir makes real dirs
+    } catch (cause) {
+      if (cause.code === "ENOENT") break; // mkdir may create absent components
+      throw new BridgeError("Checkpoint directory could not be inspected safely; no evidence was written.", {
+        code: "BRIDGE_CHECKPOINT_DIRECTORY_UNREADABLE", cause,
+      });
     }
     if (st.isSymbolicLink()) {
       throw new Error(`Refusing to write through a symlinked path component: ${path.relative(projectDir, cur)}`);
     }
+    if (!st.isDirectory()) throw new BridgeError("Checkpoint path contains a non-directory component; no evidence was written.", {
+      code: "BRIDGE_CHECKPOINT_DIRECTORY_UNREADABLE",
+    });
   }
   return dir;
 }

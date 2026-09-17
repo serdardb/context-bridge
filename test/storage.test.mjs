@@ -873,6 +873,23 @@ test("checkpoint and audit creation never overwrites existing evidence or follow
     const dir = checkpointsDir(project, "main");
     const outside = path.join(root, "unrelated.txt");
     fs.writeFileSync(outside, "unrelated content");
+    const realpath = fs.realpathSync, lstat = fs.lstatSync;
+    const store = bridgeDir(project);
+    for (const operation of ["realpathSync", "lstatSync"]) for (const code of ["EACCES", "EIO", "ELOOP"]) {
+      const before = fs.readdirSync(dir);
+      try {
+        fs[operation] = (p, ...args) => {
+          if (p === (operation === "realpathSync" ? store : dir)) {
+            throw Object.assign(new Error("private path detail"), { code });
+          }
+          return (operation === "realpathSync" ? realpath : lstat)(p, ...args);
+        };
+        if (operation === "realpathSync") fs.realpathSync.native = realpath.native;
+        assert.throws(() => writeCheckpoint(project, "main", `${stem}-failure.md`, "must not be written"),
+          /refusing|could not be inspected safely/);
+      } finally { fs.realpathSync = realpath; fs.lstatSync = lstat; }
+      assert.deepEqual(fs.readdirSync(dir), before, `${operation}/${code} must not authorize a write`);
+    }
     for (const kind of ["delta", "audit"]) {
       const name = kind === "delta" ? `${stem}.md` : `${stem}-audit.json`;
       const file = path.join(dir, name);

@@ -627,6 +627,11 @@ snapshot; `incomplete: false` means no skip was observed, not that deleted histo
 or concurrently arriving evidence was searched.
 
 `watch.mjs` polls authoritative status under an explicit `read-only` policy.
+Checkpoint containment treats only ENOENT as absence. Other realpath failures
+do not authorize access, and checkpoint creation rejects unreadable or
+non-directory path components instead of assuming mkdir can repair them.
+These checks do not provide descriptor-relative protection against a hostile
+process replacing a parent directory after validation.
 Switch history treats an absent checkpoint directory as empty, but refuses an
 unsafe directory or a failed enumeration. CLI status then exits nonzero rather
 than claiming no switches occurred; MCP reports an error and watch reports
