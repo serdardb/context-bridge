@@ -2,12 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { CODEX_HOME, claudeProjectDir, fileExists, BridgeError } from "./util.mjs";
+import { CODEX_HOME, claudeProjectDir, BridgeError } from "./util.mjs";
 
 /** Find the rollout jsonl for a Codex thread id by scanning ~/.codex/sessions. */
 export function findRolloutPath(threadId) {
   const root = path.join(CODEX_HOME, "sessions");
-  if (!fileExists(root)) return null;
   // sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl — walk newest-first
   const years = safeList(root).sort().reverse();
   for (const y of years) {
@@ -33,7 +32,6 @@ export function findRolloutPath(threadId) {
  */
 export function latestRolloutForProject(projectDir, { maxFiles = 300 } = {}) {
   const root = path.join(CODEX_HOME, "sessions");
-  if (!fileExists(root)) return null;
   const want = path.resolve(projectDir);
   let examined = 0;
   const years = safeList(root).sort().reverse();
@@ -47,11 +45,7 @@ export function latestRolloutForProject(projectDir, { maxFiles = 300 } = {}) {
           .filter((f) => f.startsWith("rollout-") && f.endsWith(".jsonl"))
           .map((f) => {
             const p = path.join(dir, f);
-            let mtime = 0;
-            try {
-              mtime = fs.statSync(p).mtimeMs;
-            } catch {}
-            return { p, f, mtime };
+            return { p, f, mtime: sessionMtime(p) };
           })
           .sort((a, b) => b.mtime - a.mtime);
         for (const { p, f, mtime } of files) {
@@ -76,7 +70,6 @@ export function latestRolloutForProject(projectDir, { maxFiles = 300 } = {}) {
  */
 export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 } = {}) {
   const root = path.join(CODEX_HOME, "sessions");
-  if (!fileExists(root)) return [];
   const want = path.resolve(projectDir);
   const out = [];
   let examined = 0;
@@ -93,10 +86,15 @@ export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 }
           );
           const p = path.join(dir, f);
           const meta = rolloutMeta(p);
-          if (!meta?.cwd || path.resolve(meta.cwd) !== want) continue;
-          if (sinceIso && (!meta.timestamp || meta.timestamp < sinceIso)) continue;
+          if (!meta?.cwd) throw incompleteDiscovery("A Codex session header could not be identified.");
+          if (path.resolve(meta.cwd) !== want) continue;
+          if (sinceIso && (!meta.timestamp || !Number.isFinite(Date.parse(meta.timestamp)))) {
+            throw incompleteDiscovery("A matching Codex session has no valid start time.");
+          }
+          if (sinceIso && Date.parse(meta.timestamp) < Date.parse(sinceIso)) continue;
           const threadId = meta.id || threadIdFromFilename(f);
-          if (threadId) out.push({ threadId, rolloutPath: p, startedAt: meta.timestamp });
+          if (!threadId) throw incompleteDiscovery("A matching Codex session has no usable identifier.");
+          out.push({ threadId, rolloutPath: p, startedAt: meta.timestamp });
         }
       }
     }
@@ -118,7 +116,6 @@ export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 }
  */
 export function rolloutHeadHealth({ sample = 5 } = {}) {
   const root = path.join(CODEX_HOME, "sessions");
-  if (!fileExists(root)) return { examined: 0, recognised: 0 };
   const found = [];
   for (const y of safeList(root).sort().reverse()) {
     for (const m of safeList(path.join(root, y)).sort().reverse()) {
@@ -146,16 +143,11 @@ function score(paths) {
 /** Claude transcripts for a project last written at or after `sinceMs`. */
 export function claudeTranscriptsSince(projectDir, sinceMs) {
   const dir = claudeProjectDir(projectDir);
-  if (!fileExists(dir)) return [];
   return safeList(dir)
     .filter((f) => f.endsWith(".jsonl"))
     .map((f) => {
       const p = path.join(dir, f);
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(p).mtimeMs;
-      } catch {}
-      return { p, mtime, sessionId: f.replace(/\.jsonl$/, "") };
+      return { p, mtime: sessionMtime(p), sessionId: f.replace(/\.jsonl$/, "") };
     })
     .filter((c) => c.mtime >= sinceMs);
 }
@@ -191,7 +183,9 @@ function rolloutMeta(p) {
           const r = JSON.parse(line);
           if (r.type === "session_meta") {
             const pl = r.payload || {};
-            return { id: pl.id || null, cwd: pl.cwd || null, timestamp: r.timestamp || null };
+            return { id: typeof pl.id === "string" && pl.id ? pl.id : null,
+              cwd: typeof pl.cwd === "string" && pl.cwd ? pl.cwd : null,
+              timestamp: typeof r.timestamp === "string" ? r.timestamp : null };
           }
         } catch {}
       }
@@ -200,6 +194,7 @@ function rolloutMeta(p) {
       if (lines.length > 5) break;
     }
   } catch {
+    throw incompleteDiscovery("A Codex session header could not be read.");
   } finally {
     if (fd !== undefined) {
       try {
@@ -218,12 +213,11 @@ function threadIdFromFilename(f) {
 /** Newest Claude session transcript for a project cwd (fallback discovery only). */
 export function latestClaudeTranscript(projectDir) {
   const dir = claudeProjectDir(projectDir);
-  if (!fileExists(dir)) return null;
   const files = safeList(dir)
     .filter((f) => f.endsWith(".jsonl"))
     .map((f) => {
       const p = path.join(dir, f);
-      return { p, mtime: fs.statSync(p).mtimeMs, sessionId: f.replace(/\.jsonl$/, "") };
+      return { p, mtime: sessionMtime(p), sessionId: f.replace(/\.jsonl$/, "") };
     })
     .sort((a, b) => b.mtime - a.mtime);
   return files[0] ?? null;
@@ -232,7 +226,24 @@ export function latestClaudeTranscript(projectDir) {
 function safeList(dir) {
   try {
     return fs.readdirSync(dir);
-  } catch {
-    return [];
+  } catch (error) {
+    // Missing roots and ordinary files encountered in the date hierarchy are
+    // not sessions. Permission/I/O failures cannot establish an empty store.
+    if (["ENOENT", "ENOTDIR"].includes(error.code)) return [];
+    throw incompleteDiscovery("The native session directory could not be listed.");
   }
+}
+
+function sessionMtime(file) {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) throw new Error("not a session file");
+    return stat.mtimeMs;
+  } catch { throw incompleteDiscovery("A listed native session file could not be inspected."); }
+}
+
+function incompleteDiscovery(reason) {
+  return new BridgeError(`${reason} Session discovery is incomplete; no automatic session selection is safe. Check native session storage access, then hand off from inside the intended session.`, {
+    code: "BRIDGE_DISCOVERY_INCOMPLETE", operation: "read native sessions",
+  });
 }

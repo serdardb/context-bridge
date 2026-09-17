@@ -452,6 +452,15 @@ Codex discovery returned null for every session on the machine, silently,
 because a failed parse looks exactly like "a different project". Each adapter
 now reports whether its discovery reader can still name what is stored on disk.
 
+Claude/Codex directory access and file inspection failures are not treated as
+empty session stores. Automatic Codex adoption also refuses an incomplete scan,
+unidentified header or matching session without a usable timestamp/identifier;
+it cannot establish uniqueness from the remaining readable candidates. The
+launcher explains the refusal and leaves the session unlinked. An incomplete
+or older unrecognised native record can therefore disable automatic fallback;
+handing off from inside the intended session remains the explicit recovery path.
+Discovery does not mutate vendor transcripts or prove a concurrent snapshot.
+
 An unreadable session takes its routes off green and the exit code with it.
 
 ## Per-agent launch flags

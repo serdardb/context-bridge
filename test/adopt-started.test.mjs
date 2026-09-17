@@ -170,6 +170,38 @@ test("rollout discovery preserves buffered text and refuses an incomplete candid
     env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
   });
   assert.equal(limitedOut.trim(), "BRIDGE_DISCOVERY_INCOMPLETE");
+
+  const unreadable = `
+    import fs from 'node:fs';
+    import assert from 'node:assert/strict';
+    const discovery = await import(${JSON.stringify(path.resolve("src/discover.mjs"))});
+    for (const method of ['readdirSync', 'openSync', 'readSync']) {
+      const original = fs[method];
+      fs[method] = () => { throw Object.assign(new Error('private physical path'), {code:'EACCES'}); };
+      try {
+        assert.throws(() => discovery.rolloutsForProjectSince(process.argv[1], null),
+          e => e.expected && e.code === 'BRIDGE_DISCOVERY_INCOMPLETE' && !e.message.includes('private physical path'));
+      } finally { fs[method] = original; }
+    }
+    const original = fs.readdirSync;
+    fs.readdirSync = () => { throw Object.assign(new Error('denied'), {code:'EACCES'}); };
+    try {
+      assert.throws(() => discovery.claudeTranscriptsSince(process.argv[1], 0), {code:'BRIDGE_DISCOVERY_INCOMPLETE'});
+      assert.throws(() => discovery.latestClaudeTranscript(process.argv[1]), {code:'BRIDGE_DISCOVERY_INCOMPLETE'});
+    } finally { fs.readdirSync = original; }
+    console.log('read failures refused');
+  `;
+  assert.equal(execFileSync(process.execPath, ["--input-type=module", "-e", unreadable, project], {
+    env: { ...process.env, CODEX_HOME: home, CLAUDE_CONFIG_DIR: home }, encoding: "utf8",
+  }).trim(), "read failures refused");
+  fs.writeFileSync(path.join(dir, "rollout-other.jsonl"), "{unfinished");
+  const malformed = `import(${JSON.stringify(path.resolve("src/discover.mjs"))}).then(({rolloutsForProjectSince}) => {
+    try { rolloutsForProjectSince(process.argv[1], null); console.log("accepted unknown session"); }
+    catch (error) { console.log(error.code); }
+  });`;
+  assert.equal(execFileSync(process.execPath, ["-e", malformed, project], {
+    env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
+  }).trim(), "BRIDGE_DISCOVERY_INCOMPLETE");
 });
 
 // The discovery canary. The 16KB bug proved that a reader can die without a
