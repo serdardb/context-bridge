@@ -130,7 +130,10 @@ function listSessionsViaServer(timeout = 10000) {
     const budgetSeconds = Math.max(0.05, timeout / 1000);
     const probeSeconds = Math.max(0.05, Math.min(2, budgetSeconds / 2));
     const sleepSeconds = Math.max(0.01, Math.min(0.2, budgetSeconds / 8));
-    const attempts = Math.max(1, Math.ceil(budgetSeconds / (probeSeconds + sleepSeconds)));
+    // Connection refusal can return immediately, not after probeSeconds. Allow
+    // enough startup polls for that fastest case; execFileSync still owns the
+    // overall deadline when a probe takes longer or never answers.
+    const attempts = Math.max(1, Math.ceil(budgetSeconds / sleepSeconds));
     const script = [
       `opencode serve --hostname=127.0.0.1 --port=${port} >/dev/null 2>&1 &`,
       `SERVER_PID=$!`,

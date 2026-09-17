@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   injectionSql,
   preResume,
@@ -159,21 +160,31 @@ test("preResume returns a runnable write when the store exists, and nothing when
 
 test("a locked OpenCode store fails quickly instead of hanging the injection", async () => {
   const { dir, db } = freshDb();
-  const holder = spawn("sqlite3", [db], { stdio: ["pipe", "ignore", "ignore"] });
+  const holder = spawn("sqlite3", [db], { stdio: ["pipe", "pipe", "ignore"] });
+  const closed = once(holder, "close");
   try {
-    holder.stdin.write("BEGIN EXCLUSIVE;\n");
-    // Give SQLite the turn needed to acquire the exclusive lock before the
-    // competing bridge write starts.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("SQLite did not acquire its fixture lock")), 5000);
+      let output = "";
+      holder.stdout.on("data", (data) => {
+        output += data;
+        if (output.includes("LOCK_ACQUIRED")) { clearTimeout(timer); resolve(); }
+      });
+      holder.once("close", () => { clearTimeout(timer); reject(new Error("SQLite lock holder exited early")); });
+      holder.stdin.write("BEGIN EXCLUSIVE;\n.print LOCK_ACQUIRED\n");
+    });
     const started = Date.now();
     const result = spawnSync("sqlite3", [db, injectionSql("ses_a", "locked", 1000)], {
       encoding: "utf8",
       timeout: 1000,
     });
-    assert.equal(result.status, 5, "SQLite reports a locked database");
+    assert.ifError(result.error);
+    assert.notEqual(result.status, 0, "a locked database must refuse the write");
+    assert.match(result.stderr, /database is locked/i, "SQLite CLI exit codes differ by build; the diagnostic must identify the lock");
     assert.ok(Date.now() - started < 1000, "a locked store must fail before the bridge timeout");
   } finally {
     holder.kill("SIGTERM");
+    await closed;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -465,7 +476,8 @@ exit 1
   }
 });
 
-test("a fallback server that never answers does not outlive the discovery call", () => {
+for (const responds of [false, true]) {
+test(`a delayed fallback server ${responds ? "is discovered and cleaned up" : "that never answers does not outlive discovery"}`, () => {
   // The real server binds its port before it can answer on it, so `curl` connects
   // and then waits. That is the shape that leaked: bash blocks inside the command
   // substitution, and a trap only runs between commands, so neither the INT/TERM
@@ -478,9 +490,22 @@ test("a fallback server that never answers does not outlive the discovery call",
   // red test with a message instead of a CI timeout.
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "oc-leak-bin-"));
   const pidFile = path.join(bin, "serve.pid");
+  const connectedFile = path.join(bin, "connected");
+  const serverScript = path.join(bin, "server.cjs");
   const runner = path.join(bin, "run-discover.mjs");
   const opencodeModule = new URL("../src/agents/opencode.mjs", import.meta.url).href;
 
+  fs.writeFileSync(serverScript, `
+const fs = require("node:fs");
+const transport = require(${JSON.stringify(responds ? "node:http" : "node:net")});
+const server = transport.createServer((request, response) => {
+  fs.writeFileSync(${JSON.stringify(connectedFile)}, "accepted");
+  ${responds ? `response.end(JSON.stringify({data: [{id: 'delayed-session', directory: '/tmp/no-open-code-session'}]}));` : ""}
+});
+// Fast connection refusals must not exhaust the whole startup budget before
+// this real server binds. Previously two 200ms waits ended discovery too early.
+setTimeout(() => server.listen(Number(process.argv[2]), "127.0.0.1"), 700);
+`);
   fs.writeFileSync(
     path.join(bin, "opencode"),
     `#!/bin/sh
@@ -490,7 +515,7 @@ if [ "$1" = "serve" ]; then
     case "$arg" in --port=*) port=\${arg#--port=} ;; esac
   done
   echo $$ > ${pidFile}
-  exec node -e 'require("net").createServer(() => {}).listen(Number(process.argv[1]), "127.0.0.1"); setInterval(() => {}, 1e9)' "$port"
+  exec "${process.execPath}" "${serverScript}" "$port"
 fi
 exit 1
 `,
@@ -499,7 +524,7 @@ exit 1
   fs.writeFileSync(
     runner,
     `import { discover } from ${JSON.stringify(opencodeModule)};
-discover("/tmp/no-open-code-session", { allowServerFallback: true, timeout: 500 });
+console.log(JSON.stringify(discover("/tmp/no-open-code-session", { allowServerFallback: true, timeout: 3000 })));
 `,
   );
 
@@ -516,20 +541,30 @@ discover("/tmp/no-open-code-session", { allowServerFallback: true, timeout: 500 
     });
     assert.notEqual(res.signal, "SIGTERM", "discovery must honor its own timeout instead of blocking forever");
     assert.equal(res.status, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout)?.id ?? null, responds ? "delayed-session" : null);
 
     // The stub records its own pid before exec, so this is the server the fallback started.
     servePid = Number(fs.readFileSync(pidFile, "utf8").trim());
     assert.ok(Number.isFinite(servePid) && servePid > 0, "the stub server should have recorded its pid");
+    // Prove startup polling reached the delayed server; exiting before it binds
+    // cannot stand in for either successful discovery or hung-probe cleanup.
+    assert.equal(fs.readFileSync(connectedFile, "utf8"), "accepted", "a probe must reach the delayed server");
 
     // Cleanup may land just after the call returns; allow for it, but bound the wait.
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline && alive(servePid)) spawnSync("sleep", ["0.1"]);
-    assert.equal(alive(servePid), false, "the fallback server must not outlive the bounded discovery call");
+    let processState = "";
+    if (process.platform === "linux") {
+      try { processState = fs.readFileSync(`/proc/${servePid}/status`, "utf8").match(/^State:\s*(.+)$/m)?.[1] ?? ""; } catch {}
+    }
+    assert.equal(alive(servePid), false, `the fallback server must not outlive the bounded discovery call${processState ? ` (Linux state: ${processState})` : ""}`);
   } finally {
+    if (!servePid && fs.existsSync(pidFile)) servePid = Number(fs.readFileSync(pidFile, "utf8").trim());
     if (servePid && alive(servePid)) { try { process.kill(servePid, "SIGKILL"); } catch {} }
     fs.rmSync(bin, { recursive: true, force: true });
   }
 });
+}
 
 test("schemaHealth distinguishes a compatible, missing and incompatible store", () => {
   const previous = process.env.OPENCODE_HOME;
