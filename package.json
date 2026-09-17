@@ -28,7 +28,7 @@
     "test:package": "node test/integration/package-install.mjs",
     "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;",
     "eval": "node bin/bridge.mjs eval --json",
-    "prepublishOnly": "npm test && npm run check && npm run eval && node bin/bridge.mjs release-check --ci --json && node bin/bridge.mjs verify --all --json && node bin/bridge.mjs eval --live codex --json"
+    "prepublishOnly": "node bin/bridge.mjs release-check --evidence --json"
   },
   "engines": {
     "node": ">=18.18"

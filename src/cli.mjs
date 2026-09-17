@@ -23,6 +23,7 @@ import { prepareSeed, writeSeed } from "./seed.mjs";
 import { runEvaluation } from "./eval.mjs";
 import { runLiveEvaluation } from "./live-eval.mjs";
 import { releaseChecks } from "./release.mjs";
+import { prepareReleaseEvidence, verifyReleaseEvidence } from "./release-evidence.mjs";
 import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
@@ -84,6 +85,8 @@ ${cmd("eval [--json]")}Evaluate deterministic context-quality fixtures (no agent
 ${cmd("eval --live codex [--json]")}Run opt-in synthetic live recall (provider usage applies)
 ${cont}--scenario decision tests final decisions, reasons and omitted context
 ${cmd("release-check [--json]")}Check release gates; --ci verifies HEAD on GitHub
+${cmd("release-prepare")}Run acceptance gates and record commit/package-bound evidence
+${cmd("release-check --evidence")}Verify local acceptance without calling agents or GitHub
 ${cmd("artifact export <file>")}Export redacted context; --sign-key <pem> adds an Ed25519 signature
 ${cmd("artifact import <file>")}Verify; --verify-key <pem> requires trusted signing, --apply stages it
 ${cmd("artifact cache <file>")}Verify and store by content hash outside the project; accepts --verify-key
@@ -282,7 +285,19 @@ export async function main(argv) {
       return;
     }
 
+    case "release-prepare": {
+      const report = prepareReleaseEvidence(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+      log(`${OK} Release acceptance recorded at ${report.file}. Valid for this candidate for 24 hours from preparation start.`);
+      return;
+    }
+
     case "release-check": {
+      if (flags.has("--evidence")) {
+        if (flags.has("--ci")) throw new Error("Use --ci for live verification or --evidence for recorded acceptance, not both.");
+        const report = verifyReleaseEvidence(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+        log(flags.has("--json") ? JSON.stringify(report, null, 2) : `${OK} Recorded acceptance matches this commit and package.`);
+        return;
+      }
       const report = releaseChecks(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), { verifyCI: flags.has("--ci") });
       if (flags.has("--json")) log(JSON.stringify(report, null, 2));
       else {

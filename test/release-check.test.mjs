@@ -6,6 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { releaseChecks, verifyReleaseCI } from "../src/release.mjs";
+import { prepareReleaseEvidence, verifyReleaseEvidence, releaseEvidencePath, RELEASE_GATES } from "../src/release-evidence.mjs";
 import { verifyReport } from "../src/doctor.mjs";
 import { AGENT_IDS } from "../src/agents/index.mjs";
 
@@ -24,10 +25,10 @@ test("release verification requires every supported agent, not just those instal
   }
 });
 
-test("the actual npm prepublish script stops at every failed gate before subsequent gates", () => {
+test("the actual npm prepublish script refuses missing acceptance without rerunning live gates", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-publish-gates-"));
   const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url)));
-  const expected = ["test", "check", "eval", "release-check --ci --json", "verify --all --json", "eval --live codex --json"];
+  const expected = ["release-check --evidence --json"];
   try {
     fs.mkdirSync(path.join(root, "bin"));
     fs.writeFileSync(path.join(root, "bin/bridge.mjs"), `import fs from "node:fs";
@@ -47,6 +48,52 @@ if (step === process.env.FAIL_GATE) process.exitCode = 1;
       const ran = fs.readFileSync(path.join(root, "gates.log"), "utf8").trim().split("\n");
       assert.deepEqual(ran, failure === "none" ? expected : expected.slice(0, expected.indexOf(failure) + 1));
     }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("release evidence binds actual package bytes and commit, expires and rejects failed preparation", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-release-receipt-"));
+  const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+  const executed = [];
+  const execute = (_root, [name]) => { executed.push(name); };
+  try {
+    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "bridge-receipt-fixture", version: "1.0.0", files: ["index.js", "payload.bin"] }));
+    fs.writeFileSync(path.join(root, "index.js"), "export const value = 1;\n");
+    fs.writeFileSync(path.join(root, ".gitignore"), "payload.bin\n");
+    fs.writeFileSync(path.join(root, "payload.bin"), "first build");
+    git("init", "-q"); git("add", ".");
+    git("-c", "user.name=Release Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
+    assert.throws(() => verifyReleaseEvidence(root), /No readable release acceptance/);
+    const prepared = prepareReleaseEvidence(root, { execute });
+    assert.deepEqual(executed, RELEASE_GATES.map(([name]) => name));
+    assert.equal(verifyReleaseEvidence(root).binding.packageSha256, prepared.binding.packageSha256);
+    const file = releaseEvidencePath(root), original = fs.readFileSync(file);
+    for (const change of [
+      (r) => { r.gates.pop(); },
+      (r) => { r.startedAt = new Date(Date.now() - 25 * 3600000).toISOString(); },
+      (r) => { r.binding.commit = "different"; },
+    ]) {
+      const receipt = JSON.parse(original); change(receipt);
+      fs.writeFileSync(file, JSON.stringify(receipt));
+      assert.throws(() => verifyReleaseEvidence(root), { code: "BRIDGE_RELEASE_EVIDENCE" });
+    }
+    fs.writeFileSync(file, original);
+    fs.writeFileSync(path.join(root, "payload.bin"), "different ignored build");
+    assert.throws(() => verifyReleaseEvidence(root), /different commit, package or toolchain/);
+    fs.writeFileSync(path.join(root, "payload.bin"), "first build");
+    fs.appendFileSync(path.join(root, "index.js"), "// dirty\n");
+    assert.throws(() => verifyReleaseEvidence(root), /clean working tree/);
+    fs.writeFileSync(path.join(root, "index.js"), "export const value = 1;\n");
+    executed.length = 0;
+    assert.throws(() => prepareReleaseEvidence(root, { execute: (_root, [name]) => {
+      executed.push(name); if (name === "agents") throw new Error("offline");
+    } }), /failed at agents/);
+    assert.deepEqual(executed, RELEASE_GATES.slice(0, 7).map(([name]) => name));
+    assert.equal(fs.existsSync(file), false, "a failed recheck invalidates previous success");
+    assert.throws(() => prepareReleaseEvidence(root, { execute: () => {
+      fs.writeFileSync(path.join(root, "payload.bin"), "changed during checks");
+    } }), /changed during release preparation/);
+    assert.equal(fs.existsSync(file), false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
