@@ -9,7 +9,7 @@ import { withKernelLockSync, waitForLock } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
 export { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
-import { ensureProjectStore, ensureRuntimeStore, migrateLegacyStorage, runtimeStorageBase, runtimeStoreDir } from "./storage.mjs";
+import { ensureProjectStore, ensureRuntimeStore, migrateLegacyStorage, runtimeStorageBase, runtimeStoreDir, withProjectRuntimeLock } from "./storage.mjs";
 
 export const STATE_VERSION = 5;
 
@@ -687,6 +687,10 @@ function readAndUpgradeState(projectDir, { write = writeJsonAtomic, readOnly = f
 
 /** Load or create state (creates the machine-local runtime layout on first use). */
 export function ensureState(projectDir) {
+  return withProjectRuntimeLock(projectDir, () => ensureStateOwned(projectDir));
+}
+
+function ensureStateOwned(projectDir) {
   if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") migrateLegacyStorage(projectDir);
   let s = loadState(projectDir);
   if (!s) {
@@ -751,9 +755,11 @@ export function saveState(projectDir, s) {
 function withStateLock(projectDir, fn, { staleMs = 15000 } = {}) {
   // Resolve/migrate before choosing the lock path. Otherwise a direct hook or
   // project mutation can lock the legacy store and then write a different one.
-  ensureRuntimeStore(projectDir);
-  const lock = statePath(projectDir) + ".lock";
-  return withKernelLockSync(lock + ".guard", () => withStatePidLock(lock, fn, staleMs));
+  return withProjectRuntimeLock(projectDir, () => {
+    ensureRuntimeStore(projectDir);
+    const lock = statePath(projectDir) + ".lock";
+    return withKernelLockSync(lock + ".guard", () => withStatePidLock(lock, fn, staleMs));
+  });
 }
 
 function withStatePidLock(lock, fn, staleMs) {
@@ -1053,12 +1059,14 @@ export function latestCheckpoint(projectDir, lane = DEFAULT_LANE, kind = "fullCo
 /** Create a checkpoint without replacing evidence; returns its logical path. */
 export function writeCheckpoint(projectDir, lane, name, content) {
   assertCheckpointName(name);
-  if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
-  const dir = safeCheckpointsDir(projectDir, lane);
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, name);
-  writeFileExclusive(file, content);
-  return checkpointRel(projectDir, lane, name);
+  return withProjectRuntimeLock(projectDir, () => {
+    if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
+    const dir = safeCheckpointsDir(projectDir, lane);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    writeFileExclusive(file, content);
+    return checkpointRel(projectDir, lane, name);
+  });
 }
 
 /** How far SOURCE's stream has been packed for TARGET, or null if never. */

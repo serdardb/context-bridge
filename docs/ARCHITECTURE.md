@@ -330,6 +330,15 @@ The existing PID marker protocol runs entirely inside this guard to serialize
 stale-owner recovery among updated processes. Do not run old writers during
 upgrade: old binaries do not participate in the new kernel protocol.
 
+Global state initialization/mutation, checkpoint publication and legacy migration
+also hold `locks/<UUID>.runtime.guard` outside the project data directory. The
+synchronous project scope is reentrant for nested checkpoint writes; its kernel
+guard is not. Identity is checked again after acquiring ownership. The scope
+precedes state/migration locks, and registry access inside it never waits for a
+runtime lock while holding the registry lock. This is a lifecycle prerequisite,
+not a project-removal guarantee: launcher append paths and evidence operations
+outside these scopes still need participation before retirement is exposed.
+
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
 integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the

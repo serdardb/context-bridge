@@ -13,6 +13,7 @@ import { withKernelLockSync, waitForLock } from "./locking.mjs";
 export const PROJECT_ID_KEY = "context-bridge.project-id";
 const REGISTRY_VERSION = 1;
 const PROJECT_UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const runtimeOwners = new Set();
 
 function configuredHome() {
   if (process.env.CONTEXT_BRIDGE_HOME) return path.resolve(process.env.CONTEXT_BRIDGE_HOME);
@@ -22,6 +23,27 @@ function configuredHome() {
 
 export function storageHome() {
   return configuredHome();
+}
+
+/** Own synchronous runtime work on a guard outside the movable project store. */
+export function withProjectRuntimeLock(projectDir, fn) {
+  if (process.env.CONTEXT_BRIDGE_STORAGE === "project") return fn();
+  const scope = JSON.stringify([storageHome(), fs.realpathSync.native(path.resolve(projectDir))]);
+  // State callbacks write checkpoints and resolve storage again. Only this
+  // project scope is reentrant; the lower-level kernel locks stay nonreentrant.
+  if (runtimeOwners.has(scope)) return fn();
+  const identity = projectIdentity(projectDir, { create: true });
+  const guard = path.join(storageHome(), "locks", `${identity.id}.runtime.guard`);
+  return withKernelLockSync(guard, () => {
+    if (projectIdentity(projectDir).id !== identity.id) {
+      throw new BridgeError("Project identity changed while waiting for runtime ownership. Retry after inspecting the project registry.", {
+        code: "BRIDGE_PROJECT_IDENTITY_CHANGED", nextCommand: "bridge project list --json",
+      });
+    }
+    runtimeOwners.add(scope);
+    try { return fn(); }
+    finally { runtimeOwners.delete(scope); }
+  });
 }
 
 function git(projectDir, args) {
@@ -334,9 +356,11 @@ export function runtimeStoreDir(projectDir, { createIdentity = false } = {}) {
 
 /** Create the global registry entry explicitly, at the first mutating boundary. */
 export function ensureProjectStore(projectDir) {
-  const dir = projectStoreDir(projectDir, { createIdentity: true });
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return withProjectRuntimeLock(projectDir, () => {
+    const dir = projectStoreDir(projectDir, { createIdentity: true });
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  });
 }
 
 /** Prepare a mutating runtime boundary, including one-time legacy migration. */
@@ -346,8 +370,10 @@ export function ensureRuntimeStore(projectDir) {
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   }
-  migrateLegacyStorage(projectDir);
-  return ensureProjectStore(projectDir);
+  return withProjectRuntimeLock(projectDir, () => {
+    migrateLegacyStorage(projectDir);
+    return ensureProjectStore(projectDir);
+  });
 }
 
 export function runtimeStorageBase(projectDir) {
@@ -592,7 +618,7 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
   const journal = path.join(storageHome(), "migrations", `${identity.id}.json`);
   const target = projectStoreDir(projectDir);
   if (!hasLegacy && readMigrationJournal(journal, identity.id, legacy, target) === null) return false;
-  return withMigrationLock(identity.id, () => {
+  return withProjectRuntimeLock(projectDir, () => withMigrationLock(identity.id, () => {
     if (hasLegacyRuntime(legacy)) assertLegacyInactive(legacy);
     const record = readMigrationJournal(journal, identity.id, legacy, target);
     if (record !== null) {
@@ -669,7 +695,7 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
       // The original legacy tree and any verified global target remain intact.
       throw err;
     }
-  });
+  }));
 }
 
 // The verified backup is the recovery inventory. A restart may see a subset of

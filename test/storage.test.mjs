@@ -398,6 +398,54 @@ test("failed registry and migration lock stamping releases the lock and permits 
   }
 });
 
+test("project runtime ownership excludes real state and checkpoint writers outside the store", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-runtime-owner-"));
+  const project = path.join(root, "project"), home = path.join(root, "home");
+  fs.mkdirSync(project);
+  try {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { spawnSync } from 'node:child_process';
+      import { withProjectRuntimeLock, projectIdentity, projectStoreDir } from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
+      import { ensureState, mutateState, writeCheckpoint } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+      const project = ${JSON.stringify(project)};
+      const stateUrl = ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+      ensureState(project);
+      const id = projectIdentity(project).id;
+      const guard = path.join(${JSON.stringify(home)}, 'locks', id + '.runtime.guard');
+      const run = operation => spawnSync(process.execPath, ['--input-type=module', '-e',
+        'import { mutateState, writeCheckpoint } from ' + JSON.stringify(stateUrl) + ';' + operation],
+        { encoding: 'utf8', timeout: 5000, env: { ...process.env, CONTEXT_BRIDGE_LOCK_TIMEOUT_MS: '100' } });
+      const operations = [
+        'mutateState(' + JSON.stringify(project) + ', "main", s => { s.activeAgent = "codex"; });',
+        'writeCheckpoint(' + JSON.stringify(project) + ', "main", "2026-09-17T00-00-00-000Z-claude-to-codex.md", "evidence");'
+      ];
+      withProjectRuntimeLock(project, () => {
+        mutateState(project, 'main', () => {
+          writeCheckpoint(project, 'main', '2026-09-17T01-00-00-000Z-claude-to-codex.md', 'nested evidence');
+        });
+        for (const operation of operations) {
+          const result = run(operation);
+          assert.equal(result.status, 1, result.stderr);
+          assert.match(result.stderr, /BRIDGE_LOCK_TIMEOUT/);
+        }
+      });
+      assert.ok(!guard.startsWith(projectStoreDir(project) + path.sep));
+      const before = fs.statSync(guard);
+      for (const operation of operations) {
+        const result = run(operation);
+        assert.equal(result.status, 0, result.stderr);
+      }
+      assert.equal(fs.statSync(guard).ino, before.ino);
+    `], { encoding: "utf8", timeout: 15000, env: {
+      ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
+    } });
+    assert.equal(child.status, 0, child.stderr);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("journal staging from an abruptly exited real writer is cleaned only after group protection is resolved", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-journal-stage-"));
   const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
