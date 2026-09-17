@@ -17,10 +17,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { adapterFor } from "./agents/index.mjs";
-import { checkpointRel, safeCheckpointsDir, safeCheckpointPath, readableCheckpointsDir, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
+import { checkpointRel, safeCheckpointsDir, safeCheckpointPath, latestCheckpoint, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { ensureRuntimeStore, gitMetadata } from "./storage.mjs";
 import { assertCheckpointName } from "./checkpoint-kinds.mjs";
-import { writeFileExclusive } from "./util.mjs";
+import { writeFileExclusive, BridgeError } from "./util.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -105,24 +105,16 @@ export function writeManifest(projectDir, lane, stem, manifest) {
 
 /** The newest manifest in one lane, which is what `bridge inspect` defaults to. */
 export function latestManifest(projectDir, lane = DEFAULT_LANE) {
-  // Refuse to read through a symlinked lane checkpoints directory that resolves
-  // outside the runtime root — the read twin of the write guard above.
-  const dir = readableCheckpointsDir(projectDir, lane);
-  if (!dir) return null;
-  let names;
+  const found = latestCheckpoint(projectDir, lane, "audit");
+  if (!found) return null;
   try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith(CHECKPOINT_KINDS.audit));
+    const manifest = JSON.parse(found.text);
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("Invalid audit object.");
+    return { rel: found.rel, manifest };
   } catch {
-    return null;
-  }
-  if (!names.length) return null;
-  const newest = names.sort().at(-1);
-  const rel = checkpointRel(projectDir, lane, newest);
-  const file = safeCheckpointPath(projectDir, rel);
-  try {
-    return file ? { rel, manifest: JSON.parse(fs.readFileSync(file, "utf8")) } : null;
-  } catch {
-    return null;
+    throw new BridgeError("The latest audit manifest is invalid. Repair or restore its evidence before retrying.", {
+      code: "BRIDGE_AUDIT_INVALID", operation: "read audit manifest", path: found.rel,
+    });
   }
 }
 

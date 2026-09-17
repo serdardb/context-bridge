@@ -4,7 +4,7 @@
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, writeFileExclusive, nowIso, fileExists, log, dim, OK, processAlive } from "./util.mjs";
+import { writeJsonAtomic, writeFileExclusive, nowIso, fileExists, log, dim, OK, processAlive, BridgeError } from "./util.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
@@ -125,7 +125,8 @@ export function isLexicallyInside(child, parent) {
  *   - realpath containment of `.bridge` itself refuses a symlinked root;
  *   - realpath containment of the file's directory refuses a symlinked directory
  *     component that points outside. (A symlinked leaf file is left to the caller:
- *     unlink and rename act on the link, not its target, and a read is contained.)
+ *     unlink and rename act on the link, not its target; readers must separately
+ *     reject linked leaf files before reading.)
  */
 export function safeCheckpointPath(projectDir, rel) {
   if (typeof rel !== "string" || rel === "") return null;
@@ -1016,6 +1017,38 @@ export function readableCheckpointsDir(projectDir, lane) {
   const dir = checkpointsDir(projectDir, lane);
   if (!isInsideDir(bridge, runtimeStorageBase(projectDir)) || !isInsideDir(dir, bridge)) return null;
   return dir;
+}
+
+/** Missing history is normal; unsafe or unreadable history is not empty. */
+export function latestCheckpoint(projectDir, lane = DEFAULT_LANE, kind = "fullContext") {
+  const suffix = CHECKPOINT_KINDS[kind];
+  if (!suffix) throw new Error("Unknown checkpoint kind.");
+  const fail = () => new BridgeError("The latest checkpoint could not be read safely. Check stored evidence before retrying; no older checkpoint was substituted.", {
+    code: "BRIDGE_CHECKPOINT_UNREADABLE", operation: "read latest checkpoint",
+  });
+  const dir = readableCheckpointsDir(projectDir, lane);
+  if (!dir) throw fail();
+  let names;
+  try { names = fs.readdirSync(dir).filter(name => name.endsWith(suffix)).sort(); }
+  catch (error) { if (error.code === "ENOENT") return null; throw fail(); }
+  if (!names.length) return null;
+  const name = names.at(-1);
+  const rel = checkpointRel(projectDir, lane, name);
+  const file = safeCheckpointPath(projectDir, rel);
+  if (!file) throw fail();
+  let fd;
+  try {
+    const before = fs.lstatSync(file);
+    if (!before.isFile() || before.nlink !== 1) throw fail();
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) throw fail();
+    const text = fs.readFileSync(fd, "utf8");
+    const after = fs.fstatSync(fd);
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw fail();
+    return { rel, text };
+  } catch { throw fail(); }
+  finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 /** Create a checkpoint without replacing evidence; returns its logical path. */

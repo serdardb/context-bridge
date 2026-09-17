@@ -500,6 +500,16 @@ creating state or building a separate index. Filters cover lane, agent, UTC
 date and the branch recorded in the handoff's audit, not the current checkout.
 Results are bounded line snippets, not complete transcripts or an importance
 ranking. Checkpoint retention therefore also bounds the available history.
+
+Lane seed preparation and `inspect` share a strict latest-checkpoint reader.
+It rejects linked/nonregular files, verifies the opened inode against the named
+file and refuses observed size/mtime changes during reading. Missing history is
+allowed; unsafe or unreadable history is an error, not an empty briefing or a
+reason to silently use an older checkpoint. Invalid audit JSON is likewise an
+error. Seed preparation reads state without performing schema-upgrade writes;
+the CLI prepares the seed before creating its destination lane. This is not a
+transactional snapshot across all source files or protection against every
+hostile parent-directory replacement.
 The result includes `incomplete` and logical-file `issues`: unreadable or unsafe
 entries and unknown metadata required by a branch filter are not silent misses.
 CLI returns available matches but exits 1 for an incomplete scan. MCP preserves

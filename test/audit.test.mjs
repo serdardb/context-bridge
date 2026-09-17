@@ -8,8 +8,10 @@ import { handoff } from "../src/handoff.mjs";
 import { defaultState, saveState, loadState, ensureState, checkpointsDir, safeCheckpointPath } from "../src/state.mjs";
 import { AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "audit");
+const BRIDGE = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 
 // The manifest exists because the delta has to stay small and evidence has to
 // stay reachable. Everything in it is taken from the agents' own files, never
@@ -146,6 +148,13 @@ test("inspect finds the newest manifest and survives a project with none", () =>
   writeManifest(project, "main", "2026-07-21T10-00-00-000Z-a-to-b", { manifestVersion: 1, source: "a", target: "b", agents: {} });
   writeManifest(project, "main", "2026-07-21T11-00-00-000Z-b-to-c", { manifestVersion: 1, source: "b", target: "c", agents: {} });
   assert.equal(latestManifest(project).manifest.source, "b", "the newest one is the one anybody means");
+  const file = path.join(checkpointsDir(project), "2026-07-21T11-00-00-000Z-b-to-c-audit.json");
+  fs.writeFileSync(file, "{broken");
+  assert.throws(() => latestManifest(project), { code: "BRIDGE_AUDIT_INVALID" }, "never silently substitute the older manifest");
+  const invalid = spawnSync(process.execPath, [BRIDGE, "inspect", "--json"], { cwd: project, encoding: "utf8" });
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stdout + invalid.stderr, /latest audit manifest is invalid/);
+  assert.doesNotMatch(invalid.stdout + invalid.stderr, /No audit manifest yet/);
 });
 
 /** A project whose Codex session is a small but real rollout. */
@@ -438,7 +447,12 @@ test("writeManifest refuses, and latestManifest will not read, through a symlink
     /symlinked path component/,
     "a symlinked lane checkpoints dir must be refused for manifests too"
   );
-  assert.equal(latestManifest(project, "feature"), null, "inspect will not read a manifest through a symlinked lane dir");
+  assert.throws(() => latestManifest(project, "feature"), { code: "BRIDGE_CHECKPOINT_UNREADABLE" });
+  fs.unlinkSync(checkpointsDir(project, "feature"));
+  fs.mkdirSync(checkpointsDir(project, "feature"));
+  fs.symlinkSync(path.join(outside, "2026-01-01T00-00-00-000Z-claude-to-codex-audit.json"),
+    path.join(checkpointsDir(project, "feature"), "2026-01-01T00-00-00-000Z-claude-to-codex-audit.json"));
+  assert.throws(() => latestManifest(project, "feature"), { code: "BRIDGE_CHECKPOINT_UNREADABLE" }, "a safe directory does not make its leaf links safe");
 
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });

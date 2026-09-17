@@ -6,12 +6,10 @@
 // cannot dangle it. A seed says plainly that it is a briefing, not a transcript,
 // because a seed that read as a complete account of the work would be the very
 // failure this project keeps removing from itself.
-import fs from "node:fs";
-import path from "node:path";
 import {
   loadState,
   laneOf,
-  readableCheckpointsDir,
+  latestCheckpoint,
   writeCheckpoint,
   mutateState,
   CHECKPOINT_KINDS,
@@ -22,24 +20,6 @@ import { nowIso } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
 const stamp = () => nowIso().replace(/[:.]/g, "-");
-
-/** Newest full-context checkpoint text in a lane, or null. Read through the gate. */
-function newestFullContext(projectDir, lane) {
-  const dir = readableCheckpointsDir(projectDir, lane);
-  if (!dir) return null;
-  let names;
-  try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith(CHECKPOINT_KINDS.fullContext));
-  } catch {
-    return null;
-  }
-  if (!names.length) return null;
-  try {
-    return fs.readFileSync(path.join(dir, names.sort().at(-1)), "utf8");
-  } catch {
-    return null;
-  }
-}
 
 /**
  * The body under `## <name>` up to the next `## ` heading, trimmed. Decisions and
@@ -122,10 +102,10 @@ export function composeSeed(sourceLane, { decisions, next, gitLines, files }) {
  * cannot be built leaves no half-made lane behind. Returns { doc, stem, report }.
  */
 export function prepareSeed(projectDir, sourceLane) {
-  const s = loadState(projectDir);
+  const s = loadState(projectDir, { readOnly: true });
   const src = laneOf(s, sourceLane);
   const git = gitDelta(projectDir, src?.git?.sha ?? null);
-  const fullText = newestFullContext(projectDir, sourceLane);
+  const fullText = latestCheckpoint(projectDir, sourceLane, "fullContext")?.text;
   const decisions = sectionBody(fullText, "Decisions");
   const next = sectionBody(fullText, "Next");
   const files = sourceFiles(projectDir, sourceLane);

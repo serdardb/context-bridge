@@ -105,6 +105,26 @@ test("bridge lane new --seed validates the source before creating anything", () 
   assert.equal(run("new", "x", "--seed", "x").status, 1, "a lane cannot seed from itself");
   assert.equal(loadState(project).lanes.x, undefined, "and no half-made lane is left behind");
 
+  const before = fs.readFileSync(statePath(project));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  const secret = path.join(project, "private-context.txt");
+  fs.writeFileSync(secret, "## Decisions\nPRIVATE_OUTSIDE_EVIDENCE\n");
+  const full = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-full.md");
+  const audit = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-audit.json");
+  for (const mode of ["symlink", "hardlink", "directory", "invalid-audit"]) {
+    if (mode === "symlink") fs.symlinkSync(secret, full);
+    else if (mode === "hardlink") fs.linkSync(secret, full);
+    else if (mode === "directory") fs.mkdirSync(full);
+    else { fs.writeFileSync(full, FULL); fs.writeFileSync(audit, "{broken"); }
+    const refused = run("new", "x", "--seed", "main");
+    assert.equal(refused.status, 1, `${mode} must not become starter context`);
+    assert.doesNotMatch(refused.stdout + refused.stderr, /PRIVATE_OUTSIDE_EVIDENCE/);
+    assert.deepEqual(fs.readFileSync(statePath(project)), before);
+    assert.equal(fs.existsSync(path.join(bridgeDir(project), "lanes", "x")), false);
+    fs.rmSync(full, { recursive: mode === "directory" });
+    fs.rmSync(audit, { force: true });
+  }
+
   const ok = run("new", "feature", "--seed", "main");
   assert.equal(ok.status, 0, "seeding from an existing lane works");
   assert.ok(loadState(project).lanes.feature.pendingInjection?.seed, "feature carries an unbound seed");
