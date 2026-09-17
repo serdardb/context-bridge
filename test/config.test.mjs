@@ -46,9 +46,11 @@ test("concurrent config clear and save preserve the other agent in Git-less glob
     while (!predicate()) { assert.ok(Date.now() < deadline, "fixture barrier timed out"); await delay(10); }
   };
   const a = start(`
-    const read=fs.readFileSync; let reads=0;
+    const read=fs.readFileSync, open=fs.openSync; let reads=0, configFd;
+    fs.openSync=function(name,...args){const fd=open.call(fs,name,...args);
+      if(name===${JSON.stringify(file)})configFd=fd; return fd;};
     fs.readFileSync=function(name,...args){const result=read.call(fs,name,...args);
-      if(name===${JSON.stringify(file)} && ++reads===2){
+      if((name===${JSON.stringify(file)} || (typeof name==='number' && name===configFd)) && ++reads===2){
         fs.writeFileSync(${JSON.stringify(ready)},'ready');
         const end=Date.now()+7000;
         while(!fs.existsSync(${JSON.stringify(release)})){ if(Date.now()>end)throw new Error('release timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); }
@@ -74,13 +76,17 @@ test("concurrent config clear and save preserve the other agent in Git-less glob
 });
 
 test("unreadable config is not silently interpreted as empty", (t) => {
-  const read = fs.readFileSync;
-  t.mock.method(fs, "readFileSync", (file, ...args) => {
+  const stat = fs.lstatSync;
+  t.mock.method(fs, "lstatSync", (file, ...args) => {
     if (String(file).endsWith("config.json")) throw Object.assign(new Error("private details"), { code: "EACCES" });
-    return read.call(fs, file, ...args);
+    return stat.call(fs, file, ...args);
   });
   const project = fresh();
-  assert.throws(() => loadConfig(project), /could not be read; saved arguments were not reset/);
+  assert.throws(() => loadConfig(project), error => {
+    assert.equal(error.code, "BRIDGE_CONFIG_UNREADABLE");
+    assert.equal(error.cause?.code, "EACCES");
+    return true;
+  });
 });
 
 test("a failed config flush preserves saved arguments and releases the writer lock", (t) => {
@@ -203,6 +209,28 @@ test("a corrupt config complains instead of silently discarding saved flags", ()
   fs.writeFileSync(file, JSON.stringify({ version: 1, metadata: { keep: true }, agents: {} }));
   saveArgs(project, "codex", ["--model", "example"]);
   assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).metadata, { keep: true });
+  const outside = path.join(project, "external-config.json");
+  const raw = JSON.stringify({ version: 1, agents: { codex: { args: ["--model", "external-private-marker"] } } });
+  fs.writeFileSync(outside, raw);
+  for (const kind of ["symlink", "hardlink", "directory"]) {
+    fs.rmSync(file, { recursive: true });
+    if (kind === "symlink") fs.symlinkSync(outside, file);
+    else if (kind === "hardlink") fs.linkSync(outside, file);
+    else fs.mkdirSync(file);
+    assert.throws(() => loadConfig(project), { code: "BRIDGE_CONFIG_UNREADABLE" });
+    assert.throws(() => saveArgs(project, "codex", ["--model", "replacement"]), { code: "BRIDGE_CONFIG_UNREADABLE" });
+    assert.throws(() => clearArgs(project, "codex"), { code: "BRIDGE_CONFIG_UNREADABLE" });
+    const result = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "args"], {
+      cwd: project, encoding: "utf8", env: process.env,
+    });
+    assert.equal(result.status, 1, kind);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes("external-private-marker"));
+    assert.equal(fs.readFileSync(outside, "utf8"), raw);
+    if (kind === "symlink") fs.unlinkSync(file);
+    else fs.rmSync(file, { recursive: true });
+    fs.writeFileSync(file, "{}");
+  }
+  fs.unlinkSync(outside);
 });
 
 // Changing the model and bypassing every approval both arrive through the same

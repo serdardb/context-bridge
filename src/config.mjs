@@ -53,12 +53,27 @@ function configPath(projectDir) {
 /** Read the project's config, or an empty one. Never throws on a missing file. */
 export function loadConfig(projectDir) {
   let raw;
+  let fd;
+  let observed = false;
   try {
-    raw = fs.readFileSync(configPath(projectDir), "utf8");
+    const file = configPath(projectDir);
+    const before = fs.lstatSync(file);
+    observed = true;
+    if (!before.isFile() || before.nlink !== 1) throw new Error("Unsafe configuration entry");
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error("Configuration changed during open");
+    }
+    raw = fs.readFileSync(fd, "utf8");
+    const after = fs.fstatSync(fd);
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw new Error("Configuration changed during read");
   } catch (error) {
-    if (error.code === "ENOENT") return { version: CONFIG_VERSION, agents: {} };
-    throw new BridgeError("Bridge config could not be read; saved arguments were not reset.");
-  }
+    if (!observed && error.code === "ENOENT") return { version: CONFIG_VERSION, agents: {} };
+    throw new BridgeError("Bridge config could not be read safely; saved arguments were not reset.", {
+      code: "BRIDGE_CONFIG_UNREADABLE", operation: "read saved agent arguments", cause: error,
+    });
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
   let parsed;
   try {
     parsed = JSON.parse(raw);
