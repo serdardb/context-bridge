@@ -11,11 +11,11 @@ import {
   emptyLane,
   switchActiveLane,
   removeLaneFromState,
+  removeLane,
   unlinkAgent,
   laneSummaries,
   laneHasLiveLauncher,
   isValidLaneName,
-  isInsideDir,
   bridgeDir,
   DEFAULT_LANE,
 } from "./state.mjs";
@@ -981,22 +981,15 @@ function runLane(projectDir, args, flags, seedSource) {
       log(dim("  Re-run with --yes to confirm, or --dry-run to preview."));
       return 1;
     }
+    let removal;
     try {
-      mutateProject(projectDir, (disk) => removeLaneFromState(disk, name));
+      removal = removeLane(projectDir, name);
     } catch (e) {
       log(`${BAD} ${e.message}`);
       return 1;
     }
-    // Delete the lane's own directory, but only when it truly resolves inside this
-    // project's .bridge — never follow a symlink out on the way to an rm -rf.
-    if (isInsideDir(laneDir, bridgeDir(projectDir))) {
-      try {
-        fs.rmSync(laneDir, { recursive: true, force: true });
-      } catch {
-        // the state entry is already gone; a leftover directory is not fatal
-      }
-    }
     log(`${OK} Removed lane ${bold(name)}.`);
+    if (!removal.filesRemoved) log(`${WARN} Lane files were retained (${removal.reason}); inspect ${laneDir} before reusing the name.`);
     return 0;
   }
 

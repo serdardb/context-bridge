@@ -555,9 +555,30 @@ test("bridge lane rm deletes the lane directory only after --yes, and never main
   assert.equal(refused.status, 1, "rm without --yes refuses");
   assert.ok(fs.existsSync(laneDir), "and deletes nothing");
 
-  const removed = run("rm", "feature", "--yes");
-  assert.equal(removed.status, 0);
+  const removed = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import { spawnSync } from 'node:child_process';
+    import { main } from ${JSON.stringify(new URL("../src/cli.mjs", import.meta.url).href)};
+    const remove = fs.rmSync;
+    let contender;
+    fs.rmSync = (file, options) => {
+      if (file === ${JSON.stringify(path.join(bridgeDir(project), "lanes", "feature"))}) {
+        contender = spawnSync(process.execPath, [${JSON.stringify(BRIDGE_BIN)}, 'lane', 'new', 'feature'], {
+          cwd: process.cwd(), encoding: 'utf8', timeout: 10000,
+          env: { ...process.env, CONTEXT_BRIDGE_LOCK_TIMEOUT_MS: '150' },
+        });
+      }
+      return remove(file, options);
+    };
+    await main(['lane', 'rm', 'feature', '--yes']);
+    assert.ok(contender, 'must cross the actual deletion boundary');
+    assert.equal(contender.status, 1, 'lane recreation must remain excluded until file deletion finishes');
+    assert.match(contender.stdout + contender.stderr, /timed out|timeout/i);
+  `], { cwd: project, encoding: "utf8", timeout: 20000 });
+  assert.equal(removed.status, 0, removed.stdout + removed.stderr);
   assert.equal(fs.existsSync(path.join(bridgeDir(project), "lanes", "feature")), false, "the whole lane directory is gone");
+  assert.equal(run("new", "feature").status, 0, "recreation succeeds after deletion releases ownership");
 
   const main = run("rm", "main", "--yes");
   assert.equal(main.status, 1, "main is never removable");

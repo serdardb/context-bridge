@@ -891,20 +891,42 @@ export function updateState(projectDir, fn) {
  * concurrent per-lane writes.
  */
 export function mutateProject(projectDir, fn) {
+  return withStateLock(projectDir, () => mutateProjectLocked(projectDir, fn));
+}
+
+function mutateProjectLocked(projectDir, fn) {
+  let disk = readStateFile(projectDir);
+  if (!disk) throw new Error("No bridge state in this project yet. Run 'bridge' first.");
+  preserveSchemaBackup(projectDir, disk.version);
+  while (disk.version < STATE_VERSION) {
+    const migrate = MIGRATIONS[disk.version];
+    if (!migrate) throw new Error(`Bridge state version ${disk.version} cannot be upgraded by this bridge.`);
+    disk = migrate(disk);
+  }
+  if (!disk.lanes) disk.lanes = {};
+  fn(disk);
+  disk.updatedAt = nowIso();
+  writeJsonAtomic(statePath(projectDir), disk);
+  return disk;
+}
+
+/** Keep lane recreation excluded until the removed lane's files are gone. */
+export function removeLane(projectDir, name) {
+  assertLaneName(name);
   return withStateLock(projectDir, () => {
-    let disk = readStateFile(projectDir);
-    if (!disk) throw new Error("No bridge state in this project yet. Run 'bridge' first.");
-    preserveSchemaBackup(projectDir, disk.version);
-    while (disk.version < STATE_VERSION) {
-      const migrate = MIGRATIONS[disk.version];
-      if (!migrate) throw new Error(`Bridge state version ${disk.version} cannot be upgraded by this bridge.`);
-      disk = migrate(disk);
+    mutateProjectLocked(projectDir, (disk) => {
+      if (laneHasLiveLauncher(disk, name)) throw new Error(`A bridge launcher is running on lane '${name}'.`);
+      removeLaneFromState(disk, name);
+    });
+    const root = bridgeDir(projectDir);
+    const dir = path.join(root, "lanes", name);
+    if (!isInsideDir(dir, root)) return { filesRemoved: false, reason: "unsafe lane directory" };
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return { filesRemoved: true };
+    } catch (error) {
+      return { filesRemoved: false, reason: error.code ?? "directory removal failed" };
     }
-    if (!disk.lanes) disk.lanes = {};
-    fn(disk);
-    disk.updatedAt = nowIso();
-    writeJsonAtomic(statePath(projectDir), disk);
-    return disk;
   });
 }
 
