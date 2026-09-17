@@ -342,6 +342,13 @@ hold runtime ownership. This is a lifecycle prerequisite, not a project-removal
 guarantee: evidence operations outside these scopes still need participation
 before retirement is exposed.
 
+Artifact application holds runtime ownership across import-lock acquisition,
+state publication and recovery. Its order is runtime -> import -> state; nested
+checkpoint writes reuse the runtime scope. Read-only artifact verification does
+not acquire runtime ownership. Handoff preparation completion also owns the
+project scope; preparation creation/recovery resolve their checkpoint directory
+inside state ownership rather than carrying a pre-lock resolved path into it.
+
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
 integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the

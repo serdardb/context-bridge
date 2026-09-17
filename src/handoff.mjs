@@ -733,13 +733,13 @@ export function handoff(
   } catch (error) {
     try {
       discardPreparation(projectDir, intendedDeltaRel, written);
-      finishPreparation(journal);
+      finishPreparation(projectDir, journal);
     }
     catch { error.message += " Preparation cleanup could not be verified; remaining evidence was retained."; }
     throw error;
   }
   // Committed evidence must not be rolled back if bookkeeping cleanup fails.
-  try { finishPreparation(journal); }
+  try { finishPreparation(projectDir, journal); }
   catch { lines.push(`${WARN} Handoff committed; preparation journal cleanup will be retried after this process exits.`); }
 
   if (previousInjection) {

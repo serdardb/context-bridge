@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome } from "./storage.mjs";
+import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome, withProjectRuntimeLock } from "./storage.mjs";
 import { ensureState, loadState, mutateState, withProjectStateReadLock, readableCheckpointsDir, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { writeJsonAtomic, writeFileExclusive } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
@@ -325,6 +325,10 @@ export function importArtifact(filePath, { projectDir = null, apply = false, lan
   const artifact = verifyArtifact(filePath, { verifyKey });
   if (!apply) return { applied: false, hash: artifact.integrity.payload, artifact };
   if (!projectDir) throw new Error("A project directory is required when applying an artifact.");
+  return withProjectRuntimeLock(projectDir, () => applyArtifact(artifact, projectDir, lane));
+}
+
+function applyArtifact(artifact, projectDir, lane) {
   ensureState(projectDir);
   const targetIdentity = projectIdentity(projectDir, { create: true });
   const importKey = digest({ artifact: artifact.integrity.payload, project: targetIdentity.id, lane });

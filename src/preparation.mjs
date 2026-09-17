@@ -5,6 +5,7 @@ import { AGENT_IDS } from "./agents/index.mjs";
 import { safeCheckpointsDir, safeCheckpointPath, checkpointRel, withProjectStateReadLock,
   CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
 import { writeFileExclusive } from "./util.mjs";
+import { withProjectRuntimeLock } from "./storage.mjs";
 
 const STEM = new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")})$`);
 const hash = (content) => createHash("sha256").update(content).digest("hex");
@@ -35,9 +36,9 @@ export function beginPreparation(projectDir, lane, stem, contents) {
     if (!Object.values(CHECKPOINT_KINDS).includes(suffix)) throw new Error("Invalid preparation file kind.");
     return { suffix, hash: hash(content) };
   });
-  const dir = safeCheckpointsDir(projectDir, lane);
-  const journal = path.join(dir, journalName(stem));
-  withProjectStateReadLock(projectDir, () => {
+  return withProjectStateReadLock(projectDir, () => {
+    const dir = safeCheckpointsDir(projectDir, lane);
+    const journal = path.join(dir, journalName(stem));
     fs.mkdirSync(dir, { recursive: true });
     for (const { suffix } of files) {
       try { fs.lstatSync(path.join(dir, stem + suffix)); }
@@ -45,18 +46,18 @@ export function beginPreparation(projectDir, lane, stem, contents) {
       throw new Error("Preparation evidence already exists; refusing to replace it.");
     }
     writeFileExclusive(journal, JSON.stringify({ version: 1, pid: process.pid, lane, stem, files }));
+    return journal;
   });
-  return journal;
 }
 
-export function finishPreparation(journal) {
-  fs.unlinkSync(journal);
+export function finishPreparation(projectDir, journal) {
+  return withProjectRuntimeLock(projectDir, () => fs.unlinkSync(journal));
 }
 
 /** Recover only dead writers with unchanged, unreferenced evidence. */
 export function recoverPreparations(projectDir, lane) {
-  const dir = safeCheckpointsDir(projectDir, lane);
   return withProjectStateReadLock(projectDir, (disk) => {
+    const dir = safeCheckpointsDir(projectDir, lane);
     if (!disk) throw new Error("Handoff recovery requires readable project state.");
     let names;
     try { names = fs.readdirSync(dir); } catch (error) { if (error.code === "ENOENT") return; throw error; }
@@ -91,7 +92,7 @@ export function recoverPreparations(projectDir, lane) {
         });
         for (const file of files) if (file) fs.unlinkSync(file);
       }
-      finishPreparation(journal);
+      finishPreparation(projectDir, journal);
     }
   });
 }
