@@ -11,6 +11,7 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import {
@@ -22,6 +23,7 @@ import {
   sharedSkillPath,
   installedCopyStatus,
   BridgeError,
+  transcriptStamp,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
 
@@ -158,7 +160,7 @@ export function activitySince(ref, mark) {
       for (const f of filesFromToolEvent(e)) patchedFiles.add(f);
     }
   }
-  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 };
+  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 && !readStatus.unreadable };
 }
 
 /**
@@ -274,13 +276,16 @@ export function idleAfter(ref, sinceIso) {
 
 function* readJsonl(p, required = false, readStatus = null) {
   let content;
+  let before;
   try {
+    if (readStatus) before = transcriptStamp({ transcriptPath: p });
     content = fs.readFileSync(p, "utf8");
+    if (readStatus && !isDeepStrictEqual(before, transcriptStamp({ transcriptPath: p }))) readStatus.unreadable = true;
   } catch (cause) {
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });
-    if (readStatus && cause.code !== "ENOENT") readStatus.unreadable = true;
+    if (readStatus && (before !== undefined || cause.code !== "ENOENT")) readStatus.unreadable = true;
     return;
   }
   for (const line of content.split("\n")) {

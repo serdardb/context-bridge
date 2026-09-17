@@ -82,13 +82,19 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
         grok: { type: "tool_completed", tool_name: "run_terminal_command", outcome: "success" },
         antigravity: { step_index: 1, type: "RUN_COMMAND", content: "completed successfully" },
       }[id];
-      for (const mode of ["missing", "denied", "malformed", "empty", ...(id === "grok" ? ["hunk-denied"] : [])]) {
+      for (const mode of ["missing", "denied", "malformed", "empty", ...(id === "grok" ? ["hunk-denied", "hunk-rewritten", "hunk-removed"] : [])]) {
+        const hunkFile = path.join(project, "hunk_records.jsonl");
+        fs.rmSync(hunkFile, { force: true });
+        if (mode.startsWith("hunk-")) fs.writeFileSync(hunkFile, JSON.stringify({ authorType: "agent", filePath: path.join(project, "changed.txt") }) + "\n");
         if (mode === "missing") fs.rmSync(file, { force: true });
         else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : "");
         fs.readFileSync = (...args) => {
           if (args[0] === file && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
           if (args[0] === path.join(project, "hunk_records.jsonl") && mode === "hunk-denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
-          return read(...args);
+          const content = read(...args);
+          if (args[0] === hunkFile && mode === "hunk-rewritten") fs.writeFileSync(hunkFile, "");
+          if (args[0] === hunkFile && mode === "hunk-removed") fs.unlinkSync(hunkFile);
+          return content;
         };
         const m = buildManifest(project, { source: id, target: "opencode", sources: {
           [id]: { transcriptPath: file, eventsPath: file },

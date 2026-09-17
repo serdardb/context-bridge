@@ -403,13 +403,17 @@ For references with transcript/event files, collection compares device, inode,
 size, mtime and ctime before capturing the mark and after extracting activity. A change
 makes the source partial and withholds its watermark, including ordinary appends
 that may therefore be repeated. This is bounded change detection, not an atomic
-read: other auxiliary files (such as Grok hunk records) and database-backed references are not covered by that
+read: other auxiliary files and database-backed references are not covered by that
 stamp. Audit collection compares the same stamp against the conversation's and
 around its own read. Failed, partial or changed audit sources are disclosed in
 the delta and manifest, and withhold the source watermark. Error-only manifests
 are retained even when no commands could be recovered. A file changing after
 these checks or auxiliary evidence changing independently remains outside this
 bounded detection; this is not a vendor transaction.
+Grok also stamps each JSONL read that contributes activity or audit, including
+its optional hunk record. Initial absence of that optional file is normal;
+disappearance or modification during its read marks the audit incomplete. These
+per-file checks still do not establish a single shared instant across files.
 OpenCode uses the optional adapter `snapshotSource(ref)` operation instead:
 handoff captures the mark first, then one export is held privately for that
 ref's probe, activity and audit reads. A later handoff creates a fresh ref and
