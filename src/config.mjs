@@ -67,7 +67,21 @@ export function loadConfig(projectDir) {
     // than a silent reset that throws their saved flags away.
     throw new BridgeError("Bridge config is not valid JSON. Fix or delete it; contents are hidden because saved arguments may contain credentials.");
   }
-  return { version: parsed.version ?? CONFIG_VERSION, agents: parsed.agents ?? {} };
+  return validateConfig(parsed);
+}
+
+function validateConfig(config) {
+  const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(config)) throw new BridgeError("Bridge config must contain an object; saved arguments were preserved.");
+  if (config.version !== undefined && config.version !== CONFIG_VERSION) {
+    throw new BridgeError("Bridge config uses an unsupported version; refusing to downgrade or replace saved arguments.");
+  }
+  const agents = config.agents ?? {};
+  if (!object(agents) || Object.values(agents).some(entry => !object(entry) ||
+      (entry.args !== undefined && (!Array.isArray(entry.args) || Array.from(entry.args).some(arg => typeof arg !== "string" || arg.includes("\0")))))) {
+    throw new BridgeError("Bridge config has invalid saved arguments; contents were preserved and values are hidden.");
+  }
+  return { ...config, version: CONFIG_VERSION, agents };
 }
 
 export function saveConfig(projectDir, config) {
@@ -75,7 +89,7 @@ export function saveConfig(projectDir, config) {
 }
 
 function writeConfig(projectDir, config) {
-  writeJsonAtomic(configPath(projectDir), { ...config, version: CONFIG_VERSION });
+  writeJsonAtomic(configPath(projectDir), validateConfig(config));
 }
 
 /** The saved flags for one agent, always an array. */

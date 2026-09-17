@@ -265,6 +265,9 @@ concurrent changes to different agents are preserved. Only a missing file means
 empty settings; unreadable or malformed config fails instead of silently
 discarding saved arguments. The exported whole-config save operation replaces
 the supplied snapshot, while per-agent operations merge against current data.
+Unsupported config versions and invalid argument structures also refuse rather
+than being rewritten as version 1. Versionless legacy objects remain readable;
+unrecognized metadata on a valid current-version object survives per-agent edits.
 
 State contains references only:
 

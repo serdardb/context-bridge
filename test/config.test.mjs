@@ -191,6 +191,18 @@ test("a corrupt config complains instead of silently discarding saved flags", ()
   ensureRuntimeStore(project);
   fs.writeFileSync(path.join(bridgeDir(project), "config.json"), "{ not json");
   assert.throws(() => loadConfig(project), /not valid JSON/);
+  const file = path.join(bridgeDir(project), "config.json");
+  for (const value of [null, [], { version: 2, agents: {} }, { agents: [] }, { agents: { codex: { args: [null] } } }]) {
+    const raw = JSON.stringify(value);
+    fs.writeFileSync(file, raw);
+    assert.throws(() => loadConfig(project), { expected: true });
+    assert.throws(() => saveArgs(project, "codex", ["--model", "example"]), { expected: true });
+    assert.throws(() => clearArgs(project, "codex"), { expected: true });
+    assert.equal(fs.readFileSync(file, "utf8"), raw, "refusal preserves even unsupported future configuration");
+  }
+  fs.writeFileSync(file, JSON.stringify({ version: 1, metadata: { keep: true }, agents: {} }));
+  saveArgs(project, "codex", ["--model", "example"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).metadata, { keep: true });
 });
 
 // Changing the model and bypassing every approval both arrive through the same
