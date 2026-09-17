@@ -1,7 +1,8 @@
 // Native session/thread discovery. Users never see any of these IDs.
 import fs from "node:fs";
 import path from "node:path";
-import { CODEX_HOME, claudeProjectDir, fileExists } from "./util.mjs";
+import { StringDecoder } from "node:string_decoder";
+import { CODEX_HOME, claudeProjectDir, fileExists, BridgeError } from "./util.mjs";
 
 /** Find the rollout jsonl for a Codex thread id by scanning ~/.codex/sessions. */
 export function findRolloutPath(threadId) {
@@ -85,7 +86,11 @@ export function rolloutsForProjectSince(projectDir, sinceIso, { maxFiles = 300 }
         const dir = path.join(root, y, m, d);
         for (const f of safeList(dir)) {
           if (!f.startsWith("rollout-") || !f.endsWith(".jsonl")) continue;
-          if (++examined > maxFiles) return out;
+          // A partial list cannot establish that a candidate is unique.
+          if (++examined > maxFiles) throw new BridgeError(
+            "Codex session discovery reached its scan limit; no session was automatically linked. Hand off from inside the intended session.",
+            { code: "BRIDGE_DISCOVERY_INCOMPLETE", operation: "discover started Codex session" }
+          );
           const p = path.join(dir, f);
           const meta = rolloutMeta(p);
           if (!meta?.cwd || path.resolve(meta.cwd) !== want) continue;
@@ -173,10 +178,11 @@ function rolloutMeta(p) {
     fd = fs.openSync(p, "r");
     let text = "";
     const buf = Buffer.alloc(CHUNK);
+    const decoder = new StringDecoder("utf8");
     for (let offset = 0; offset < CEILING; offset += CHUNK) {
       const n = fs.readSync(fd, buf, 0, CHUNK, offset);
       if (n <= 0) break;
-      text += buf.toString("utf8", 0, n);
+      text += decoder.write(buf.subarray(0, n));
       const lines = text.split("\n");
       // Only complete lines can be parsed; the last fragment waits for more.
       for (const line of lines.slice(0, -1)) {

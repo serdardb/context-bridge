@@ -349,7 +349,8 @@ function linkStartedSession(projectDir, agent, startedAt, childPid) {
   let candidates = [];
   try {
     candidates = adapter.adoptStartedSession(projectDir, { startedAt, childPid }) ?? [];
-  } catch {
+  } catch (error) {
+    if (error.code === "BRIDGE_DISCOVERY_INCOMPLETE") log(`${WARN} ${error.message}`);
     return false;
   }
   if (candidates.length !== 1) {

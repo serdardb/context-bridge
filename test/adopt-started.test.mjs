@@ -121,9 +121,10 @@ function registry(home, entries) {
 // on 0.144.6 it runs to 22KB. Every parse failed, so no rollout ever matched a
 // project and Codex discovery returned null for every session on the machine —
 // silently, because a failed parse looks exactly like "a different project".
-test("a rollout head record larger than one buffer is still parsed", () => {
+test("rollout discovery preserves buffered text and refuses an incomplete candidate list", (t) => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-home-"));
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "codex-project-"));
+  t.after(() => { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(project, { recursive: true, force: true }); });
   const dir = path.join(home, "sessions", "2026", "07", "21");
   fs.mkdirSync(dir, { recursive: true });
 
@@ -146,6 +147,29 @@ test("a rollout head record larger than one buffer is still parsed", () => {
     encoding: "utf8",
   });
   assert.deepEqual(JSON.parse(out), [id], "a 22KB head record must not read as a foreign project");
+
+  // Put the first byte of a multibyte cwd character at the end of a read.
+  const unicodeProject = path.join(project, "\u00e7");
+  const prefix = '{"type":"session_meta","padding":"';
+  const beforeCwd = '","payload":{"id":"unicode","cwd":';
+  const padding = 65535 - Buffer.byteLength(prefix + beforeCwd + JSON.stringify(unicodeProject).split("\u00e7")[0]);
+  const unicodeLine = prefix + "x".repeat(padding) + beforeCwd + JSON.stringify(unicodeProject) + '}}\n';
+  assert.equal(Buffer.from(unicodeLine).indexOf(Buffer.from("\u00e7")), 65535);
+  fs.writeFileSync(path.join(dir, "rollout-unicode.jsonl"), unicodeLine);
+  const unicodeOut = execFileSync(process.execPath, ["-e", script, unicodeProject], {
+    env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
+  });
+  assert.deepEqual(JSON.parse(unicodeOut), ["unicode"]);
+
+  fs.writeFileSync(path.join(dir, "rollout-other.jsonl"), line + "\n");
+  const limited = `import(${JSON.stringify(path.resolve("src/discover.mjs"))}).then(({rolloutsForProjectSince}) => {
+    try { rolloutsForProjectSince(process.argv[1], null, { maxFiles: 2 }); console.log("accepted partial list"); }
+    catch (error) { console.log(error.code); }
+  });`;
+  const limitedOut = execFileSync(process.execPath, ["-e", limited, project], {
+    env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
+  });
+  assert.equal(limitedOut.trim(), "BRIDGE_DISCOVERY_INCOMPLETE");
 });
 
 // The discovery canary. The 16KB bug proved that a reader can die without a
