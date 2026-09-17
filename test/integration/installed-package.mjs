@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 // Deliberately load everything from the installed tarball, not this checkout.
 const installed = process.argv[2];
@@ -29,6 +29,46 @@ const run = (cwd, args) => {
   return result.stdout;
 };
 const load = (file) => import(pathToFileURL(path.join(installed, file)));
+
+async function verifyInstalledLock() {
+  const module = pathToFileURL(path.join(installed, "src/locking.mjs")).href;
+  const guard = path.join(root, "acceptance.guard");
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { withKernelLockSync } from ${JSON.stringify(module)};
+    withKernelLockSync(${JSON.stringify(guard)}, () => {
+      process.send('held');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000);
+    });
+  `], { env, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  let stderr = "";
+  owner.stderr.on("data", data => { stderr += data; });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Installed lock owner did not become ready.")), 5000);
+      const finish = (error) => { clearTimeout(timer); error ? reject(error) : resolve(); };
+      owner.once("message", message => finish(message === "held" ? null : new Error("Invalid lock barrier.")));
+      owner.once("error", finish);
+      owner.once("exit", () => finish(new Error(stderr || "Lock owner exited before ready.")));
+    });
+    const inode = fs.statSync(guard).ino;
+    const contender = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { withKernelLockSync } from ${JSON.stringify(module)};
+      try { withKernelLockSync(${JSON.stringify(guard)}, () => {}); console.log('entered'); }
+      catch (error) { console.log(error.code); }
+    `], { env: { ...env, CONTEXT_BRIDGE_LOCK_TIMEOUT_MS: "200" }, encoding: "utf8", timeout: 5000 });
+    assert.equal(contender.status, 0, contender.stderr || contender.error?.message);
+    assert.equal(contender.stdout.trim(), "BRIDGE_LOCK_TIMEOUT", "a second process must not enter the owned critical section");
+    assert.equal(owner.kill("SIGKILL"), true, "the lock owner must still be alive when forcefully stopped");
+    await closed;
+    const { withKernelLockSync } = await load("src/locking.mjs");
+    withKernelLockSync(guard, () => assert.equal(fs.statSync(guard).ino, inode, "recovery must retain the guard identity"));
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL");
+    await closed;
+  }
+}
+
 let client;
 try {
   assert.ok(run(empty, ["--version"]).includes(manifest.version));
@@ -49,6 +89,7 @@ try {
   assert.equal(JSON.parse(run(empty, ["adapters", "--json"])).adapters.length, 5, "candidates never load implicitly");
   assert.equal(fs.existsSync(env.CONTEXT_BRIDGE_HOME), false, "loading descriptors must not initialize storage");
   assert.deepEqual(fs.readdirSync(empty), []);
+  await verifyInstalledLock();
   const { ensureState, writeCheckpoint } = await load("src/state.mjs");
   const { composeFullContext } = await load("src/delta.mjs");
   const { verifyArtifact } = await load("src/artifact.mjs");
@@ -75,7 +116,8 @@ try {
   assert.deepEqual(fs.readdirSync(empty), []);
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
     installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
-    actualMcpStdio: true, credentialsUsed: false, vendorAgentsVerified: false }));
+    actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true,
+    credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {
   await client?.close();
   fs.rmSync(root, { recursive: true, force: true });

@@ -383,10 +383,19 @@ Treat these as hard rules; changes that violate them should not merge:
 | Codex CLI | 0.144.x | `codex resume <id>` auto-submit, rollout format, `$skill` invocation, plugin transfer RPC, hooks with `additionalContext` (trusted once via `/hooks`) |
 | Grok CLI | 0.2.x | resume by id, per-project session directories, live `active_sessions.json`; hooks fire but ignore stdout for passive events |
 | OpenCode | 1.18.x | sessions in a SQLite database, authless delta insert via `preResume`, read-back via `opencode export`, discovery via `opencode session list --format json`; no hook and a resume that will not take an opening message, so no auto-start |
-| OS | macOS | Linux paths implemented, suite runs there in CI, vendor layouts unverified; Windows unsupported |
+| OS | macOS, selected Linux arm64 acceptance | Windows remains unverified/unsupported until its new installed-package CI gate passes and native vendor workflows are validated. A configured job is not a passed run. |
 | Node | ≥ 18.18 | clean package and MCP stdio must work at the minimum version |
 
 Every CLI's session format is vendor-internal. When a new CLI release changes behavior, re-run the end-to-end handoff test above before assuming compatibility.
+
+The installed-package CI matrix includes Windows at Node 18.18.0 and 24, alongside
+macOS and Linux. It builds a tarball, installs it without lifecycle scripts or dev
+dependencies, then exercises Git-absent CLI reads, artifact export/import, MCP
+stdio, and the installed native lock backend. A separate owner process must
+exclude a contender; forcefully terminating that owner must allow reacquisition
+without replacing the guard file. No source-tree dependencies are borrowed.
+These checks do not validate Windows vendor layouts, interactive terminals,
+network filesystems or power-loss durability, even after the job passes.
 
 ## Release checklist
 
