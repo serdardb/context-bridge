@@ -569,8 +569,9 @@ function treeEntries(root, prefix = "") {
     if (stat.isSymbolicLink()) throw new Error(`Refusing to inspect a symlinked bridge path: ${full}`);
     if (stat.isDirectory()) result.push(...treeEntries(full, rel));
     else if (stat.isFile()) {
-      const digest = crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex");
-      result.push([rel, stat.size, digest]);
+      const bytes = readOwnedFile(full);
+      const digest = crypto.createHash("sha256").update(bytes).digest("hex");
+      result.push([rel, bytes.length, digest]);
     }
     else throw new Error(`Refusing to inspect an unsupported bridge entry: ${full}`);
   }
@@ -613,22 +614,23 @@ function hasLegacyRuntime(legacy) {
 
 function assertLegacyInactive(legacy) {
   const lock = path.join(legacy, "state.json.lock");
-  let lockStat;
-  try { lockStat = fs.lstatSync(lock); } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (lockStat) {
-    if (!lockStat.isFile() || lockStat.isSymbolicLink()) throw new Error("Unsafe legacy state lock; refusing migration.");
-    const pid = Number(fs.readFileSync(lock, "utf8").trim().split(/\s+/)[0]);
+  const lockText = readOwnedFile(lock, { encoding: "utf8", missing: true });
+  if (lockText !== null) {
+    const pid = Number(lockText.trim().split(/\s+/)[0]);
     if (!Number.isInteger(pid) || pid <= 0 || processIsAlive(pid)) {
       throw new Error("Legacy bridge state is locked by a live or unknown writer. Stop the writer before migrating storage.");
     }
   }
   const stateFile = path.join(legacy, "state.json");
-  if (!fs.existsSync(stateFile)) return;
   let state;
-  try { state = JSON.parse(fs.readFileSync(stateFile, "utf8")); } catch (error) {
-    throw new Error(`Cannot verify legacy launcher state; repair ${stateFile} before migration: ${error.message}`);
+  try {
+    const text = readOwnedFile(stateFile, { encoding: "utf8", missing: true });
+    if (text === null) return;
+    state = JSON.parse(text);
+  } catch (cause) {
+    throw new BridgeError("Cannot verify legacy launcher state; repair or restore its evidence before migration.", {
+      code: "BRIDGE_LEGACY_STATE_UNREADABLE", cause, nextCommand: "bridge storage plan",
+    });
   }
   const pids = [...Object.keys(state?.launchers ?? {}).map(Number), Number(state?.launcher?.pid)];
   if (pids.some(processIsAlive)) {

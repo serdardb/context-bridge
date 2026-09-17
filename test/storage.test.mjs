@@ -1188,7 +1188,7 @@ test("ignore cleanup refuses symlinks and non-UTF-8 content without changing eit
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test("migration refuses live, uncertain and unstamped legacy state locks without creating global data", () => {
+test("migration refuses uncertain writers and linked legacy evidence without creating global data", () => {
   const storageUrl = pathToFileURL(path.resolve("src/storage.mjs")).href;
   for (const [owner, probeError] of [
     [`${process.pid} 2026-09-16T00:00:00Z`, null], ["", null], ["unreadable owner", null],
@@ -1216,6 +1216,32 @@ test("migration refuses live, uncertain and unstamped legacy state locks without
       assert.equal(fs.existsSync(home), false);
       assert.equal(fs.readFileSync(path.join(legacy, "state.json"), "utf8"), original);
       assert.equal(fs.readFileSync(path.join(legacy, "state.json.lock"), "utf8"), owner);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+  for (const leaf of ["state.json", "state.json.lock", `checkpoints/${LEGACY_CHECKPOINT}`]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-linked-migration-"));
+    const project = path.join(root, "project"), home = path.join(root, "home");
+    const legacy = path.join(project, ".bridge"), outside = path.join(root, "outside");
+    fs.mkdirSync(legacy, { recursive: true });
+    const original = JSON.stringify(defaultState(project));
+    fs.writeFileSync(path.join(legacy, "state.json"), original);
+    const linked = path.join(legacy, leaf);
+    fs.mkdirSync(path.dirname(linked), { recursive: true });
+    if (leaf === "state.json") fs.unlinkSync(linked);
+    const content = leaf === "state.json" ? original : "private-external-evidence";
+    fs.writeFileSync(outside, content);
+    fs.linkSync(outside, linked);
+    try {
+      const result = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "storage", "migrate"], {
+        cwd: project, encoding: "utf8", timeout: 10000,
+        env: { ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "" },
+      });
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.equal(fs.existsSync(home), false, "unsafe evidence must be refused before global writes");
+      assert.equal(fs.readFileSync(outside, "utf8"), content);
+      assert.equal(fs.readFileSync(linked, "utf8"), content);
+      assert.equal(fs.readFileSync(path.join(legacy, "state.json"), "utf8"), original);
+      assert.equal((result.stdout + result.stderr).includes("private-external-evidence"), false);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   }
 });
