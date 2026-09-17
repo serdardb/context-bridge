@@ -29,6 +29,7 @@ import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
 import { inspectRegisteredProject } from "./project-inspect.mjs";
+import { projectLifecycle } from "./project-lifecycle.mjs";
 import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
 import { createWorktreeLane } from "./worktree.mjs";
 import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore, recoverProjectOperations } from "./storage.mjs";
@@ -101,6 +102,8 @@ ${cmd("project list")}List machine-local project identities ( --json supported )
 ${cmd("project adopt <id>")}Reconnect this moved directory to an existing project store
 ${cmd("project inspect <id>")}Inspect retained state by UUID, including missing projects (--json)
 ${cmd("project recover <id>")}Preview interrupted operation records (--apply to clear; --json)
+${cmd("project retire <id>")}Preview archiving a quiescent project store (--apply; --json)
+${cmd("project restore <id>")}Preview restoring its archived store (--apply; --json)
 ${cmd("status [--json]")}Show project bridge status
 ${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
 ${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
@@ -219,7 +222,16 @@ export async function main(argv) {
         const projects = registeredProjects();
         if (flags.has("--json")) log(JSON.stringify(projects, null, 2));
         else if (!projects.length) log("No registered bridge projects.");
-        else for (const project of projects) log(`${project.id}  [${project.availability}${project.errorCode ? `: ${project.errorCode}` : ""}]  ${project.root}`);
+        else for (const project of projects) log(`${project.id}  [${project.lifecycle}; ${project.availability}${project.errorCode ? `: ${project.errorCode}` : ""}]  ${project.root}`);
+      } else if (["retire", "restore"].includes(args[1]) && args.length === 3) {
+        const report = projectLifecycle(args[2], args[1], { apply: flags.has("--apply") });
+        if (flags.has("--json")) log(JSON.stringify(report, null, 2));
+        else {
+          log(`${report.id}: ${report.lifecycle}${report.applied ? " (applied)" : " (unchanged)"}.`);
+          for (const blocker of report.blockers) log(`${WARN} ${blocker}`);
+          if (!flags.has("--apply")) log("Preview only. Use --apply to perform this transition; project code and native agent sessions are not removed.");
+        }
+        if (report.blockers.length) process.exitCode = 1;
       } else if (args[1] === "inspect" && args.length === 3) {
         const report = inspectRegisteredProject(args[2]);
         if (flags.has("--json")) log(JSON.stringify(report, null, 2));
@@ -245,7 +257,7 @@ export async function main(argv) {
       } else if (args[1] === "adopt" && args.length === 3) {
         const result = adoptProject(projectDir, args[2]);
         log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
-      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | recover <id> [--apply] [--json] | adopt <id> [--json]");
+      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | recover|retire|restore <id> [--apply] [--json] | adopt <id> [--json]");
       return;
     }
 

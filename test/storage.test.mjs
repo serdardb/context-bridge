@@ -508,6 +508,71 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("project retirement and restoration preserve evidence through real process exits", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-project-retire-"));
+  const project = path.join(root, "project"), home = path.join(root, "home");
+  fs.mkdirSync(project);
+  try {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import assert from 'node:assert/strict';
+      import { spawnSync } from 'node:child_process';
+      import { ensureState, mutateState, writeCheckpoint } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+      import { projectIdentity, projectStoreDir, withProjectOperation } from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
+      const project = ${JSON.stringify(project)}, home = ${JSON.stringify(home)};
+      ensureState(project);
+      fs.writeFileSync(path.join(project, 'code.txt'), 'user code');
+      writeCheckpoint(project, 'main', ${JSON.stringify(LEGACY_CHECKPOINT)}, 'kept evidence');
+      const id = projectIdentity(project).id, store = projectStoreDir(project);
+      const archive = path.join(home, 'retired-projects', id);
+      const cli = (action, apply = false) => spawnSync(process.execPath,
+        [${JSON.stringify(path.resolve("bin/bridge.mjs"))}, 'project', action, id, '--json', ...(apply ? ['--apply'] : [])],
+        { encoding: 'utf8', timeout: 5000, env: process.env });
+      const registry = fs.readFileSync(path.join(home, 'projects.json'));
+      assert.equal(cli('retire').status, 0);
+      assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
+      mutateState(project, 'main', s => { s.pendingHandoff = { target: 'codex' }; });
+      assert.equal(cli('retire', true).status, 1);
+      mutateState(project, 'main', s => { s.pendingHandoff = null; });
+      withProjectOperation(project, 'handoff', () => assert.equal(cli('retire', true).status, 1));
+      const expectedState = fs.readFileSync(path.join(store, 'state.json'));
+      const crash = action => spawnSync(process.execPath, ['--input-type=module', '-e',
+        'import fs from "node:fs"; import { projectLifecycle } from ' +
+        JSON.stringify(${JSON.stringify(new URL("../src/project-lifecycle.mjs", import.meta.url).href)}) + ';' +
+        'const rename = fs.renameSync; fs.renameSync = (a,b) => { rename(a,b); if (a === ' +
+        JSON.stringify(action === 'retire' ? store : archive) + ') process.exit(79); };' +
+        'projectLifecycle(' + JSON.stringify(id) + ',' + JSON.stringify(action) + ',{apply:true});'],
+        { encoding: 'utf8', timeout: 5000, env: process.env });
+      assert.equal(crash('retire').status, 79);
+      assert.throws(() => ensureState(project), { code: 'BRIDGE_PROJECT_RETIRED' });
+      assert.equal(fs.existsSync(store), false);
+      const resumed = cli('retire', true);
+      assert.equal(resumed.status, 0, resumed.stderr);
+      assert.equal(JSON.parse(resumed.stdout).lifecycle, 'retired');
+      assert.deepEqual(fs.readFileSync(path.join(archive, 'state.json')), expectedState);
+      assert.equal(JSON.parse(cli('inspect').stdout).state, 'present');
+      assert.equal(crash('restore').status, 79);
+      assert.throws(() => ensureState(project), { code: 'BRIDGE_PROJECT_RETIRED' });
+      assert.equal(cli('restore', true).status, 0);
+      assert.equal(projectIdentity(project).id, id);
+      assert.deepEqual(fs.readFileSync(path.join(store, 'state.json')), expectedState);
+      assert.equal(fs.readFileSync(path.join(store, 'checkpoints', ${JSON.stringify(LEGACY_CHECKPOINT)}), 'utf8'), 'kept evidence');
+      assert.equal(fs.readFileSync(path.join(project, 'code.txt'), 'utf8'), 'user code');
+      fs.symlinkSync(path.join(project, 'code.txt'), path.join(store, 'unsafe'));
+      assert.equal(cli('retire', true).status, 1);
+      fs.unlinkSync(path.join(store, 'unsafe'));
+      fs.renameSync(project, project + '-gone');
+      assert.equal(cli('retire', true).status, 0, 'UUID lifecycle does not need the old root');
+      assert.equal(cli('restore', true).status, 0);
+      assert.deepEqual(fs.readFileSync(path.join(store, 'state.json')), expectedState);
+    `], { encoding: "utf8", timeout: 60000, env: {
+      ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
+    } });
+    assert.equal(child.status, 0, child.stderr || child.error?.message);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("journal staging from an abruptly exited real writer is cleaned only after group protection is resolved", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-journal-stage-"));
   const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;

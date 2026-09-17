@@ -338,9 +338,9 @@ precedes state/migration locks, and registry access inside it never waits for a
 runtime lock while holding the registry lock. Explicit adoption acquires the
 existing UUID's runtime guard before the registry lock and rechecks its destination
 after waiting. Launcher closing-word appends and delivery acknowledgement also
-hold runtime ownership. This is a lifecycle prerequisite, not a project-removal
-guarantee: evidence operations outside these scopes still need participation
-before retirement is exposed.
+hold runtime ownership. These guards coordinate participating bridge writers,
+not unrelated filesystem tools or older bridge versions. Retirement additionally
+checks the pending work and operation reservations described below.
 
 Artifact application holds runtime ownership across import-lock acquisition,
 state publication and recovery. Its order is runtime -> import -> state; nested
@@ -360,6 +360,19 @@ previews interrupted records without mutation; `--apply` revalidates under the
 UUID guard and clears only safely read, schema-valid records with definitely
 absent process owners. Live/unknown owners and unsafe records remain. Recovery
 does not repair/undo handoffs or remove evidence; age alone is never authority.
+
+Project retirement takes the UUID runtime guard before registry ownership and
+rechecks quiescence. The registry itself journals `retiring` before renaming
+`projects/<UUID>` to `retired-projects/<UUID>`, then publishes `retired`.
+Restoration journals `restoring`, moves the same directory back, then publishes
+`active`. Non-active identity resolution refuses runtime access. Retrying an
+interrupted transition accepts an already-moved destination only when the
+matching transition is recorded; both source and destination present is a hard
+refusal, never a merge. Missing original working directories do not impede UUID
+administration. POSIX rename parent directories are synced before final registry
+publication; this is not evidence of physical power-loss or Windows durability.
+Permanent purge is separate and not implemented. Older nonparticipating writers
+must be stopped before using this lifecycle.
 
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive

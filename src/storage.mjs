@@ -175,6 +175,7 @@ function readRegistry() {
     if (parsed?.version !== REGISTRY_VERSION || !parsed.projects || typeof parsed.projects !== "object" ||
         Array.isArray(parsed.projects) || Object.entries(parsed.projects).some(([id, record]) =>
           !PROJECT_UUID.test(id) || !record || record.id !== id ||
+          (record.lifecycle !== undefined && !["active", "retiring", "retired", "restoring"].includes(record.lifecycle)) ||
           typeof record.path !== "string" || !path.isAbsolute(record.path))) {
       throw new BridgeError("Global bridge registry is invalid. Refusing to select a new project identity.", { code: "BRIDGE_REGISTRY_INVALID" });
     }
@@ -310,6 +311,9 @@ export function projectIdentity(projectDir, { create = false } = {}) {
       records.find((record) => identity && record.fileIdentity === identity) ||
       records.find((record) => !record.fileIdentity && record.path === canonical);
     if (known) {
+      if (known.lifecycle && known.lifecycle !== "active") throw new BridgeError("This project is retired or undergoing a lifecycle transition. Restore it explicitly before writing runtime data.", {
+        code: "BRIDGE_PROJECT_RETIRED", nextCommand: `bridge project restore ${known.id} --apply`,
+      });
       if (known.path !== canonical || (localId && known.gitId !== localId)) {
         known.path = canonical;
         if (localId) known.gitId = localId;
@@ -344,7 +348,7 @@ export function projectStoreDir(projectDir, { createIdentity = false } = {}) {
 }
 
 export function registeredProjects() {
-  return Object.values(readRegistry().projects).map(({ id, path: root, createdAt, fileIdentity: recorded }) => {
+  return Object.values(readRegistry().projects).map(({ id, path: root, createdAt, fileIdentity: recorded, lifecycle = "active" }) => {
     let availability;
     let errorCode = null;
     try {
@@ -358,8 +362,19 @@ export function registeredProjects() {
       errorCode = error.code ?? "UNKNOWN";
     }
     // A missing path may be a move or an offline volume, never deletion consent.
-    return { id, root, createdAt, availability, errorCode };
+    return { id, root, createdAt, availability, errorCode, lifecycle };
   });
+}
+
+/** Lifecycle publication runs after runtime ownership, never the inverse. */
+export function withProjectRegistration(id, fn) {
+  if (!PROJECT_UUID.test(id) || !readRegistry().projects[id]) throw new BridgeError("Unknown registered project UUID.");
+  return withKernelLockSync(path.join(storageHome(), "locks", `${id}.runtime.guard`), () => withRegistryLock(() => {
+    const registry = readRegistry();
+    const record = registry.projects[id];
+    if (!record) throw new BridgeError("Project registration disappeared while waiting.");
+    return fn(record, () => writeRegistry(registry));
+  }));
 }
 
 // A vendor may retain its old cwd after explicit project adoption. This only
@@ -392,6 +407,7 @@ export function adoptProject(projectDir, id) {
     const registry = readRegistry();
     const record = registry.projects[id];
     if (!record || record.id !== id) throw new Error(`Unknown bridge project '${id}'.`);
+    if (record.lifecycle && record.lifecycle !== "active") throw new BridgeError("Restore the retired project before adopting a new directory.", { code: "BRIDGE_PROJECT_RETIRED" });
     if (projectOperations(id).length) throw new BridgeError("Project has an unfinished operation; adoption refused. Inspect its operation records before retrying.", {
       code: "BRIDGE_PROJECT_BUSY", nextCommand: `bridge project inspect ${id} --json`,
     });

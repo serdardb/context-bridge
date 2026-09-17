@@ -162,7 +162,7 @@ export function readOwnedFile(file, { encoding = null, missing = false } = {}) {
   } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
-function syncPublishedDirectory(file) {
+export function syncPublishedDirectory(file) {
   // Node cannot portably open Windows directories for FlushFileBuffers. Do not
   // advertise POSIX directory durability on that platform.
   if (process.platform === "win32") return;

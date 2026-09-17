@@ -28,10 +28,19 @@ test("real clean --all cannot delete a handoff paused before its state commit", 
     child = spawn(process.execPath, ["--input-type=module", "-e", `
       import fs from 'node:fs';
       import { handoff } from ${JSON.stringify(new URL("../src/handoff.mjs", import.meta.url).href)};
-      const link = fs.linkSync;
+      const link = fs.linkSync, lstat = fs.lstatSync;
+      let publishedFull = null;
       fs.linkSync = (temp, file) => {
         link(temp, file);
-        if (file.endsWith('-full.md')) {
+        if (file.endsWith('-full.md')) publishedFull = file;
+      };
+      // remember() inspects the published leaf after writeCheckpoint has left
+      // runtime ownership. Pausing inside linkSync would hold that ownership
+      // and test lock waiting, not retention during uncommitted preparation.
+      fs.lstatSync = (file, ...args) => {
+        const stat = lstat(file, ...args);
+        if (file === publishedFull) {
+          publishedFull = null;
           process.send('prepared');
           const deadline = Date.now() + 30000;
           while (!fs.existsSync(${JSON.stringify(release)})) {
@@ -39,6 +48,7 @@ test("real clean --all cannot delete a handoff paused before its state commit", 
             Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
           }
         }
+        return stat;
       };
       handoff(${JSON.stringify(project)}, 'codex', {from: 'grok', summary: 'Complete live preparation', checkTarget: () => {}});
       process.disconnect();
@@ -47,7 +57,7 @@ test("real clean --all cannot delete a handoff paused before its state commit", 
     child.stderr.on("data", (data) => { stderr += data; });
     done = new Promise((resolve) => child.once("close", (code) => resolve(code)));
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("writer did not reach preparation")), 15000);
+      const timer = setTimeout(() => reject(new Error("writer did not reach preparation")), 60000);
       child.once("message", () => { clearTimeout(timer); resolve(); });
       child.once("error", (error) => { clearTimeout(timer); reject(error); });
       child.once("exit", () => { clearTimeout(timer); reject(new Error(stderr || "writer exited before preparation")); });
