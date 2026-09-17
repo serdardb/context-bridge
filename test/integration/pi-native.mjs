@@ -136,6 +136,9 @@ try {
         import {loadState,bridgeDir,safeCheckpointPath} from ${JSON.stringify(stateModule)};
         const s=loadState(process.cwd(),{readOnly:true}); const delta=fs.readFileSync(safeCheckpointPath(process.cwd(),s.pendingInjection.deltaFile),'utf8');
         fs.renameSync(bridgeDir(process.cwd()),path.join(process.cwd(),'.bridge'));
+        // The published legacy store predates kernel guards. All fixture
+        // writers have exited; do not mislabel a new guard as legacy data.
+        fs.rmSync(path.join(process.cwd(),'.bridge','state.json.lock.guard'),{force:true});
         console.log(JSON.stringify({pending:s.pendingInjection,delta}));`]));
       assert.equal(fs.existsSync(path.join(project, ".bridge", "state.json")), true);
     }
@@ -162,6 +165,9 @@ try {
       assert.equal(consumed, migrated.delta, "migration and delivery preserve the entire queued delta");
       assert.ok(fs.readdirSync(path.join(env.CONTEXT_BRIDGE_HOME, "migrations"), { withFileTypes: true }).some((entry) => entry.isDirectory()),
         "migration keeps its backup instead of deleting the only original");
+      const migrationPlan = JSON.parse(run([bridge, "storage", "plan", "--json"]));
+      assert.equal(migrationPlan.completed.length, 1);
+      assert.deepEqual(migrationPlan.completed[0].changes, [], "native delivery changes active state, not retired originals");
     }
     run([bridge, "handoff", "codex", "--from", "pi", "--summary", "Return actual native Pi response"]);
     const reverse = run(["--input-type=module", "-e", `import fs from 'node:fs'; import {loadState,safeCheckpointPath} from ${JSON.stringify(stateModule)};
