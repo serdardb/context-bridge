@@ -303,6 +303,13 @@ export function runtimeStoreDir(projectDir, { createIdentity = false } = {}) {
   // A legacy project remains readable until ensureState performs the explicit
   // migration. This keeps status/doctor useful before the first mutating command.
   const legacy = legacyBridgeDir(projectDir);
+  const global = projectStoreDir(projectDir);
+  if (fs.existsSync(path.join(global, "state.json"))) {
+    if (hasLegacyRuntime(legacy)) {
+      throw new BridgeError("Both legacy and global runtime data exist. Refusing to choose one or merge them silently. Stop old bridge processes and inspect the migration before continuing.", { code: "BRIDGE_STORAGE_DIVERGED", nextCommand: "bridge storage plan" });
+    }
+    return global;
+  }
   if (fs.existsSync(path.join(legacy, "state.json"))) return legacy;
   return projectStoreDir(projectDir, { createIdentity });
 }
@@ -326,9 +333,7 @@ export function ensureRuntimeStore(projectDir) {
 }
 
 export function runtimeStorageBase(projectDir) {
-  const legacy = legacyBridgeDir(projectDir);
-  return process.env.CONTEXT_BRIDGE_STORAGE === "project" || fs.existsSync(path.join(legacy, "state.json"))
-    ? path.resolve(projectDir) : storageHome();
+  return runtimeStoreDir(projectDir) === legacyBridgeDir(projectDir) ? path.resolve(projectDir) : storageHome();
 }
 
 function copyTree(source, destination) {
@@ -491,8 +496,8 @@ export function planLegacyMigration(projectDir) {
     let entries;
     if (recovering) {
       const record = readMigrationJournal(journal, identity.id, source, plan.target);
-      plan.recovery = { backup: record.backup, retired: retiredMigrationDir(record.backup), action: "finish-source-cleanup" };
-      entries = inspectLegacyCleanup(source, plan.target, record.backup);
+      plan.recovery = { backup: record.backup, retired: record.retired, action: "finish-source-cleanup" };
+      entries = inspectLegacyCleanup(source, plan.target, record.backup, record.retired);
     } else entries = treeEntries(source);
     plan.files = entries.map(([name, bytes, sha256]) => ({ name, bytes, sha256 }));
     plan.bytes = entries.reduce((total, [, bytes]) => total + bytes, 0);
@@ -510,9 +515,10 @@ export function planLegacyMigration(projectDir) {
 }
 
 /** Stage and verify both destination and backup before journaled source cleanup. */
-export function migrateLegacyStorage(projectDir) {
+export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) {
   if (process.env.CONTEXT_BRIDGE_STORAGE === "project") return false;
   const legacy = legacyBridgeDir(projectDir);
+  const retirementRoot = retirementDir === null ? null : validateRetirementRoot(retirementDir, legacy);
   const hasLegacy = hasLegacyRuntime(legacy);
   if (hasLegacy) assertLegacyInactive(legacy);
   const identity = projectIdentity(projectDir, { create: hasLegacy });
@@ -524,10 +530,21 @@ export function migrateLegacyStorage(projectDir) {
     if (hasLegacyRuntime(legacy)) assertLegacyInactive(legacy);
     if (fs.existsSync(journal)) {
       const record = readMigrationJournal(journal, identity.id, legacy, target);
-      finishLegacyCleanup(legacy, target, record.backup);
+      if (retirementRoot !== null) {
+        const selected = path.join(retirementRoot, path.basename(record.backup));
+        if (selected !== record.retired) {
+          if (fs.existsSync(record.retired) && treeEntries(record.retired).length) {
+            throw new BridgeError("Source retirement has already started at the recorded location; refusing to change its recovery path.", { nextCommand: "bridge storage plan" });
+          }
+          inspectLegacyCleanup(legacy, target, record.backup, record.retired);
+          record.retired = selected;
+          writeJsonAtomic(journal, record);
+        }
+      }
+      finishLegacyCleanup(legacy, target, record.backup, record.retired);
       const stagingCleanup = cleanupMigrationStaging(identity.id, target, record.backup);
       fs.unlinkSync(journal);
-      return { identity, target, backup: record.backup, retired: retiredMigrationDir(record.backup), recovered: true, stagingCleanup };
+      return { identity, target, backup: record.backup, retired: record.retired, recovered: true, stagingCleanup };
     }
     // Re-read after acquiring the lock. Another process may have completed the
     // migration while this process was waiting.
@@ -562,11 +579,12 @@ export function migrateLegacyStorage(projectDir) {
       throw new Error("Legacy bridge storage changed or could not be verified before backup.");
     }
     fs.renameSync(backupStaging, backup);
-    writeJsonAtomic(journal, { version: 1, source: legacy, target, backup });
-    finishLegacyCleanup(legacy, target, backup);
+    const retired = retirementRoot === null ? retiredMigrationDir(backup) : path.join(retirementRoot, path.basename(backup));
+    writeJsonAtomic(journal, { version: 1, source: legacy, target, backup, retired });
+    finishLegacyCleanup(legacy, target, backup, retired);
     const stagingCleanup = cleanupMigrationStaging(identity.id, target, backup);
     fs.unlinkSync(journal);
-    return { identity, target, backup, retired: retiredMigrationDir(backup), stagingCleanup };
+    return { identity, target, backup, retired, stagingCleanup };
     } catch (err) {
       try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
       try { if (backupStaging) fs.rmSync(backupStaging, { recursive: true, force: true }); } catch {}
@@ -591,10 +609,18 @@ function readMigrationJournal(journal, id, source, target) {
       !/^\d+$/.test(path.basename(record.backup).slice(id.length + 1))) {
     throw new Error("Invalid legacy migration recovery journal; refusing cleanup.");
   }
+  if (record.retired === undefined) record.retired = retiredMigrationDir(record.backup);
+  if (record.retired !== retiredMigrationDir(record.backup)) {
+    if (typeof record.retired !== "string" || !path.isAbsolute(record.retired) ||
+        path.basename(record.retired) !== path.basename(record.backup) ||
+        path.join(validateRetirementRoot(path.dirname(record.retired), source), path.basename(record.backup)) !== record.retired) {
+      throw new Error("Invalid migration retirement location; refusing cleanup.");
+    }
+  }
   return record;
 }
 
-function inspectLegacyCleanup(legacy, target, backup) {
+function inspectLegacyCleanup(legacy, target, backup, retired = retiredMigrationDir(backup)) {
   for (const root of [backup, target]) {
     const stat = fs.lstatSync(root);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe migration recovery directory: ${root}`);
@@ -603,7 +629,6 @@ function inspectLegacyCleanup(legacy, target, backup) {
   if (JSON.stringify(entries) !== JSON.stringify(treeEntries(target))) {
     throw new Error("Migration recovery target differs from its verified backup; refusing cleanup.");
   }
-  const retired = retiredMigrationDir(backup);
   if (fs.existsSync(retired)) {
     if (!fs.lstatSync(retired).isDirectory() || fs.lstatSync(retired).isSymbolicLink()) {
       throw new Error(`Unsafe migration retirement directory: ${retired}`);
@@ -630,9 +655,21 @@ function retiredMigrationDir(backup) {
   return path.join(storageHome(), "retired-migrations", path.basename(backup));
 }
 
-function retirementDirectory(backup, relative = "") {
-  let dir = storageHome();
-  for (const part of ["retired-migrations", path.basename(backup), ...relative.split(path.sep).filter(Boolean)]) {
+function validateRetirementRoot(root, legacy) {
+  if (typeof root !== "string" || !path.isAbsolute(root)) throw new BridgeError("--retirement-dir must name an existing absolute directory outside the project.");
+  const resolved = fs.realpathSync(root);
+  const project = fs.realpathSync(path.dirname(legacy));
+  if (!fs.statSync(resolved).isDirectory() || resolved === project || resolved.startsWith(project + path.sep)) {
+    throw new BridgeError("The retirement directory must be outside the project; source originals must not remain in the working tree.");
+  }
+  return resolved;
+}
+
+function retirementDirectory(retired, relative = "") {
+  let dir = path.dirname(retired);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) throw new Error(`Unsafe migration retirement directory: ${dir}`);
+  for (const part of [path.basename(retired), ...relative.split(path.sep).filter(Boolean)]) {
     dir = path.join(dir, part);
     try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (error) {
       if (error.code !== "EEXIST") throw error;
@@ -643,12 +680,15 @@ function retirementDirectory(backup, relative = "") {
   return dir;
 }
 
-function finishLegacyCleanup(legacy, target, backup) {
-  const remaining = inspectLegacyCleanup(legacy, target, backup);
+function finishLegacyCleanup(legacy, target, backup, retired = retiredMigrationDir(backup)) {
+  if ([legacy, target, backup].some((root) => retired === root || retired.startsWith(root + path.sep) || root.startsWith(retired + path.sep))) {
+    throw new BridgeError("The retirement vault must not overlap the source, global runtime or verified backup.");
+  }
+  const remaining = inspectLegacyCleanup(legacy, target, backup, retired);
   // Keep the source inode, not just an earlier copy. An old binary can replace
   // state after our hash check, or keep an append descriptor open across rename.
   // These originals are never automatically pruned as duplicate backups.
-  const retired = retirementDirectory(backup);
+  retirementDirectory(retired);
   for (const [name, , hash] of remaining) {
     if (!ownedLegacyFile(name)) continue;
     const file = path.join(legacy, name);
@@ -656,20 +696,20 @@ function finishLegacyCleanup(legacy, target, backup) {
       throw new Error(`Legacy bridge file changed before removal: ${name}`);
     }
     const destination = path.join(retired, name);
-    retirementDirectory(backup, path.dirname(name) === "." ? "" : path.dirname(name));
+    retirementDirectory(retired, path.dirname(name) === "." ? "" : path.dirname(name));
     try {
       fs.lstatSync(destination);
       throw new BridgeError(`Legacy data reappeared after retirement: ${file}. Both copies are preserved; stop old bridge processes before recovery.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
     } catch (error) { if (error.code !== "ENOENT") throw error; }
     try { fs.renameSync(file, destination); } catch (error) {
       if (error.code !== "EXDEV") throw error;
-      throw new BridgeError("Safe legacy retirement requires an atomic move on the source filesystem. Cross-filesystem automatic cleanup is refused; source files and verified backups are preserved.", { code: "BRIDGE_MIGRATION_CROSS_DEVICE", operation: "migrate legacy storage", nextCommand: "bridge storage plan" });
+      throw new BridgeError("Safe legacy retirement requires an atomic move on the source filesystem. Source files and verified backups are preserved. Choose an existing directory outside the project on its filesystem, then run bridge storage migrate --retirement-dir <absolute-directory>.", { code: "BRIDGE_MIGRATION_CROSS_DEVICE", operation: "migrate legacy storage", nextCommand: "bridge storage plan" });
     }
     if (!fs.lstatSync(destination).isFile() || crypto.createHash("sha256").update(fs.readFileSync(destination)).digest("hex") !== hash) {
       throw new BridgeError(`A legacy writer changed ${name} during retirement. The newer file is preserved at ${destination}; stop old bridge processes before recovery.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
     }
   }
-  inspectLegacyCleanup(legacy, target, backup);
+  inspectLegacyCleanup(legacy, target, backup, retired);
   if (hasLegacyRuntime(legacy)) throw new BridgeError("Legacy runtime files reappeared during migration. Stop old bridge processes; all source and retired files are preserved.", { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
   if (fs.existsSync(legacy)) removeEmptyLegacyDirs(legacy);
 }

@@ -1223,7 +1223,7 @@ test("migration resumes after the process dies during legacy cleanup and refuses
   }
 });
 
-test("migration preserves late old-writer replacements and refuses non-atomic retirement", () => {
+test("migration preserves old-writer evidence, resumes a chosen vault and refuses split storage", () => {
   const storageUrl = pathToFileURL(path.resolve("src/storage.mjs")).href;
   for (const mode of ["replace", "append", "cross-device"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-retirement-"));
@@ -1237,7 +1237,7 @@ test("migration preserves late old-writer replacements and refuses non-atomic re
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import fs from 'node:fs';
         import assert from 'node:assert/strict';
-        import { migrateLegacyStorage } from ${JSON.stringify(storageUrl)};
+        import { migrateLegacyStorage, runtimeStoreDir, runtimeStorageBase, planLegacyMigration } from ${JSON.stringify(storageUrl)};
         const file = ${JSON.stringify(file)};
         const mode = ${JSON.stringify(mode)};
         const rename = fs.renameSync;
@@ -1259,7 +1259,48 @@ test("migration preserves late old-writer replacements and refuses non-atomic re
           assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}),
             mode === 'cross-device' ? { code: 'BRIDGE_MIGRATION_CROSS_DEVICE', expected: true } : /changed.*retirement/);
           assert.ok(reached, 'must cross the real source retirement boundary');
-          if (mode === 'cross-device') assert.equal(fs.readFileSync(file, 'utf8'), '{"marker":"original"}');
+          if (mode === 'cross-device') {
+            assert.equal(fs.readFileSync(file, 'utf8'), '{"marker":"original"}');
+            const vault = ${JSON.stringify(path.join(root, "vault"))};
+            const other = ${JSON.stringify(path.join(root, "other-vault"))};
+            fs.mkdirSync(vault); fs.mkdirSync(other);
+            fs.renameSync = (source, target) => {
+              rename(source, target);
+              if (source === file) throw new Error('interrupted after source retirement');
+            };
+            assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}, { retirementDir: ${JSON.stringify(project)} }), /outside the project/);
+            assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}, { retirementDir: vault }), /interrupted after source retirement/);
+            const saved = planLegacyMigration(${JSON.stringify(project)}).recovery.retired;
+            assert.ok(saved.startsWith(fs.realpathSync(vault) + '/'));
+            fs.renameSync = rename;
+            assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}, { retirementDir: other }), /already started/);
+            const recovered = migrateLegacyStorage(${JSON.stringify(project)});
+            assert.equal(recovered.retired, saved, 'resume must use the journal, not a new flag');
+            assert.equal(fs.existsSync(file), false);
+            const globalState = fs.readFileSync(recovered.target + '/state.json', 'utf8');
+            fs.mkdirSync(${JSON.stringify(legacy)}, { recursive: true });
+            fs.writeFileSync(file, '{"marker":"old process restarted"}');
+            assert.throws(() => runtimeStoreDir(${JSON.stringify(project)}), { code: 'BRIDGE_STORAGE_DIVERGED' });
+            assert.throws(() => runtimeStorageBase(${JSON.stringify(project)}), { code: 'BRIDGE_STORAGE_DIVERGED' });
+            assert.ok(planLegacyMigration(${JSON.stringify(project)}).blockers.length);
+            assert.equal(fs.readFileSync(recovered.target + '/state.json', 'utf8'), globalState);
+            fs.rmSync(${JSON.stringify(legacy)}, { recursive: true });
+            const lstat = fs.lstatSync;
+            let recreated = false;
+            fs.lstatSync = (name, ...args) => {
+              if (name === ${JSON.stringify(legacy)} && !recreated) {
+                recreated = true;
+                fs.mkdirSync(name);
+                fs.writeFileSync(file, '{"marker":"recreated after check"}');
+                throw Object.assign(new Error('previously absent'), { code: 'ENOENT' });
+              }
+              return lstat(name, ...args);
+            };
+            assert.equal(runtimeStoreDir(${JSON.stringify(project)}), recovered.target, 'a late recreation must never switch this read back to legacy');
+            fs.lstatSync = lstat;
+            assert.ok(recreated);
+            assert.throws(() => runtimeStoreDir(${JSON.stringify(project)}), { code: 'BRIDGE_STORAGE_DIVERGED' });
+          }
           else {
             assert.match(fs.readFileSync(retired, 'utf8'), /late/);
             assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}), /changed retired evidence/);

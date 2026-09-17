@@ -29,7 +29,7 @@ import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
 import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
 import { createWorktreeLane } from "./worktree.mjs";
-import { planLegacyMigration, registeredProjects, adoptProject, cleanupLegacyIgnore } from "./storage.mjs";
+import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore } from "./storage.mjs";
 import { splitLauncherArgs, argumentSummary } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
@@ -92,6 +92,7 @@ ${cmd("artifact import <file>")}Verify; --verify-key <pem> requires trusted sign
 ${cmd("artifact cache <file>")}Verify and store by content hash outside the project; accepts --verify-key
 ${cmd("search <text>")}Search local summaries, checkpoints and audits
 ${cmd("storage plan [--json]")}Preview legacy storage migration without changing files
+${cmd("storage migrate")}Migrate legacy storage; --retirement-dir selects an external source-filesystem vault
 ${cmd("storage cleanup-ignore")}Preview obsolete .gitignore rules (--apply to remove, --json)
 ${cmd("project list")}List machine-local project identities ( --json supported )
 ${cmd("project adopt <id>")}Reconnect this moved directory to an existing project store
@@ -222,6 +223,20 @@ export async function main(argv) {
     }
 
     case "storage": {
+      if (args[1] === "migrate") {
+        const { values } = parseArgs({ args: argv.slice(2), allowPositionals: false, options: {
+          "retirement-dir": { type: "string" }, json: { type: "boolean" },
+        } });
+        const result = migrateLegacyStorage(projectDir, { retirementDir: values["retirement-dir"] ?? null });
+        if (values.json) log(JSON.stringify(result || { migrated: false }, null, 2));
+        else if (!result) log("No legacy migration is pending.");
+        else {
+          log(`${OK} Runtime storage: ${result.target}`);
+          log(`Verified backup: ${result.backup}`);
+          log(`Retired originals: ${result.retired}`);
+        }
+        return;
+      }
       if (args[1] === "cleanup-ignore" && args.length === 2) {
         if ([...flags].some((flag) => !["--apply", "--json"].includes(flag))) throw new Error("Usage: bridge storage cleanup-ignore [--apply] [--json]");
         const result = cleanupLegacyIgnore(projectDir, { apply: flags.has("--apply") });
@@ -242,7 +257,10 @@ export async function main(argv) {
         log(`Target: ${plan.target ?? (plan.createsIdentity ? "assigned under the global store when migration runs" : "no migration needed")}`);
         log(`Files: ${plan.files.length}, ${plan.bytes} bytes`);
         if (plan.needed) log(`Backup directory: ${plan.backupRoot}`);
-        if (plan.recovery) log(`Resume verified source cleanup using backup: ${plan.recovery.backup}`);
+        if (plan.recovery) {
+          log(`Resume verified source cleanup using backup: ${plan.recovery.backup}`);
+          log(`Retired originals: ${plan.recovery.retired}`);
+        }
         if (plan.removedEntries.length) log(`Files removed after verified backup: ${plan.removedEntries.join(", ")}`);
         if (plan.retainedEntries.length) {
           log(`Kept in the project: ${plan.retainedEntries.join(", ")}`);
