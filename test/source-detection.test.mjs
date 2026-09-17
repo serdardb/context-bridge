@@ -74,6 +74,8 @@ test("the launcher does not pass its own session's identity down to the child", 
     assert.equal(env.CODEX_THREAD_ID, undefined, "it inherits into every child unless we remove it");
     assert.equal(env.CLAUDECODE, undefined);
     assert.equal(env.CONTEXT_BRIDGE_LAUNCHER, "1", "and the child must still know it was launched");
+    assert.equal(childEnv("main", "opencode").OPENCODE_DISABLE_AUTOUPDATE, "true");
+    assert.equal(childEnv("main", "codex").OPENCODE_DISABLE_AUTOUPDATE, process.env.OPENCODE_DISABLE_AUTOUPDATE);
   } finally {
     if (before === undefined) delete process.env.CODEX_THREAD_ID;
     else process.env.CODEX_THREAD_ID = before;

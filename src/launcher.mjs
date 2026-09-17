@@ -206,7 +206,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
         // Without a pre-spawn baseline, old transcript text cannot prove receipt.
       }
     }
-    const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv(launcherLane) });
+    const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv(launcherLane, agent) });
     // **A spawn is not a delivery.** This committed here, on the reasoning that a
     // process which started is a process carrying the delta — and a started process
     // only proves the CLI launched, not that the prompt reached the model. When it
@@ -805,8 +805,11 @@ function waitForExit(child) {
   });
 }
 
-export function childEnv(lane = null) {
+export function childEnv(lane = null, agent = null) {
   const env = { ...process.env };
+  // OpenCode 1.18.31's updater can leave its package-manager probe alive after
+  // the TUI exits. Keep managed sessions stable; update outside the bridge.
+  if (agent === "opencode") env.OPENCODE_DISABLE_AUTOUPDATE = "true";
   // The lane this launcher is driving, so the agent's own hooks write the session
   // they belong to rather than whatever lane happens to be active project-wide.
   // The hook reads this first and falls back to matching the session id only when
