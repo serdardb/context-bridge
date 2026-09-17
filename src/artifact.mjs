@@ -6,6 +6,7 @@ import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome } from "./sto
 import { ensureState, loadState, mutateState, withProjectStateReadLock, readableCheckpointsDir, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { writeJsonAtomic, writeFileExclusive } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
+import { withKernelLockSync } from "./locking.mjs";
 
 export const ARTIFACT_VERSION = 1;
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -16,14 +17,25 @@ function sleepSync(ms) {
 }
 
 function withImportLock(hash, fn) {
+  return withKernelLockSync(path.join(storageHome(), "locks", `${hash}.import.guard`), () => withImportPidLock(hash, fn));
+}
+
+function withImportPidLock(hash, fn) {
   const dir = path.join(storageHome(), "imports");
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, `${hash}.lock`);
   for (;;) {
     try {
       const fd = fs.openSync(lock, "wx");
-      fs.writeSync(fd, `${process.pid}\n`);
-      fs.closeSync(fd);
+      try {
+        fs.writeSync(fd, `${process.pid}\n`);
+        fs.closeSync(fd);
+      }
+      catch (error) {
+        try { fs.closeSync(fd); } catch {}
+        try { fs.rmSync(lock, { force: true }); } catch {}
+        throw error;
+      }
       break;
     } catch (err) {
       if (err.code !== "EEXIST") throw err;

@@ -292,7 +292,7 @@ recreating the lane empty). `mutateProject` writes the whole file, for the
 lane create / switch / remove commands that are about the set of lanes rather
 than the work inside one.
 
-State, registry and migration writers first acquire a kernel guard through
+State, registry, migration and artifact-import writers first acquire a kernel guard through
 `locking.mjs`. Its regular, non-symlink guard file is permanent: deleting it
 would let different processes lock different inodes under the same pathname.
 The kernel releases ownership on process exit, including forced termination.

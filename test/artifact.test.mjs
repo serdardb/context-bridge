@@ -155,6 +155,43 @@ test("an old import lock is not stolen when owner liveness is unknown", () => {
   }
 });
 
+test("an import PID stamping failure closes its descriptor and removes only its own marker", () => {
+  const source = project(), target = project(), home = project();
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+  const open = fs.openSync, write = fs.writeSync;
+  process.env.CONTEXT_BRIDGE_HOME = home;
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  let fd;
+  try {
+    ensureState(source); ensureState(target);
+    writeCheckpoint(source, "main", "2026-09-17T00-00-00-000Z-claude-to-codex-full.md", "stamp failure evidence");
+    const file = path.join(source, "context.cbctx");
+    exportArtifact(source, file);
+    fs.openSync = (candidate, ...args) => {
+      const result = open(candidate, ...args);
+      if (typeof candidate === "string" && path.dirname(candidate) === path.join(home, "imports") && candidate.endsWith(".lock")) fd = result;
+      return result;
+    };
+    fs.writeSync = (candidate, ...args) => {
+      if (fd !== undefined && candidate === fd) throw Object.assign(new Error("injected import stamp failure"), { code: "ENOSPC" });
+      return write(candidate, ...args);
+    };
+    const before = fs.readFileSync(statePath(target));
+    assert.throws(() => importArtifact(file, { projectDir: target, apply: true }), /injected import stamp failure/);
+    assert.notEqual(fd, undefined);
+    assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    assert.deepEqual(fs.readdirSync(path.join(home, "imports")), []);
+    assert.deepEqual(fs.readFileSync(statePath(target)), before);
+    fs.openSync = open; fs.writeSync = write;
+    assert.equal(importArtifact(file, { projectDir: target, apply: true }).applied, true, "retry must acquire both guards");
+  } finally {
+    fs.openSync = open; fs.writeSync = write;
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+    for (const dir of [source, target, home]) fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("export pairs context and audit by handoff, never by independent latest files", () => {
   const source = project();
   try {
