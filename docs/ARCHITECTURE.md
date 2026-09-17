@@ -399,6 +399,12 @@ and an empty readable session is not called unavailable. Closing-word collection
 also declines a source that is not fully readable. Probing and extracting vendor
 sessions are separate operations, not an atomic snapshot of a concurrently
 changing vendor store; a probe cannot eliminate all read-time races.
+For references with a transcript file, collection compares device, inode, size,
+mtime and ctime before capturing the mark and after extracting activity. A change
+makes the source partial and withholds its watermark, including ordinary appends
+that may therefore be repeated. This is bounded change detection, not an atomic
+read: separate audit reads, secondary files and database-backed references are
+not covered by that stamp.
 Delivery marks are captured before extraction, including closing-word collection.
 For append-only streams this favors possible repetition of concurrent arrivals
 over acknowledging a later row that the payload never read. It does not prove

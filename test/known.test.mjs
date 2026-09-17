@@ -362,7 +362,9 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(delta, /grok found the bug/);
   const full = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile.replace(/\.md$/, "-full.md")), "utf8");
   const acknowledged = fs.readFileSync(grokChat, "utf8").trim().split("\n").map(JSON.parse)
-    .slice(0, after.pendingInjection.sources.grok.rows);
+    .slice(0, after.pendingInjection.sources.grok?.rows ?? 0);
+  assert.equal(Object.hasOwn(after.pendingInjection.sources, "grok"), false,
+    "a transcript changing during extraction must be repeated, not acknowledged");
   for (const row of acknowledged) assert.ok(full.includes(row.content), "no unseen arrival may be acknowledged");
 
   saveState(project, s);
@@ -387,11 +389,16 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(fs.readFileSync(safeCheckpointPath(project, restored.pendingInjection.deltaFile), "utf8"), /claude decided the architecture/);
   // The shape read succeeds; fail either the probe's parse or the subsequent
   // real extraction. Preflight alone must never authorize acknowledging loss.
-  for (const fault of ["io", "malformed"]) for (const failAt of [2, 3]) {
+  for (const fault of ["io", "malformed", "rewrite"]) for (const failAt of [2, 3]) {
     saveState(project, s);
+    fs.writeFileSync(claudeTranscript, sourceBytes);
     let reads = 0;
     fs.readFileSync = (file, ...args) => {
       if (file === claudeTranscript && ++reads >= failAt) {
+        if (fault === "rewrite") {
+          fs.writeFileSync(file, "");
+          return originalRead(file, ...args);
+        }
         if (fault === "malformed") return originalRead(file, ...args) + "\n{unfinished";
         throw Object.assign(new Error("private I/O detail"), { code: "EIO" });
       }

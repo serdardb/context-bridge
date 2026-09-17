@@ -184,6 +184,13 @@ function kb(bytes) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function transcriptStamp(ref) {
+  if (!ref.transcriptPath) return null;
+  const stat = fs.statSync(ref.transcriptPath, { bigint: true });
+  if (!stat.isFile()) throw new Error("Source transcript is not a regular file");
+  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs];
+}
+
 function readHandoffSource(adapter, projectDir, slot, since, warnings) {
   const unavailable = () => {
     warnings.push(`${adapter.displayName}: source could not be read reliably. Its conversation is not included and its delivery watermark was not advanced.`);
@@ -192,13 +199,17 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
   try {
     const ref = adapter.hydrate(projectDir, slot);
     if (!ref) return unavailable();
+    const before = transcriptStamp(ref);
     // Anything arriving during extraction may be repeated, never acknowledged
     // by a mark taken after the content it was supposed to describe.
     const mark = adapter.currentMark(ref);
     const probe = adapter.parseProbe(ref);
     if (!["readable", "partial"].includes(probe.status)) return unavailable();
     const activity = adapter.activitySince(ref, since);
-    const complete = probe.status === "readable" && activity.sourceComplete !== false;
+    // This detects ordinary rewrites/appends across these reads, not an atomic
+    // vendor snapshot. Conservatively repeat changed sources on the next handoff.
+    const unchanged = isDeepStrictEqual(before, transcriptStamp(ref));
+    const complete = unchanged && probe.status === "readable" && activity.sourceComplete !== false;
     if (!complete) warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
     return { ref, activity, mark, complete };
   } catch (error) {
