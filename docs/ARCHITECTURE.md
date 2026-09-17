@@ -553,6 +553,11 @@ handing off from inside the intended session remains the explicit recovery path.
 Discovery does not mutate vendor transcripts or prove a concurrent snapshot.
 
 An unreadable session takes its routes off green and the exit code with it.
+JSONL probes distinguish an absent file (`missing`, ENOENT) from an I/O failure
+(`unreadable`, with a sanitized error code). Permission and storage failures do
+not imply vendor schema drift or authorize treating the session as empty.
+Doctor reports checking permissions/storage rather than claiming the file is
+gone; Grok's combined chat/events probe retains this failure status too.
 
 ## Per-agent launch flags
 

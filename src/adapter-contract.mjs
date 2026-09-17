@@ -115,7 +115,7 @@ export function validateAdapterResult(id, operation, result) {
       !Array.isArray(result.extras) || !text(result.installHint)) fail();
     for (const extra of result.extras) if (!object(extra) || typeof extra.ok !== "boolean" || !text(extra.label)) fail();
   } else if (operation === "parseProbe") {
-    if (!object(result) || !["readable", "partial", "mismatch", "missing"].includes(result.status)) fail();
+    if (!object(result) || !["readable", "partial", "mismatch", "missing", "unreadable"].includes(result.status)) fail();
     for (const key of ["rows", "known", "malformed", "messages"]) if (result[key] != null && !count(result[key])) fail();
   } else if (operation === "discoveryProbe") {
     if (!object(result) || !["none", "readable", "blind"].includes(result.status) ||

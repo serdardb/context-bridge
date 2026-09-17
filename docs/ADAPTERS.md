@@ -107,6 +107,9 @@ All adapters must implement the operations listed in `REQUIRED_OPERATIONS`:
 - `health()` and `smokeCommand()` support installation and live diagnostics.
 - `detectHost(env)` reports only a proven current host, not an ancestor inferred
   from an inherited session variable.
+- `parseProbe` statuses are `readable`, `partial`, `mismatch`, `missing`, or
+  `unreadable`. Use `missing` for absence, not permission or storage failures;
+  `unreadable` may include a sanitized `errorCode`, never a raw exception stack.
 - `discoveryProbe`, `parseProbe`, `adoptStartedSession` and `observeAudit` support
   discovery diagnostics, parsing, safe linking and capability drift checks.
 

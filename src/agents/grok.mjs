@@ -258,7 +258,7 @@ export function parseProbe(ref) {
   return probeWithActivity({ activitySince }, ref, worse);
 }
 
-const SEVERITY = { readable: 0, partial: 1, missing: 2, mismatch: 3 };
+const SEVERITY = { readable: 0, partial: 1, missing: 2, mismatch: 3, unreadable: 4 };
 const rank = (status) => SEVERITY[status] ?? 0;
 
 /** A turn_ended event after the handoff request means the agent is idle. */

@@ -32,6 +32,7 @@ import path from "node:path";
  *   partial   parses, but some lines are not JSON; the parser read past them
  *   mismatch  rows exist and not one is recognisable — the vendor-drift signal
  *   missing   the path we were given is not there
+ *   unreadable an I/O failure prevented reading; absence is not established
  */
 export function probeJsonl(filePath, isKnownRow) {
   // "missing" is reported with the file's own name. An agent can keep more than
@@ -42,8 +43,9 @@ export function probeJsonl(filePath, isKnownRow) {
   let content;
   try {
     content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return gone;
+  } catch (error) {
+    if (error.code === "ENOENT") return gone;
+    return { ...gone, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
   }
 
   let rows = 0;
@@ -81,7 +83,7 @@ export function probeJsonl(filePath, isKnownRow) {
  * zero messages is legitimate on an empty or fully-consumed session.
  */
 export function probeWithActivity(adapter, ref, shape) {
-  if (shape.status === "missing" || shape.status === "mismatch") return { ...shape, messages: null };
+  if (["missing", "mismatch", "unreadable"].includes(shape.status)) return { ...shape, messages: null };
   try {
     const activity = adapter.activitySince(ref, null);
     return { ...shape, messages: activity.messages.length };

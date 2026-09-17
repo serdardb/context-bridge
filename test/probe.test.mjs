@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { probeJsonl } from "../src/probe.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
-import { collect } from "../src/doctor.mjs";
+import { collect, verifyReport } from "../src/doctor.mjs";
 import { defaultState, saveState } from "../src/state.mjs";
 
 // The bug this whole tier exists for: an agent renames a field in its own
@@ -33,9 +33,28 @@ test("a torn write is partial, not fatal: the parser reads past the bad line", (
   assert.equal(res.malformed, 1);
 });
 
-test("a missing transcript is missing, and a missing path is not a crash", () => {
+test("a missing transcript is distinct from an I/O failure", () => {
   assert.equal(probeJsonl(path.join(os.tmpdir(), "nope-does-not-exist.jsonl"), () => true).status, "missing");
   assert.equal(probeJsonl(null, () => true).status, "missing");
+  const file = write("unreadable.jsonl", "");
+  const read = fs.readFileSync;
+  try {
+    for (const code of ["EACCES", "EIO"]) {
+      fs.readFileSync = function (p, ...args) {
+        if (p === file) throw Object.assign(new Error(`private path ${file}`), { code });
+        return read.call(this, p, ...args);
+      };
+      const shape = probeJsonl(file, () => true);
+      assert.equal(shape.status, "unreadable");
+      assert.equal(shape.errorCode, code);
+      assert.ok(!JSON.stringify(shape).includes(file));
+      for (const id of ["claude", "codex", "grok"]) {
+        const result = adapterFor(id).parseProbe({ transcriptPath: file, eventsPath: file });
+        assert.equal(result.status, "unreadable", id);
+        assert.equal(result.messages, null, "an I/O failure must not be retried as empty activity");
+      }
+    }
+  } finally { fs.readFileSync = read; }
 });
 
 test("a predicate that throws is survivable — a throwing probe would be worse than a blind one", () => {
@@ -154,6 +173,21 @@ test("an unreadable linked session takes its routes off green and the exit code 
 
   const r = collect(project);
   assert.equal(r.agents.claude.session.status, "mismatch");
+  const read = fs.readFileSync;
+  let failed;
+  try {
+    fs.readFileSync = function (p, ...args) {
+      if (p === transcript) throw Object.assign(new Error("private error detail"), { code: "EACCES" });
+      return read.call(this, p, ...args);
+    };
+    failed = collect(project);
+  } finally { fs.readFileSync = read; }
+  assert.equal(failed.agents.claude.session.status, "unreadable");
+  failed.agents.claude.version = "fixture-installed";
+  assert.ok(verifyReport(failed).failures.includes("claude session is unreadable"));
+  for (const [name, route] of Object.entries(failed.routes)) {
+    if (name.includes("claude")) assert.equal(route.configured, false, name);
+  }
   for (const [name, route] of Object.entries(r.routes)) {
     if (!name.includes("claude")) continue;
     assert.equal(route.configured, false, `${name} must not stay green over an unreadable session`);

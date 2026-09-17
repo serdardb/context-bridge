@@ -79,7 +79,7 @@ export function verifyReport(r, { all = false } = {}) {
   for (const id of installed) {
     const a = r.agents[id];
     if (!a.smoke?.ok) failures.push(`${id} did not answer the smoke question`);
-    if (["missing", "mismatch"].includes(a.session?.status)) failures.push(`${id} session is ${a.session.status}`);
+    if (SESSION_BROKEN.has(a.session?.status)) failures.push(`${id} session is ${a.session.status}`);
     if (a.discovery?.status === "blind") failures.push(`${id} session discovery is blind`);
   }
   let routes = 0;
@@ -93,8 +93,8 @@ export function verifyReport(r, { all = false } = {}) {
   return { ok: failures.length === 0, agents: installed.length, routes, failures };
 }
 
-/** The two verdicts that mean a handoff through this agent would fail today. */
-const SESSION_BROKEN = new Set(["missing", "mismatch"]);
+/** Verdicts that mean a handoff through this agent would fail today. */
+const SESSION_BROKEN = new Set(["missing", "mismatch", "unreadable"]);
 
 /**
  * Exit code. Zero means a switch could happen AND nothing we rely on has drifted
@@ -237,7 +237,7 @@ export function integrationStatus(agentId, health) {
   }
   if (agentId === "grok") trusted = extraOk(health, "$bridge skill installed and current");
   const verified = !!health?.smoke?.ok &&
-    !["missing", "mismatch"].includes(health?.session?.status) &&
+    !SESSION_BROKEN.has(health?.session?.status) &&
     health?.discovery?.status !== "blind";
   return { installed, configured, trusted, verified };
 }
@@ -262,6 +262,7 @@ function extraOk(health, fragment) {
  *   readable  the parser understands this file (message count is information only)
  *   partial   understood, but some lines were not JSON and were read past
  *   missing   we hold a session reference whose transcript is gone
+ *   unreadable the transcript could not be read because of an I/O error
  *   mismatch  the file is there and we no longer recognise a single row in it
  */
 function probeSession(projectDir, agentId, state) {
@@ -329,6 +330,11 @@ function sessionLine(session) {
       };
     case "partial":
       return { level: "warn", text: `Session readable, ${session.malformed} malformed line(s) skipped` };
+    case "unreadable":
+      return {
+        level: "bad",
+        text: `Session file could not be read (${session.errorCode ?? "READ_FAILED"}): ${session.detail ?? "linked transcript"}. Check file permissions and storage availability before retrying.`,
+      };
     case "missing":
       // Naming the file matters: Grok keeps two, and "transcript" sent people
       // looking at the wrong one.
