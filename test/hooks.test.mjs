@@ -338,6 +338,22 @@ test("SessionStart refuses a pending deltaFile that escapes .bridge and never re
     "context is not silently lost: the missing-delta notice is surfaced"
   );
 
+  state.pendingInjection.deltaFile = ".bridge/checkpoints/linked.md";
+  for (const suffix of ["", ".consumed"]) {
+    for (const link of [fs.symlinkSync, fs.linkSync]) {
+      saveState(project, state);
+      const leaf = safeCheckpointPath(project, state.pendingInjection.deltaFile + suffix);
+      fs.mkdirSync(path.dirname(leaf), { recursive: true });
+      link(evil, leaf);
+      const linkedResult = runHook(input);
+      assert.equal(linkedResult.status, 0);
+      assert.ok(!linkedResult.stdout.includes("external file the hook must not touch"));
+      assert.match(JSON.parse(linkedResult.stdout).hookSpecificOutput.additionalContext, /could not be read/);
+      assert.equal(fs.readFileSync(evil, "utf8"), "external file the hook must not touch");
+      fs.unlinkSync(leaf);
+    }
+  }
+
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
 });

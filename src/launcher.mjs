@@ -22,7 +22,7 @@ import {
   PROMPT_DELTA_BYTES,
 } from "./delivery.mjs";
 import { bindSeed, unbindSeed } from "./seed.mjs";
-import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive, readOwnedFile, BridgeError } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 import { laneWorkspace } from "./worktree.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
@@ -601,7 +601,7 @@ function readDelta(projectDir, inj) {
   }
   let delta;
   try {
-    delta = fs.readFileSync(deltaPath, "utf8");
+    delta = readOwnedFile(deltaPath, { encoding: "utf8" });
   } catch {
     log(`${WARN} Pending delta could not be read (${inj.deltaFile}); the agent starts without it.`);
     return null;
@@ -647,6 +647,24 @@ export function appendFinalWords(projectDir, s, agent) {
   return withProjectRuntimeLock(projectDir, () => appendFinalWordsOwned(projectDir, s, agent));
 }
 
+function appendExistingCheckpoint(file, contentForSize) {
+  let fd;
+  try {
+    const before = fs.lstatSync(file);
+    if (!before.isFile() || before.nlink !== 1) throw new Error("Unsafe checkpoint leaf");
+    fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) {
+      throw new Error("Checkpoint changed before append");
+    }
+    fs.appendFileSync(fd, contentForSize(opened.size));
+  } catch (cause) {
+    throw new BridgeError("Closing words could not be added safely. Inspect the pending checkpoints before retrying; delivery progress was not advanced.", {
+      code: "BRIDGE_CHECKPOINT_APPEND_FAILED", operation: "append closing words", cause,
+    });
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 function appendFinalWordsOwned(projectDir, s, agent) {
   const inj = s.pendingInjection;
   const adapter = adapterFor(agent);
@@ -674,11 +692,15 @@ function appendFinalWordsOwned(projectDir, s, agent) {
 
   // The full context checkpoint takes them first and always, because it has no
   // budget over it and because the delta may not be able to hold them.
-  try {
-    fs.appendFileSync(fullPath, `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
-  } catch {
-    // A missing checkpoint is not fatal; what follows still tells the truth.
+  // Refuse an unsafe delta before changing its companion evidence. Missing full
+  // evidence must not be recreated as a fragment containing only closing words.
+  try { readOwnedFile(deltaPath); }
+  catch (cause) {
+    throw new BridgeError("The pending delta could not be read safely. Closing words were not appended and delivery progress was not advanced.", {
+      code: "BRIDGE_CHECKPOINT_APPEND_FAILED", operation: "append closing words", cause,
+    });
   }
+  appendExistingCheckpoint(fullPath, () => `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
 
   // Whether the delta can hold them is a real question and was never asked.
   //
@@ -702,17 +724,7 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   // Guaranteed to fit: the handoff reserved exactly this string before it
   // composed anything, using the same function.
   const pointer = closingWordsNotice(adapter.displayName);
-  let used = 0;
-  try {
-    used = fs.statSync(deltaPath).size;
-  } catch {
-    return; // already consumed or gone: the switch still stands
-  }
-  try {
-    fs.appendFileSync(deltaPath, used + Buffer.byteLength(block) <= road ? block : pointer);
-  } catch {
-    return; // already consumed or unwritable: the switch still stands
-  }
+  appendExistingCheckpoint(deltaPath, used => used + Buffer.byteLength(block) <= road ? block : pointer);
   // The closing words are now part of the delta destined for the other agent,
   // so the packed mark has to move with them: committing the pre-handoff mark
   // would either resend them later or, worse, skip them entirely.

@@ -524,6 +524,26 @@ test("closing words written after the handoff still reach the other agent", asyn
   assert.ok(fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8").includes(assessment));
   // The mark moves with it, so the next handoff does not send it a second time.
   assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
+  const external = path.join(project, "outside-closing-words.txt");
+  fs.writeFileSync(external, "private bytes must stay unchanged");
+  for (const rel of [deltaRel, fullRel]) {
+    const file = safeCheckpointPath(project, rel), original = fs.readFileSync(file);
+    for (const link of [fs.symlinkSync, fs.linkSync]) {
+      saveState(project, s);
+      fs.unlinkSync(file);
+      link(external, file);
+      assert.throws(() => appendFinalWords(project, loadState(project), "grok"));
+      assert.equal(fs.readFileSync(external, "utf8"), "private bytes must stay unchanged");
+      assert.equal(loadState(project).agents.grok.mark.rows, s.agents.grok.mark.rows);
+      fs.unlinkSync(file);
+      fs.writeFileSync(file, original);
+    }
+  }
+  const fullFile = safeCheckpointPath(project, fullRel);
+  fs.unlinkSync(fullFile);
+  saveState(project, s);
+  assert.throws(() => appendFinalWords(project, loadState(project), "grok"), { code: "BRIDGE_CHECKPOINT_APPEND_FAILED" });
+  assert.equal(fs.existsSync(fullFile), false, "missing full evidence must not be recreated as a fragment");
 });
 
 test("doctor rows describe the state they are in, never just the happy one", async () => {

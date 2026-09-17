@@ -3,7 +3,7 @@
 // have no bridge state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeCheckpointPath, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
-import { fileExists, nowIso, BridgeError } from "./util.mjs";
+import { fileExists, nowIso, BridgeError, readOwnedFile } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, fullContextFor } from "./delivery.mjs";
 
@@ -221,13 +221,13 @@ function consumeForHook(projectDir, s, inj, { raw = false } = {}) {
   if (!deltaPath) return null; // a deltaFile that escapes .bridge is never ours to deliver
   let delta, alreadyRenamed = false;
   try {
-    delta = fs.readFileSync(deltaPath, "utf8");
+    delta = readOwnedFile(deltaPath, { encoding: "utf8" });
   } catch (error) {
     if (error.code !== "ENOENT") return null;
     // A previous process may have renamed the file then died before saving state.
     const consumed = safeCheckpointPath(projectDir, inj.deltaFile + CONSUMED_SUFFIX);
     if (!consumed) return null;
-    try { delta = fs.readFileSync(consumed, "utf8"); alreadyRenamed = true; }
+    try { delta = readOwnedFile(consumed, { encoding: "utf8" }); alreadyRenamed = true; }
     catch { return null; }
   }
   if (!delta) return null;

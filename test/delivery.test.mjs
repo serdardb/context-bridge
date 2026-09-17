@@ -63,10 +63,18 @@ test("a delta routed to the hook never rides in the resume command as well", asy
 });
 
 test("a delta routed to the prompt still rides in the resume command", async () => {
-  const { project } = pendingDelta("prompt", "DELTA BODY");
+  const { project, deltaFile } = pendingDelta("prompt", "DELTA BODY");
   const { buildCommand } = await import("../src/launcher.mjs");
   const { args } = buildCommand(project, loadState(project), "codex", []);
   assert.ok(args.join(" ").includes("DELTA BODY"), "nothing else is going to deliver it");
+  const file = safeCheckpointPath(project, deltaFile), external = path.join(project, "private.txt");
+  fs.writeFileSync(external, "PRIVATE_PROMPT_CONTENT");
+  for (const link of [fs.symlinkSync, fs.linkSync]) {
+    fs.unlinkSync(file);
+    link(external, file);
+    assert.ok(!buildCommand(project, loadState(project), "codex", []).args.join(" ").includes("PRIVATE_PROMPT_CONTENT"));
+    assert.ok(loadState(project).pendingInjection, "inspecting an unsafe delta must not acknowledge it");
+  }
 });
 
 // Eligibility is not proof. Hooks that were never run here, or were run long ago,

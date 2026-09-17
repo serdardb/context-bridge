@@ -380,6 +380,16 @@ stable guard, preventing delayed recreation. External backups, native sessions
 and code are outside its deletion scope. Older nonparticipating writers must be
 stopped before using this lifecycle; unrelated filesystem tools are not locked.
 
+Checkpoint content readers in hooks, prompt construction and search reject
+linked/shared leaves using descriptor-verified reads in addition to directory
+containment. Closing words append through a verified descriptor to existing
+single-link regular files; missing full evidence is not recreated as a fragment.
+An append failure stops the switch with an actionable error and leaves progress
+unadvanced. Full-context and delta appends are not a multi-file transaction:
+interruption after the first append can repeat closing words on retry. These
+checks do not lock unrelated filesystem writers or prove hostile parent-swap
+resistance.
+
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
 integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the
