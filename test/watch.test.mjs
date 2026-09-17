@@ -41,7 +41,17 @@ test("watch reports unavailable and recovery without adopting a replacement dire
   const controller = new AbortController();
   const events = [];
   let stored;
+  const stat = fs.statSync, original = stat(root, { bigint: true });
   try {
+    // Recycle the original inode for the replacement; only birth time differs.
+    fs.statSync = (...args) => {
+      const value = stat(...args);
+      if (args[0] === fs.realpathSync(root) && events.length === 2) {
+        value.ino = args[1]?.bigint ? original.ino : Number(original.ino);
+        value.dev = args[1]?.bigint ? original.dev : Number(original.dev);
+      }
+      return value;
+    };
     await watchProject(root, { policy: "read-only", interval: 100, signal: controller.signal,
       emit: async (event) => {
         events.push(event);
@@ -70,6 +80,7 @@ test("watch reports unavailable and recovery without adopting a replacement dire
     await assert.rejects(watchProject(root, { policy: "repair", emit() {} }), /read-only/);
     await assert.rejects(watchProject(root, { policy: "read-only", interval: 1, emit() {} }), /interval/);
   } finally {
+    fs.statSync = stat;
     controller.abort();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(`${root}-original`, { recursive: true, force: true });

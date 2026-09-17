@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { projectStatus } from "./status.mjs";
+import { BridgeError } from "./util.mjs";
 
 // Poll authoritative state rather than trusting lossy platform-specific fs events.
 // This stream is an observation, never a durable delivery receipt or event log.
@@ -9,15 +10,16 @@ export async function watchProject(projectDir, { policy, interval = 1000, signal
   if (!Number.isSafeInteger(interval) || interval < 100 || interval > 60000) throw new Error("Watch interval must be an integer from 100 to 60000 milliseconds.");
   if (typeof emit !== "function") throw new Error("Watch requires an event sink.");
   const root = fs.realpathSync(projectDir);
-  const initial = fs.statSync(root);
+  const initial = fs.statSync(root, { bigint: true });
+  if (!initial.isDirectory() || initial.birthtimeNs <= 0n) throw new BridgeError("Watch requires a verifiable directory creation identity; no project state was changed.", { code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE" });
   let previous = null;
   let unavailable = false;
   let sequence = 0;
   while (!signal?.aborted) {
     let status;
     try {
-      const current = fs.statSync(root);
-      if (current.dev !== initial.dev || current.ino !== initial.ino) throw new Error("Project identity changed");
+      const current = fs.statSync(root, { bigint: true });
+      if (current.dev !== initial.dev || current.ino !== initial.ino || current.birthtimeNs !== initial.birthtimeNs) throw new Error("Project identity changed");
       status = projectStatus(root);
     } catch {
       if (!unavailable) {

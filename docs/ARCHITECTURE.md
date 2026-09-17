@@ -653,7 +653,12 @@ unavailability. No repair is attempted and private filesystem errors are not
 included in the public message. Worktree status separately marks unavailable
 child workspaces rather than claiming their state was read.
 It emits snapshot/change/unavailable/recovered JSON events and pins the
-selected directory's device and inode. It performs no repair, switch or
+selected directory's device, inode and nanosecond birth time. MCP applies the
+same creation-instance check before each tool call. A recreated directory is
+not accepted merely because its inode was recycled. Both long-lived readers
+refuse startup without a positive birth time; ordinary one-shot absent-state
+inspection remains available. This is the same open filesystem compatibility
+limitation as automatic project registration. Neither performs repair, switch or
 acknowledgement. Polling can miss intermediate transitions; this stream is
 not a durable event log or a delivery receipt.
 
