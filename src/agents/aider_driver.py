@@ -102,6 +102,7 @@ class Evidence:
         self.history_prefix = history
 
     def append(self, responses, failed, messages):
+        before = os.lstat(self.file)
         if read_regular(self.file) != self.previous:
             raise RuntimeError("Aider evidence changed outside the session writer.")
         history = read_regular(self.history)
@@ -116,6 +117,11 @@ class Evidence:
         data = (json.dumps(record) + "\n").encode("utf-8")
         fd = os.open(self.file, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
         try:
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or opened.st_size != len(self.previous)):
+                raise RuntimeError("Aider evidence changed before append.")
             offset = 0
             while offset < len(data):
                 written = os.write(fd, data[offset:])

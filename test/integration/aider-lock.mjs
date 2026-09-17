@@ -52,8 +52,33 @@ try {
   const unsafe = spawnSync(python, args(marker, link), { encoding: "utf8", timeout: 5000 });
   assert.notEqual(unsafe.status, 0);
   assert.equal(fs.readFileSync(marker, "utf8"), "owned");
+  const driver = fileURLToPath(new URL("../../src/agents/aider_driver.py", import.meta.url));
+  const evidence = spawnSync(python, ["-I", "-B", "-c", `
+import importlib.util,json,os,sys
+from pathlib import Path
+s=importlib.util.spec_from_file_location('driver',sys.argv[1])
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+root=Path(sys.argv[2]);events=root/'events.jsonl'
+events.write_text(json.dumps(dict(type='session',version=1,sessionId='session',projectId='project'))+'\\n')
+(root/'chat.md').write_text('')
+record=m.Evidence(root,'session','project')
+record.append(0,False,[])
+outside=root/'external-evidence';outside.write_bytes(b'private unchanged')
+original=os.open
+def swapped(file,flags,*args,**kwargs):
+    if Path(file)==events and flags & os.O_APPEND:
+        events.unlink();os.link(outside,events)
+    return original(file,flags,*args,**kwargs)
+os.open=swapped
+refused=False
+try: record.append(0,False,[])
+except RuntimeError: refused=True
+assert refused,'replaced append descriptor must be refused'
+assert outside.read_bytes()==b'private unchanged','external file was modified'
+`, driver, root], { encoding: "utf8", timeout: 5000 });
+  assert.equal(evidence.status, 0, evidence.stderr || evidence.error?.message);
   console.log(JSON.stringify({ platform: process.platform, concurrentWriterRefused: true,
-    crashRecovery: true, stableLockFile: true, symlinkRefused: true }));
+    crashRecovery: true, stableLockFile: true, symlinkRefused: true, evidenceSwapRefused: true }));
 } finally {
   clearTimeout(timer);
   if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");
