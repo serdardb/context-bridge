@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadState, laneDirsOnDisk, isValidLaneName, readableCheckpointsDir, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
+import { readOwnedFile } from "./util.mjs";
 
 function lanesFor(projectDir, wanted, issues) {
   if (wanted) {
@@ -81,8 +82,7 @@ export function searchProject(projectDir, query, { lane = null, agent = null, br
         let recorded;
         try {
           const audit = path.join(dir, stem + CHECKPOINT_KINDS.audit);
-          if (!fs.lstatSync(audit).isFile()) { issue("unknown-branch", name); continue; }
-          recorded = JSON.parse(fs.readFileSync(audit, "utf8")).git?.branch;
+          recorded = JSON.parse(readOwnedFile(audit, { encoding: "utf8" })).git?.branch;
         } catch { issue("unknown-branch", name); continue; }
         if (typeof recorded !== "string" || !recorded.trim()) { issue("unknown-branch", name); continue; }
         if (recorded !== branch) continue;
@@ -90,9 +90,8 @@ export function searchProject(projectDir, query, { lane = null, agent = null, br
       let text;
       try {
         const file = path.join(dir, name);
-        if (!fs.lstatSync(file).isFile()) { issue("unsafe-checkpoint", name); continue; }
-        text = fs.readFileSync(file, "utf8");
-      } catch { issue("unreadable-checkpoint", name); continue; }
+        text = readOwnedFile(file, { encoding: "utf8" });
+      } catch (error) { issue(error.code === "BRIDGE_UNSAFE_FILE" ? "unsafe-checkpoint" : "unreadable-checkpoint", name); continue; }
       const found = matches(text, query.trim());
       if (found.length) results.push({ lane: currentLane, kind, file: name, matches: found });
     }

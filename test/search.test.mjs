@@ -47,6 +47,14 @@ test("branch search uses recorded history rather than the current checkout and n
     fs.unlinkSync(path.join(checkpointsDir(project), `${first}-audit.json`));
     fs.symlinkSync(path.join(checkpointsDir(project), `${second}-audit.json`), path.join(checkpointsDir(project), `${first}-audit.json`));
     assert.deepEqual(searchProject(project, "migration", { branch: "feature/first" }).results, []);
+    const linkedAudit = path.join(checkpointsDir(project), `${first}-audit.json`);
+    fs.unlinkSync(linkedAudit);
+    const externalAudit = path.join(project, "external-audit.json");
+    fs.writeFileSync(externalAudit, JSON.stringify({ git: { branch: "private-branch" } }));
+    fs.linkSync(externalAudit, linkedAudit);
+    const linkedReport = searchProject(project, "migration", { branch: "private-branch" });
+    assert.deepEqual(linkedReport.results, [], "hardlinked metadata cannot authorize a branch match");
+    assert.equal(linkedReport.incomplete, true);
   } finally { fs.rmSync(project, { recursive: true, force: true }); }
 });
 
@@ -101,6 +109,14 @@ test("search refuses invalid date ranges and discloses unreadable or unsafe evid
   assert.equal(run.status, 1);
   assert.deepEqual(JSON.parse(run.stdout), report);
   assert.ok(!run.stdout.includes(external), "physical target paths must not leak");
+  const linked = path.join(checkpointsDir(project), "2026-09-16T00-00-00-000Z-claude-to-codex.md");
+  fs.unlinkSync(linked);
+  fs.linkSync(external, linked);
+  const hardlinkRun = spawnSync(process.execPath, [cli, "search", "needle", "--json"], { cwd: project, encoding: "utf8" });
+  assert.equal(hardlinkRun.status, 1, "shared inodes must not become searchable evidence");
+  assert.deepEqual(JSON.parse(hardlinkRun.stdout).results, []);
+  assert.ok(!hardlinkRun.stdout.includes("private needle"));
+  assert.equal(fs.readFileSync(external, "utf8"), "private needle");
   const original = fs.readdirSync;
   fs.readdirSync = (dir, ...args) => {
     if (dir === checkpointsDir(project)) throw Object.assign(new Error("denied"), { code: "EACCES" });
