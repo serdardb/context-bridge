@@ -544,7 +544,9 @@ export function planLegacyMigration(projectDir) {
     if (plan.needed) assertLegacyInactive(source);
     const identity = projectIdentity(projectDir);
     const journal = path.join(storageHome(), "migrations", `${identity.id}.json`);
-    const recovering = identity.kind !== "path-locator" && fs.existsSync(journal);
+    const recoveryRecord = identity.kind === "path-locator" ? null
+      : readMigrationJournal(journal, identity.id, source, projectStoreDir(projectDir));
+    const recovering = recoveryRecord !== null;
     if (!plan.needed && !recovering) {
       if (identity.kind !== "path-locator") {
         plan.target = projectStoreDir(projectDir);
@@ -559,7 +561,7 @@ export function planLegacyMigration(projectDir) {
     plan.target = plan.createsIdentity ? null : projectStoreDir(projectDir);
     let entries;
     if (recovering) {
-      const record = readMigrationJournal(journal, identity.id, source, plan.target);
+      const record = recoveryRecord;
       plan.recovery = { backup: record.backup, retired: record.retired, action: "finish-source-cleanup" };
       entries = inspectLegacyCleanup(source, plan.target, record.backup, record.retired);
     } else entries = treeEntries(source);
@@ -588,12 +590,12 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
   const identity = projectIdentity(projectDir, { create: hasLegacy });
   if (identity.kind === "path-locator") return false;
   const journal = path.join(storageHome(), "migrations", `${identity.id}.json`);
-  if (!hasLegacy && !fs.existsSync(journal)) return false;
   const target = projectStoreDir(projectDir);
+  if (!hasLegacy && readMigrationJournal(journal, identity.id, legacy, target) === null) return false;
   return withMigrationLock(identity.id, () => {
     if (hasLegacyRuntime(legacy)) assertLegacyInactive(legacy);
-    if (fs.existsSync(journal)) {
-      const record = readMigrationJournal(journal, identity.id, legacy, target);
+    const record = readMigrationJournal(journal, identity.id, legacy, target);
+    if (record !== null) {
       if (retirementRoot !== null) {
         const selected = path.join(retirementRoot, path.basename(record.backup));
         if (selected !== record.retired) {
@@ -673,9 +675,15 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
 // The verified backup is the recovery inventory. A restart may see a subset of
 // the original source, but never accept changed or newly added source files.
 function readMigrationJournal(journal, id, source, target) {
-  const stat = fs.lstatSync(journal);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsafe legacy migration recovery journal.");
-  const record = JSON.parse(fs.readFileSync(journal, "utf8"));
+  let raw;
+  try { raw = readOwnedFile(journal, { encoding: "utf8", missing: true }); }
+  catch (cause) {
+    throw new BridgeError("Migration recovery journal could not be read safely; recovery refused.", {
+      code: "BRIDGE_MIGRATION_JOURNAL_UNREADABLE", cause, nextCommand: "bridge storage plan",
+    });
+  }
+  if (raw === null) return null;
+  const record = JSON.parse(raw);
   const sameSource = typeof record?.source === "string" && path.basename(record.source) === ".bridge" &&
     fs.realpathSync(path.dirname(record.source)) === fs.realpathSync(path.dirname(source));
   if (!record || record.version !== 1 || !sameSource || record.target !== target ||
@@ -755,8 +763,7 @@ export function inspectMigrationReceipts(projectDir) {
     const file = path.join(root, name);
     const result = { receipt: file, backup: null, retired: null, completedAt: null, changes: [], error: null };
     try {
-      if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink()) throw new Error("Unsafe migration receipt file.");
-      const record = JSON.parse(fs.readFileSync(file, "utf8"));
+      const record = JSON.parse(readOwnedFile(file, { encoding: "utf8" }));
       const basename = name.slice(0, -5);
       if (record.version !== 1 || record.projectId !== identity.id ||
           record.backup !== path.join(storageHome(), "migrations", basename) ||

@@ -1265,6 +1265,29 @@ test("migration resumes after the process dies during legacy cleanup and refuses
       if (changed) fs.writeFileSync(path.join(legacy, "state.json"), '{"marker":"new user state"}');
       const snapshot = (dir) => fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).map((entry) =>
         [entry.name, entry.isDirectory() ? snapshot(path.join(dir, entry.name)) : fs.readFileSync(path.join(dir, entry.name)).toString("hex")]);
+      if (point === "first" && !changed) {
+        const bytes = fs.readFileSync(journal);
+        const outside = path.join(root, "outside-journal.json");
+        fs.writeFileSync(outside, bytes);
+        const sourceBefore = snapshot(legacy);
+        const targetBefore = snapshot(path.join(home, "projects", id));
+        for (const kind of ["hardlink", "symlink", "dangling"]) {
+          fs.unlinkSync(journal);
+          if (kind === "hardlink") fs.linkSync(outside, journal);
+          else fs.symlinkSync(kind === "dangling" ? outside + ".missing" : outside, journal);
+          const refused = run(`import { migrateLegacyStorage } from ${JSON.stringify(moduleUrl)};
+            import assert from 'node:assert/strict';
+            assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}),
+              { code: 'BRIDGE_MIGRATION_JOURNAL_UNREADABLE', expected: true });`);
+          assert.equal(refused.status, 0, `${kind}: ${refused.stderr}`);
+          assert.deepEqual(snapshot(legacy), sourceBefore);
+          assert.deepEqual(snapshot(path.join(home, "projects", id)), targetBefore);
+          assert.deepEqual(fs.readFileSync(outside), bytes);
+        }
+        fs.unlinkSync(journal);
+        fs.writeFileSync(journal, bytes);
+        fs.unlinkSync(outside);
+      }
       const before = snapshot(root);
       const preview = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "storage", "plan", "--json"], {
         env, cwd: project, encoding: "utf8",
@@ -1290,6 +1313,23 @@ test("migration resumes after the process dies during legacy cleanup and refuses
         assert.equal(resumed.status, 0, resumed.stderr);
         assert.equal(fs.existsSync(legacy), false);
         assert.equal(fs.existsSync(journal), false);
+        if (point === "first") {
+          const receipts = path.join(home, "migration-receipts");
+          const receipt = path.join(receipts, fs.readdirSync(receipts)[0]);
+          const bytes = fs.readFileSync(receipt);
+          const outside = path.join(root, "outside-receipt.json");
+          fs.writeFileSync(outside, bytes);
+          fs.unlinkSync(receipt);
+          fs.linkSync(outside, receipt);
+          const refused = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "storage", "plan", "--json"], {
+            env, cwd: project, encoding: "utf8",
+          });
+          assert.equal(refused.status, 1, refused.stderr);
+          assert.ok(JSON.parse(refused.stdout).blockers.length);
+          assert.deepEqual(fs.readFileSync(outside), bytes);
+          fs.unlinkSync(receipt);
+          fs.writeFileSync(receipt, bytes);
+        }
       }
       assert.equal(fs.readFileSync(path.join(home, "projects", id, "state.json"), "utf8"), '{"marker":"original state"}');
       assert.equal(fs.readFileSync(path.join(home, "projects", id, "checkpoints", LEGACY_CHECKPOINT), "utf8"), "evidence");
