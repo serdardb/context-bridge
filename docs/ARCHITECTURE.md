@@ -355,8 +355,11 @@ preview/initial validation, a short runtime scope publishes a unique record in
 `operations/<UUID>/`; normal state writers remain available while the handoff
 runs. Adoption refuses any record, including uncertain or interrupted records.
 Completion removes its own record under the stable UUID guard. Project inspection
-lists reservations even if the old project directory is gone. Interrupted-record
-recovery is not implemented yet; records must not be treated as stale by age alone.
+lists reservations even if the old project directory is gone. `project recover`
+previews interrupted records without mutation; `--apply` revalidates under the
+UUID guard and clears only safely read, schema-valid records with definitely
+absent process owners. Live/unknown owners and unsafe records remain. Recovery
+does not repair/undo handoffs or remove evidence; age alone is never authority.
 
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive

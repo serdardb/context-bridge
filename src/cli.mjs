@@ -31,7 +31,7 @@ import { projectStatus, switchHistory } from "./status.mjs";
 import { inspectRegisteredProject } from "./project-inspect.mjs";
 import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
 import { createWorktreeLane } from "./worktree.mjs";
-import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore } from "./storage.mjs";
+import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore, recoverProjectOperations } from "./storage.mjs";
 import { splitLauncherArgs, argumentSummary } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
@@ -100,6 +100,7 @@ ${cmd("storage cleanup-ignore")}Preview obsolete .gitignore rules (--apply to re
 ${cmd("project list")}List machine-local project identities ( --json supported )
 ${cmd("project adopt <id>")}Reconnect this moved directory to an existing project store
 ${cmd("project inspect <id>")}Inspect retained state by UUID, including missing projects (--json)
+${cmd("project recover <id>")}Preview interrupted operation records (--apply to clear; --json)
 ${cmd("status [--json]")}Show project bridge status
 ${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
 ${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
@@ -232,10 +233,19 @@ export async function main(argv) {
           log("Read-only observation, not authorization to remove this project store.");
         }
         if (!report.complete) process.exitCode = 1;
+      } else if (args[1] === "recover" && args.length === 3) {
+        const report = recoverProjectOperations(args[2], { apply: flags.has("--apply") });
+        if (flags.has("--json")) log(JSON.stringify(report, null, 2));
+        else {
+          log(`${report.recoverable.length} interrupted operation record(s); ${report.removed.length} removed; ${report.retained.length} retained.`);
+          for (const entry of report.retained) log(`${WARN} ${entry.file}: ${entry.reason}`);
+          if (!report.applied) log("Preview only. Use --apply to clear validated records whose owners have exited; handoff evidence is not removed.");
+        }
+        if (!report.complete) process.exitCode = 1;
       } else if (args[1] === "adopt" && args.length === 3) {
         const result = adoptProject(projectDir, args[2]);
         log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
-      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | adopt <id> [--json]");
+      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | recover <id> [--apply] [--json] | adopt <id> [--json]");
       return;
     }
 

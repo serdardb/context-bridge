@@ -59,6 +59,41 @@ export function projectOperations(id) {
   return fs.readdirSync(dir).sort();
 }
 
+/** Recover bookkeeping only, never pending handoffs, checkpoints or sessions. */
+export function recoverProjectOperations(id, { apply = false } = {}) {
+  if (!PROJECT_UUID.test(id) || !readRegistry().projects[id]) throw new BridgeError("Unknown registered project UUID.");
+  const scan = () => {
+    const report = { id, applied: apply, recoverable: [], removed: [], retained: [], complete: true };
+    for (const name of projectOperations(id)) {
+      const file = path.join(storageHome(), "operations", id, name);
+      try {
+        if (!name.endsWith(".json") || !PROJECT_UUID.test(name.slice(0, -5))) throw new Error("Unknown operation record name.");
+        const raw = readOwnedFile(file, { encoding: "utf8" });
+        const record = JSON.parse(raw);
+        if (record?.version !== 1 || record.project !== id || record.operation !== "handoff" ||
+            !Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isFinite(Date.parse(record.startedAt))) {
+          throw new Error("Invalid operation record.");
+        }
+        if (processIsAlive(record.pid)) {
+          report.retained.push({ file: name, reason: "owner-live-or-unverifiable" });
+          continue;
+        }
+        report.recoverable.push(name);
+        if (apply) {
+          if (readOwnedFile(file, { encoding: "utf8" }) !== raw || processIsAlive(record.pid)) throw new Error("Operation ownership changed.");
+          fs.unlinkSync(file);
+          report.removed.push(name);
+        }
+      } catch {
+        report.complete = false;
+        report.retained.push({ file: name, reason: "unsafe-unreadable-or-changed-record" });
+      }
+    }
+    return report;
+  };
+  return apply ? withKernelLockSync(path.join(storageHome(), "locks", `${id}.runtime.guard`), scan) : scan();
+}
+
 /** Reserve a synchronous long operation without monopolizing state access. */
 export function withProjectOperation(projectDir, operation, fn) {
   if (process.env.CONTEXT_BRIDGE_STORAGE === "project") return fn();

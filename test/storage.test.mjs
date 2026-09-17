@@ -458,7 +458,14 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
       const adoptFinal = 'const { adoptProject } = await import(' +
         JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
         '); adoptProject(' + JSON.stringify(final) + ', ' + JSON.stringify(id) + ');';
+      const recover = apply => spawnSync(process.execPath, [${JSON.stringify(path.resolve("bin/bridge.mjs"))},
+        'project', 'recover', id, '--json', ...(apply ? ['--apply'] : [])],
+        { encoding: 'utf8', timeout: 5000, env: process.env });
       withProjectOperation(moved, 'handoff', () => {
+        assert.equal(projectOperations(id).length, 1);
+        const live = recover(true);
+        assert.equal(live.status, 0, live.stderr);
+        assert.equal(JSON.parse(live.stdout).retained[0].reason, 'owner-live-or-unverifiable');
         assert.equal(projectOperations(id).length, 1);
         const writer = run('mutateState(' + JSON.stringify(moved) + ', "main", s => { s.activeAgent = "claude"; });');
         assert.equal(writer.status, 0, 'a reservation must not block ordinary state work: ' + writer.stderr);
@@ -470,6 +477,30 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
       });
       assert.deepEqual(projectOperations(id), []);
       assert.equal(run(adoptFinal).status, 0);
+      const interrupted = run('const { withProjectOperation } = await import(' +
+        JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
+        '); withProjectOperation(' + JSON.stringify(final) + ', "handoff", () => process.exit(79));');
+      assert.equal(interrupted.status, 79);
+      const names = projectOperations(id);
+      assert.equal(names.length, 1);
+      const stateFile = path.join(projectStoreDir(final), 'state.json');
+      const stateBytes = fs.readFileSync(stateFile);
+      const preview = recover(false);
+      assert.equal(preview.status, 0, preview.stderr);
+      assert.deepEqual(JSON.parse(preview.stdout).recoverable, names);
+      assert.deepEqual(projectOperations(id), names, 'preview leaves reservation intact');
+      const outside = path.join(${JSON.stringify(root)}, 'outside.json');
+      fs.writeFileSync(outside, 'private outside bytes');
+      const linked = '00000000-0000-0000-0000-000000000000.json';
+      fs.symlinkSync(outside, path.join(${JSON.stringify(home)}, 'operations', id, linked));
+      const recovered = recover(true);
+      assert.equal(recovered.status, 1, 'unsafe evidence is disclosed even when safe recovery succeeds');
+      const report = JSON.parse(recovered.stdout);
+      assert.deepEqual(report.removed, names);
+      assert.equal(report.retained[0].file, linked);
+      assert.deepEqual(projectOperations(id), [linked]);
+      assert.deepEqual(fs.readFileSync(stateFile), stateBytes);
+      assert.equal(fs.readFileSync(outside, 'utf8'), 'private outside bytes');
     `], { encoding: "utf8", timeout: 15000, env: {
       ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
     } });
