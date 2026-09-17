@@ -29,6 +29,50 @@ import { pruneCheckpoints } from "../src/clean.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
 const LEGACY_CHECKPOINT = "2026-09-16T00-00-00-000Z-claude-to-codex.md";
 
+test("registration and read-only lookup reject directory replacement across registry I/O and Git probes", () => {
+  for (const mode of ["known", "new", "read", ...(process.platform === "win32" ? [] : ["git"])]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-registration-race-"));
+    const project = path.join(root, "project"), home = path.join(root, "home");
+    fs.mkdirSync(project);
+    const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldPath = process.env.PATH;
+    const open = fs.openSync;
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    let swapped = false;
+    try {
+      if (["known", "read"].includes(mode)) projectIdentity(project, { create: true });
+      const registry = path.join(home, "projects.json");
+      const before = fs.existsSync(registry) ? fs.readFileSync(registry) : null;
+      if (mode === "git") {
+        const bin = path.join(root, "bin"); fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, "git"), `#!${process.execPath}\nconst fs = require('node:fs');
+fs.renameSync(${JSON.stringify(project)}, ${JSON.stringify(project + "-old")});
+fs.mkdirSync(${JSON.stringify(project)});
+process.exit(1);\n`, { mode: 0o700 });
+        process.env.PATH = bin;
+      } else {
+        fs.openSync = (name, ...args) => {
+          const fd = open(name, ...args);
+          if (!swapped && name === (mode === "read" ? registry : registry + ".lock")) {
+            swapped = true; fs.renameSync(project, project + "-old"); fs.mkdirSync(project);
+          }
+          return fd;
+        };
+      }
+      assert.throws(() => projectIdentity(project, { create: mode !== "read" }), { code: "BRIDGE_PROJECT_IDENTITY_CHANGED" }, mode);
+      assert.ok(mode === "git" ? fs.existsSync(project + "-old") : swapped, "the selected real directory replacement must happen");
+      if (before === null) assert.equal(fs.existsSync(registry), false);
+      else assert.deepEqual(fs.readFileSync(registry), before);
+      assert.deepEqual(fs.readdirSync(project), []);
+      assert.deepEqual(fs.readdirSync(project + "-old"), []);
+    } finally {
+      fs.openSync = open;
+      if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("project creation identity rejects recycled inodes and requires explicit legacy adoption", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-creation-identity-"));
   const project = path.join(root, "project"), moved = path.join(root, "moved");

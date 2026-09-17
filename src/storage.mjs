@@ -288,7 +288,7 @@ function newProjectId() {
 
 /**
  * Resolve a project without making Git a prerequisite. The registry is the
- * authority for runtime identity. A directory's device/inode pair detects a
+ * authority for runtime identity. A directory's creation fingerprint detects a
  * same-filesystem move; the path is retained as a human-facing locator. Git's
  * local config is an optional diagnostic annotation when a user or another tool has
  * already placed an id there, captured on registration rather than polled on
@@ -298,7 +298,18 @@ export function projectIdentity(projectDir, { create = false } = {}) {
   const absolute = path.resolve(projectDir);
   const canonical = fs.realpathSync.native(absolute);
   const identity = fileIdentity(canonical);
+  const verifyIdentity = () => {
+    try {
+      if (fs.realpathSync.native(canonical) !== canonical || fileIdentity(canonical) !== identity) throw new Error("Directory changed");
+    } catch (cause) {
+      throw new BridgeError("Project directory changed during registration or lookup. No registration was written; inspect the directory before retrying.", {
+        code: "BRIDGE_PROJECT_IDENTITY_CHANGED", operation: "identify project", cause,
+      });
+    }
+  };
   const resolve = (registry) => {
+    // Ownership may have blocked, and even read-only registry I/O can race a move.
+    verifyIdentity();
     const records = Object.values(registry.projects);
     // Never match by Git metadata or path alone. A copied `.git/config` can carry
     // the same optional marker to a different clone, and a recreated directory can
@@ -318,7 +329,7 @@ export function projectIdentity(projectDir, { create = false } = {}) {
       });
       if (known.path !== canonical) {
         known.path = canonical;
-        if (create) writeRegistry(registry);
+        if (create) { verifyIdentity(); writeRegistry(registry); }
       }
       return { kind: known.gitId ? "git-clone" : "local", id: known.id, root: canonical, portable: false, fileIdentity: identity };
     }
@@ -326,6 +337,7 @@ export function projectIdentity(projectDir, { create = false } = {}) {
     requireFileIdentity(identity);
     const root = gitRoot(projectDir);
     const localId = root && gitProjectId(root);
+    verifyIdentity(); // Optional subprocess probes must not make the captured identity stale.
     const id = newProjectId();
     registry.projects[id] = { id, path: canonical, fileIdentity: identity, gitId: localId || null, createdAt: new Date().toISOString() };
     writeRegistry(registry);
