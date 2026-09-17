@@ -4,7 +4,7 @@
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, writeFileExclusive, nowIso, fileExists, log, dim, OK, processAlive, BridgeError } from "./util.mjs";
+import { writeJsonAtomic, writeFileExclusive, readOwnedFile, nowIso, fileExists, log, dim, OK, processAlive, BridgeError } from "./util.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
@@ -593,10 +593,12 @@ export function removeLaneFromState(disk, name) {
 function readStateFile(projectDir) {
   const p = statePath(projectDir);
   let text;
-  try { text = fs.readFileSync(p, "utf8"); } catch (error) {
-    if (error.code === "ENOENT") return null;
-    throw new Error("Bridge state could not be read. Refusing to overwrite existing state.", { cause: error });
+  try { text = readOwnedFile(p, { encoding: "utf8", missing: true }); } catch (error) {
+    throw new BridgeError("Bridge state could not be read. Refusing to overwrite existing state.", {
+      cause: error, code: "BRIDGE_STATE_UNREADABLE", operation: "read state",
+    });
   }
+  if (text === null) return null;
   let s;
   try { s = JSON.parse(text); } catch {
     throw new Error("Bridge state exists but could not be parsed. Refusing to overwrite it so no lane is lost; repair or remove it.");
@@ -623,7 +625,7 @@ function preserveSchemaBackup(projectDir, version) {
   if (version === STATE_VERSION) return null;
   const file = statePath(projectDir);
   const backup = `${file}.v${version}.backup`;
-  const original = fs.readFileSync(file);
+  const original = readOwnedFile(file);
   if (JSON.parse(original).version !== version) {
     throw new Error("Bridge state changed before schema backup; retry the operation.");
   }
@@ -631,10 +633,12 @@ function preserveSchemaBackup(projectDir, version) {
     writeFileExclusive(backup, original);
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    const stat = fs.lstatSync(backup);
-    if (!stat.isFile() || stat.isSymbolicLink() || !fs.readFileSync(backup).equals(original)) {
-      throw new Error("Existing schema backup does not match the source state. Refusing to overwrite either file.");
+    let existing;
+    try { existing = readOwnedFile(backup); }
+    catch (cause) {
+      throw new BridgeError("Existing schema backup does not match a safe source copy. Refusing to overwrite either file.", { cause });
     }
+    if (!existing.equals(original)) throw new Error("Existing schema backup does not match the source state. Refusing to overwrite either file.");
   }
   return backup;
 }
@@ -1037,22 +1041,13 @@ export function latestCheckpoint(projectDir, lane = DEFAULT_LANE, kind = "fullCo
   const rel = checkpointRel(projectDir, lane, name);
   const file = safeCheckpointPath(projectDir, rel);
   if (!file) throw fail();
-  let fd;
   try {
-    const before = fs.lstatSync(file);
-    if (!before.isFile() || before.nlink !== 1) throw fail();
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) throw fail();
-    const text = fs.readFileSync(fd, "utf8");
-    const after = fs.fstatSync(fd);
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw fail();
+    const text = readOwnedFile(file, { encoding: "utf8" });
     return { rel, text };
   } catch (error) {
     if (error.code === "BRIDGE_CHECKPOINT_UNREADABLE") throw error;
     throw fail(error);
   }
-  finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 /** Create a checkpoint without replacing evidence; returns its logical path. */

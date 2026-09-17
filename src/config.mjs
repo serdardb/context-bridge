@@ -14,9 +14,8 @@
 // Nobody hand-edits the file. It is where saved decisions accumulate, written by
 // the same command that made them, which is why `bridge args` can show and clear
 // them: a saved "stop asking" with no way to unsay it would be a trap.
-import fs from "node:fs";
 import path from "node:path";
-import { BridgeError, writeJsonAtomic } from "./util.mjs";
+import { BridgeError, writeJsonAtomic, readOwnedFile } from "./util.mjs";
 import { bridgeDir, withProjectStateReadLock } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
@@ -53,27 +52,14 @@ function configPath(projectDir) {
 /** Read the project's config, or an empty one. Never throws on a missing file. */
 export function loadConfig(projectDir) {
   let raw;
-  let fd;
-  let observed = false;
   try {
-    const file = configPath(projectDir);
-    const before = fs.lstatSync(file);
-    observed = true;
-    if (!before.isFile() || before.nlink !== 1) throw new Error("Unsafe configuration entry");
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error("Configuration changed during open");
-    }
-    raw = fs.readFileSync(fd, "utf8");
-    const after = fs.fstatSync(fd);
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw new Error("Configuration changed during read");
+    raw = readOwnedFile(configPath(projectDir), { encoding: "utf8", missing: true });
   } catch (error) {
-    if (!observed && error.code === "ENOENT") return { version: CONFIG_VERSION, agents: {} };
     throw new BridgeError("Bridge config could not be read safely; saved arguments were not reset.", {
       code: "BRIDGE_CONFIG_UNREADABLE", operation: "read saved agent arguments", cause: error,
     });
-  } finally { if (fd !== undefined) fs.closeSync(fd); }
+  }
+  if (raw === null) return { version: CONFIG_VERSION, agents: {} };
   let parsed;
   try {
     parsed = JSON.parse(raw);

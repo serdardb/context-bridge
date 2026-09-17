@@ -269,6 +269,16 @@ Unsupported config versions and invalid argument structures also refuse rather
 than being rewritten as version 1. Versionless legacy objects remain readable;
 unrecognized metadata on a valid current-version object survives per-agent edits.
 
+State, schema-backup, saved-config and latest-checkpoint reads share
+`readOwnedFile`: only a regular single-link leaf is accepted, opened with
+no-follow where available and checked against the named inode. Observed size or
+mtime changes cause refusal. Only absence at the initial lookup may mean empty
+state/config; a dangling link or disappearance after lookup is an error. Native
+causes remain available to callers without being printed as private paths in
+expected CLI failures. These checks are not a transactional snapshot or a
+general defense against hostile parent-directory replacement, and do not imply
+every vendor or registry read uses this helper.
+
 State contains references only:
 
 ```json

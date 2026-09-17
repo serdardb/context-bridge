@@ -170,10 +170,15 @@ for (const pauseAt of ["first-read", "upgrade-write"]) {
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
         }
       };
-      const read = fs.readFileSync; let first = true;
+      const read = fs.readFileSync, open = fs.openSync; let first = true, stateFd;
+      fs.openSync = (name, ...args) => {
+        const fd = open(name, ...args);
+        if (name === ${JSON.stringify(file)}) stateFd = fd;
+        return fd;
+      };
       fs.readFileSync = (name, ...args) => {
         const value = read(name, ...args);
-        if (${pauseAt === "first-read"} && name === ${JSON.stringify(file)} && first) { first = false; pause(); }
+        if (${pauseAt === "first-read"} && (name === ${JSON.stringify(file)} || (typeof name === 'number' && name === stateFd)) && first) { first = false; pause(); }
         return value;
       };
       loadState(process.cwd(), { write: (name, value) => {
@@ -282,9 +287,9 @@ test("unreadable global state is never bootstrapped or mutated as an empty proje
       const project = ${JSON.stringify(project)};
       ensureState(project);
       const file = statePath(project), original = fs.readFileSync(file);
-      const read = fs.readFileSync, access = fs.accessSync;
+      const stat = fs.lstatSync, access = fs.accessSync;
       const fail = () => { throw Object.assign(new Error('fixture secret must not leak'), { code: 'EACCES' }); };
-      fs.readFileSync = (name, ...args) => name === file ? fail() : read(name, ...args);
+      fs.lstatSync = (name, ...args) => name === file ? fail() : stat(name, ...args);
       fs.accessSync = (name, ...args) => name === file ? fail() : access(name, ...args);
       let invoked = false;
       for (const operation of [
@@ -295,10 +300,30 @@ test("unreadable global state is never bootstrapped or mutated as an empty proje
         () => withProjectStateReadLock(project, () => { invoked = true; }),
       ]) assert.throws(operation, /Bridge state could not be read/);
       assert.equal(invoked, false, 'no callback can proceed from unknown state');
-      fs.readFileSync = read; fs.accessSync = access;
+      fs.lstatSync = stat; fs.accessSync = access;
       assert.deepEqual(fs.readFileSync(file), original);
       assert.equal(fs.existsSync(file + '.lock'), false);
       assert.ok(loadState(project));
+      const outside = project + '/outside.json';
+      fs.writeFileSync(outside, original);
+      for (const kind of ['symlink', 'hardlink', 'directory', 'dangling']) {
+        fs.unlinkSync(file);
+        if (kind === 'symlink') fs.symlinkSync(outside, file);
+        else if (kind === 'hardlink') fs.linkSync(outside, file);
+        else if (kind === 'directory') fs.mkdirSync(file);
+        else fs.symlinkSync(outside + '.missing', file);
+        for (const operation of [
+          () => loadState(project), () => loadState(project, { readOnly: true }),
+          () => ensureState(project),
+          () => mutateState(project, 'main', () => { invoked = true; }),
+          () => mutateProject(project, () => { invoked = true; }),
+        ]) assert.throws(operation, { code: 'BRIDGE_STATE_UNREADABLE' }, kind);
+        assert.equal(invoked, false);
+        assert.deepEqual(fs.readFileSync(outside), original);
+        if (kind === 'directory') fs.rmdirSync(file); else fs.unlinkSync(file);
+        fs.writeFileSync(file, original);
+      }
+      fs.unlinkSync(outside);
     `], { encoding: "utf8", timeout: 10000, env: {
       ...process.env, PATH: "", CONTEXT_BRIDGE_STORAGE: "", CONTEXT_BRIDGE_HOME: path.join(root, "home"),
     } });

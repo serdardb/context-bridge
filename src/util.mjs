@@ -143,6 +143,25 @@ export function readJson(p, fallback = null) {
   }
 }
 
+/** Read a bridge-owned regular leaf; only initial absence may return null. */
+export function readOwnedFile(file, { encoding = null, missing = false } = {}) {
+  let before;
+  try { before = fs.lstatSync(file); }
+  catch (error) { if (missing && error.code === "ENOENT") return null; throw error; }
+  const unsafe = () => Object.assign(new Error("Stored file is unsafe or changed during reading."), { code: "BRIDGE_UNSAFE_FILE" });
+  if (!before.isFile() || before.nlink !== 1) throw unsafe();
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) throw unsafe();
+    const content = fs.readFileSync(fd, encoding);
+    const after = fs.fstatSync(fd);
+    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw unsafe();
+    return content;
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 function syncPublishedDirectory(file) {
   // Node cannot portably open Windows directories for FlushFileBuffers. Do not
   // advertise POSIX directory durability on that platform.
