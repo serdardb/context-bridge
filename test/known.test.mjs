@@ -387,11 +387,12 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(fs.readFileSync(safeCheckpointPath(project, restored.pendingInjection.deltaFile), "utf8"), /claude decided the architecture/);
   // The shape read succeeds; fail either the probe's parse or the subsequent
   // real extraction. Preflight alone must never authorize acknowledging loss.
-  for (const failAt of [2, 3]) {
+  for (const fault of ["io", "malformed"]) for (const failAt of [2, 3]) {
     saveState(project, s);
     let reads = 0;
     fs.readFileSync = (file, ...args) => {
       if (file === claudeTranscript && ++reads >= failAt) {
+        if (fault === "malformed") return originalRead(file, ...args) + "\n{unfinished";
         throw Object.assign(new Error("private I/O detail"), { code: "EIO" });
       }
       return originalRead(file, ...args);
@@ -405,7 +406,10 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     const file = safeCheckpointPath(project, failedRead.pendingInjection.deltaFile);
     for (const p of [file, file.replace(/\.md$/, "-full.md")]) {
       const body = fs.readFileSync(p, "utf8");
-      assert.match(body, /Claude Code: source could not be read reliably/);
+      assert.match(body, fault === "io"
+        ? /Claude Code: source could not be read reliably/
+        : /Claude Code: source was only partially readable/);
+      if (fault === "malformed") assert.match(body, /claude decided the architecture/);
       assert.doesNotMatch(body, /private I\/O detail/);
     }
     commitKnown(failedRead, failedRead.pendingInjection);

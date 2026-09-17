@@ -13,9 +13,9 @@ import { tryExec, BridgeError } from "./util.mjs";
 // the caller, and whatever does not fit is left out whole and counted.
 
 /** Claude transcript records (user/assistant text) newer than sinceIso. */
-export function claudeMessagesSince(transcriptPath, sinceIso) {
+export function claudeMessagesSince(transcriptPath, sinceIso, readStatus = null) {
   const out = [];
-  for (const r of readJsonl(transcriptPath, true)) {
+  for (const r of readJsonl(transcriptPath, true, readStatus)) {
     if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
     if (r.isSidechain) continue;
     if (r.type === "user") {
@@ -31,10 +31,11 @@ export function claudeMessagesSince(transcriptPath, sinceIso) {
 
 /** Codex rollout activity newer than sinceIso. */
 export function codexActivitySince(rolloutPath, sinceIso) {
+  const readStatus = { malformed: 0 };
   const messages = [];
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const r of readJsonl(rolloutPath, true)) {
+  for (const r of readJsonl(rolloutPath, true, readStatus)) {
     if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
     const p = r.payload || {};
     if (r.type === "event_msg") {
@@ -55,7 +56,7 @@ export function codexActivitySince(rolloutPath, sinceIso) {
       }
     }
   }
-  return { messages, patchedFiles: [...patchedFiles], turnsCompleted };
+  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 };
 }
 
 /** True when the rollout contains a task_complete event after sinceIso (idle signal). */
@@ -515,7 +516,7 @@ function cap(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function* readJsonl(p, required = false) {
+function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
@@ -529,7 +530,7 @@ function* readJsonl(p, required = false) {
     if (!line.trim()) continue;
     try {
       yield JSON.parse(line);
-    } catch {}
+    } catch { if (readStatus) readStatus.malformed++; }
   }
 }
 

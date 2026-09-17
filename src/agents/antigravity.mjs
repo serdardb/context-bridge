@@ -200,16 +200,17 @@ export function currentMark(ref) {
 }
 
 export function activitySince(ref, mark) {
+  const readStatus = { malformed: 0 };
   const from = typeof mark === "number" ? mark : -1;
   const messages = [];
-  for (const row of readJsonl(ref.transcriptPath, true)) {
+  for (const row of readJsonl(ref.transcriptPath, true, readStatus)) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (!isConversationRow(row)) continue;
     const text = textOf(row);
     const role = roleFor(row);
     if (text && !(role === "user" && isBridgeProtocolNoise(text))) messages.push({ role, text, at: row.created_at ?? null });
   }
-  return { messages, patchedFiles: [], turnsCompleted: 0 };
+  return { messages, patchedFiles: [], turnsCompleted: 0, sourceComplete: readStatus.malformed === 0 };
 }
 
 /**
@@ -332,7 +333,7 @@ export function smokeCommand() {
   return { cmd: "agy", args: ["--print", "Reply with exactly: bridge-ok"] };
 }
 
-function* readJsonl(p, required = false) {
+function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
@@ -346,7 +347,7 @@ function* readJsonl(p, required = false) {
     if (!line.trim()) continue;
     try {
       yield JSON.parse(line);
-    } catch {}
+    } catch { if (readStatus) readStatus.malformed++; }
   }
 }
 

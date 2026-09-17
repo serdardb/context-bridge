@@ -96,6 +96,11 @@ All adapters must implement the operations listed in `REQUIRED_OPERATIONS`:
 - `currentMark(ref)` returns an opaque vendor watermark. Callers pass it back
   unchanged to `activitySince(ref, mark)` and `auditSince(ref, mark)`.
 - `activitySince` returns normalized messages, patched files and completed turns.
+  It may return `sourceComplete: boolean`: `false` means the actual extraction
+  skipped unreadable records. Handoff carries the readable messages with an
+  explicit limitation and does not advance that source's watermark. This is
+  separate from receipt evidence below; a successful preflight cannot override
+  incomplete extraction. Absence keeps the existing probe-based contract.
   It may also return `deliveryObserved: boolean`: whether new evidence after the
   supplied watermark confirms receipt of the handoff. When supplied, this is
   authoritative for launcher acknowledgement; `false` preserves partial/failed

@@ -198,8 +198,9 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     const probe = adapter.parseProbe(ref);
     if (!["readable", "partial"].includes(probe.status)) return unavailable();
     const activity = adapter.activitySince(ref, since);
-    if (probe.status === "partial") warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
-    return { ref, activity, mark, complete: probe.status === "readable" };
+    const complete = probe.status === "readable" && activity.sourceComplete !== false;
+    if (!complete) warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
+    return { ref, activity, mark, complete };
   } catch (error) {
     if (error instanceof AdapterResultError) throw error;
     return unavailable();

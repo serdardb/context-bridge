@@ -329,7 +329,9 @@ function sessionLine(session) {
         text: `Session readable by this version of the bridge${n == null ? "" : ` (${n} messages)`}`,
       };
     case "partial":
-      return { level: "warn", text: `Session readable, ${session.malformed} malformed line(s) skipped` };
+      return { level: "warn", text: session.malformed > 0
+        ? `Session readable, ${session.malformed} malformed line(s) skipped`
+        : "Session became only partially readable during activity extraction" };
     case "unreadable":
       return {
         level: "bad",

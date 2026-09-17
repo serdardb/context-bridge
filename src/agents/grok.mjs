@@ -130,10 +130,11 @@ function normaliseMark(mark) {
 }
 
 export function activitySince(ref, mark) {
+  const readStatus = { malformed: 0 };
   const { rows: from, ts: since } = normaliseMark(mark);
   const messages = [];
   let index = 0;
-  for (const r of readJsonl(ref.transcriptPath, true)) {
+  for (const r of readJsonl(ref.transcriptPath, true, readStatus)) {
     const i = index++;
     if (i < from) continue;
     const role = r.type === "user" ? "user" : r.type === "assistant" ? "assistant" : null;
@@ -150,14 +151,14 @@ export function activitySince(ref, mark) {
   }
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const e of readJsonl(ref.eventsPath, true)) {
+  for (const e of readJsonl(ref.eventsPath, true, readStatus)) {
     if (since && e.ts && e.ts <= since) continue;
     if (e.type === "turn_ended") turnsCompleted++;
     if (e.type === "tool_completed" && e.outcome === "success") {
       for (const f of filesFromToolEvent(e)) patchedFiles.add(f);
     }
   }
-  return { messages, patchedFiles: [...patchedFiles], turnsCompleted };
+  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 };
 }
 
 /**
@@ -271,7 +272,7 @@ export function idleAfter(ref, sinceIso) {
   return false;
 }
 
-function* readJsonl(p, required = false) {
+function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
@@ -285,7 +286,7 @@ function* readJsonl(p, required = false) {
     if (!line.trim()) continue;
     try {
       yield JSON.parse(line);
-    } catch {}
+    } catch { if (readStatus) readStatus.malformed++; }
   }
 }
 

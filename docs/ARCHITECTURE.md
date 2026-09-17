@@ -564,6 +564,12 @@ is disclosed and does not advance the source watermark. Grok/Antigravity marks
 likewise require the underlying files. Optional audit/discovery/idle readers
 retain their existing fallback semantics; this is not an atomic native snapshot
 or protection against content rewrites between successful reads.
+These four adapters also report `sourceComplete: false` when the actual
+conversation read skips malformed JSON, including lines introduced after the
+probe. Handoff keeps readable messages, discloses the limitation and withholds
+that source's watermark. Closing-word extraction refuses such an incomplete
+tail rather than acknowledging it. This does not detect a rewrite containing
+different but syntactically valid records.
 
 ## Per-agent launch flags
 

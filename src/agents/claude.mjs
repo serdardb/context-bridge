@@ -75,8 +75,9 @@ export function resumeCommand(ref, extraArgs = []) {
 }
 
 export function activitySince(ref, sinceIso) {
-  const messages = claudeMessagesSince(ref.transcriptPath, sinceIso);
-  return { messages, patchedFiles: [], turnsCompleted: 0 };
+  const readStatus = { malformed: 0 };
+  const messages = claudeMessagesSince(ref.transcriptPath, sinceIso, readStatus);
+  return { messages, patchedFiles: [], turnsCompleted: 0, sourceComplete: readStatus.malformed === 0 };
 }
 
 /**

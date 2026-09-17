@@ -86,6 +86,7 @@ export function probeWithActivity(adapter, ref, shape) {
   if (["missing", "mismatch", "unreadable"].includes(shape.status)) return { ...shape, messages: null };
   try {
     const activity = adapter.activitySince(ref, null);
+    if (activity.sourceComplete === false) return { ...shape, status: "partial", messages: activity.messages.length };
     return { ...shape, messages: activity.messages.length };
   } catch (err) {
     if (err.code === "BRIDGE_TRANSCRIPT_UNREADABLE") {

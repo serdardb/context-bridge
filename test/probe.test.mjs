@@ -27,10 +27,14 @@ test("an empty session is readable, because having said nothing is not a failure
 
 test("a torn write is partial, not fatal: the parser reads past the bad line", () => {
   const good = JSON.stringify({ type: "user", timestamp: "2026-07-21T00:00:00Z" });
-  const res = probeJsonl(write("torn.jsonl", `${good}\n{ half-written`), (r) => r.type === "user");
+  const file = write("torn.jsonl", `${good}\n{ half-written`);
+  const res = probeJsonl(file, (r) => r.type === "user");
   assert.equal(res.status, "partial");
   assert.equal(res.known, 1);
   assert.equal(res.malformed, 1);
+  for (const id of ["claude", "codex", "grok", "antigravity"]) {
+    assert.equal(adapterFor(id).activitySince({ transcriptPath: file, eventsPath: file }, null).sourceComplete, false, id);
+  }
 });
 
 test("a missing transcript is distinct from an I/O failure", () => {
