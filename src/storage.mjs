@@ -306,14 +306,24 @@ export function adoptProject(projectDir, id) {
   }
   const canonical = fs.realpathSync.native(path.resolve(projectDir));
   if (!fs.statSync(canonical).isDirectory()) throw new Error("Project adoption requires a directory.");
+  const destinationIdentity = fileIdentity(canonical);
   if (hasLegacyRuntime(legacyBridgeDir(canonical))) {
     throw new Error("This directory contains legacy bridge state; refusing to merge it with another project.");
   }
-  return withRegistryLock(() => {
+  if (!readRegistry().projects[id]) throw new Error(`Unknown bridge project '${id}'.`);
+  // Adoption names the existing UUID, not the new directory's provisional id.
+  // Never hold registry ownership while waiting for the runtime owner.
+  return withKernelLockSync(path.join(storageHome(), "locks", `${id}.runtime.guard`), () => withRegistryLock(() => {
     const registry = readRegistry();
     const record = registry.projects[id];
     if (!record || record.id !== id) throw new Error(`Unknown bridge project '${id}'.`);
     const identity = fileIdentity(canonical);
+    if (!identity || identity !== destinationIdentity || fs.realpathSync.native(canonical) !== canonical ||
+        hasLegacyRuntime(legacyBridgeDir(canonical))) {
+      throw new BridgeError("Adoption destination changed while waiting for ownership; refusing to reconnect sessions. Inspect the destination and retry.", {
+        code: "BRIDGE_ADOPTION_CHANGED",
+      });
+    }
     const other = Object.values(registry.projects).find((entry) => entry.id !== id &&
       (entry.path === canonical || (identity && entry.fileIdentity === identity)));
     if (other) throw new Error("This directory is already registered to another bridge project; refusing to merge their sessions.");
@@ -334,7 +344,7 @@ export function adoptProject(projectDir, id) {
       writeRegistry(registry);
     }
     return { id, root: canonical, previousRoot, store: path.join(storageHome(), "projects", id) };
-  });
+  }));
 }
 
 /** The runtime directory. Tests may opt into the legacy layout to isolate old fixtures. */

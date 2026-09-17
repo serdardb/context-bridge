@@ -439,6 +439,21 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
         assert.equal(result.status, 0, result.stderr);
       }
       assert.equal(fs.statSync(guard).ino, before.ino);
+      const moved = project + '-moved';
+      const adoption = 'const { adoptProject } = await import(' +
+        JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
+        '); adoptProject(' + JSON.stringify(moved) + ', ' + JSON.stringify(id) + ');';
+      withProjectRuntimeLock(project, () => {
+        fs.renameSync(project, project + '-retained');
+        fs.mkdirSync(moved);
+        const result = run(adoption);
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /BRIDGE_LOCK_TIMEOUT/);
+      });
+      const adopted = run(adoption);
+      assert.equal(adopted.status, 0, adopted.stderr);
+      assert.equal(projectIdentity(moved).id, id);
+      assert.equal(fs.statSync(guard).ino, before.ino);
     `], { encoding: "utf8", timeout: 15000, env: {
       ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
     } });

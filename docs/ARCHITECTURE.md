@@ -335,9 +335,12 @@ also hold `locks/<UUID>.runtime.guard` outside the project data directory. The
 synchronous project scope is reentrant for nested checkpoint writes; its kernel
 guard is not. Identity is checked again after acquiring ownership. The scope
 precedes state/migration locks, and registry access inside it never waits for a
-runtime lock while holding the registry lock. This is a lifecycle prerequisite,
-not a project-removal guarantee: launcher append paths and evidence operations
-outside these scopes still need participation before retirement is exposed.
+runtime lock while holding the registry lock. Explicit adoption acquires the
+existing UUID's runtime guard before the registry lock and rechecks its destination
+after waiting. Launcher closing-word appends and delivery acknowledgement also
+hold runtime ownership. This is a lifecycle prerequisite, not a project-removal
+guarantee: evidence operations outside these scopes still need participation
+before retirement is exposed.
 
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive

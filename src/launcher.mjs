@@ -25,6 +25,7 @@ import { bindSeed, unbindSeed } from "./seed.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 import { laneWorkspace } from "./worktree.mjs";
+import { withProjectRuntimeLock } from "./storage.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -616,6 +617,10 @@ function readDelta(projectDir, inj) {
  */
 function commitDelivery(projectDir, inj) {
   if (!inj?.deltaFile) return;
+  return withProjectRuntimeLock(projectDir, () => commitDeliveryOwned(projectDir, inj));
+}
+
+function commitDeliveryOwned(projectDir, inj) {
   const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
   if (!deltaPath) return; // a deltaFile that escapes .bridge is never renamed
   try {
@@ -639,6 +644,11 @@ function commitDelivery(projectDir, inj) {
 export function appendFinalWords(projectDir, s, agent) {
   const inj = s.pendingInjection;
   if (!inj || inj.agent === agent) return;
+  return withProjectRuntimeLock(projectDir, () => appendFinalWordsOwned(projectDir, s, agent));
+}
+
+function appendFinalWordsOwned(projectDir, s, agent) {
+  const inj = s.pendingInjection;
   const adapter = adapterFor(agent);
   const slot = agentSlot(s, agent);
   if (!adapter || !slot.id) return;
