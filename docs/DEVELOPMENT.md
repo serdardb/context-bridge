@@ -51,19 +51,17 @@ our Node 18.18 installation contract. Verify clean tarball installation with
 `--engine-strict` on the exact minimum Node version after dependency updates;
 a passing checkout suite does not prove consumer dependency resolution.
 
-## Storage test migration
+## Storage tests
 
-`npm run test:global` runs the suite against the production global runtime
+`npm test` (also `npm run test:global`) runs the suite against the production global runtime
 store. Its preload gives each worker an isolated `CONTEXT_BRIDGE_HOME` and
 removes the legacy storage override; CLI children inherit that worker's store.
 It never uses the developer's real runtime home.
 
-Fixture conversion is in progress. `npm test` temporarily uses
-`test/setup-legacy.mjs`, preserving the old project-local fixtures while they
-are converted in reviewable batches. A green result from that command alone
-does **not** close global-storage acceptance. Remaining failures in
-`test:global` block switching the default and completing this release gate.
-Remove the temporary legacy runner when the full global suite passes.
+There is no suite-wide legacy storage pin. CI uses the same `npm test` command.
+Legacy migration cases deliberately create project-local input, then verify
+the production migration and its retained evidence. Passing this suite does
+not replace real-agent, platform or release acceptance.
 
 New fixtures should register their project before creating checkpoint files,
 use `checkpointsDir` / `safeCheckpointPath` for physical storage, and retain

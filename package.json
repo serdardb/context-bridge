@@ -23,7 +23,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./test/setup-legacy.mjs --test test/*.test.mjs",
+    "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "test:global": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "test:package": "node test/integration/package-install.mjs",
     "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;",

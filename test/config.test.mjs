@@ -1,10 +1,12 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { bridgeDir } from "../src/state.mjs";
 import { loadConfig, saveArgs, clearArgs, savedArgs, resolveArgs, isDangerous } from "../src/config.mjs";
 
 test("concurrent config clear and save preserve the other agent in Git-less global storage", { timeout: 20000 }, async (t) => {
@@ -85,12 +87,12 @@ test("a failed config flush preserves saved arguments and releases the writer lo
   const project = fresh();
   t.after(() => fs.rmSync(project, { recursive: true, force: true }));
   saveArgs(project, "claude", ["--model", "previous"]);
-  const file = path.join(project, ".bridge", "config.json");
+  const file = path.join(bridgeDir(project), "config.json");
   const before = fs.readFileSync(file);
   const mock = t.mock.method(fs, "fsyncSync", () => { throw Object.assign(new Error("config flush failed"), { code: "EIO" }); });
   assert.throws(() => saveArgs(project, "codex", ["--model", "new"]), /config flush failed/);
   assert.deepEqual(fs.readFileSync(file), before);
-  assert.equal(fs.existsSync(path.join(project, ".bridge", "state.json.lock")), false);
+  assert.equal(fs.existsSync(path.join(bridgeDir(project), "state.json.lock")), false);
   assert.equal(fs.readdirSync(path.dirname(file)).some((name) => name.includes(".tmp-")), false);
   mock.mock.restore();
   saveArgs(project, "codex", ["--model", "new"]);
@@ -186,8 +188,8 @@ test("a flag that would break the session link cannot be saved at all", () => {
 
 test("a corrupt config complains instead of silently discarding saved flags", () => {
   const project = fresh();
-  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
-  fs.writeFileSync(path.join(project, ".bridge", "config.json"), "{ not json");
+  ensureRuntimeStore(project);
+  fs.writeFileSync(path.join(bridgeDir(project), "config.json"), "{ not json");
   assert.throws(() => loadConfig(project), /not valid JSON/);
 });
 

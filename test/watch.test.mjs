@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { watchProject } from "../src/watch.mjs";
-import { ensureState } from "../src/state.mjs";
+import { ensureState, statePath } from "../src/state.mjs";
 
 const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 test("watch requires explicit policy and CLI streams without Git or project writes, then stops on SIGTERM", { timeout: 10000 }, async () => {
@@ -47,7 +47,7 @@ test("watch reports unavailable and recovery without adopting a replacement dire
         events.push(event);
         if (events.length === 1) {
           ensureState(root);
-          stored = fs.readFileSync(path.join(root, ".bridge", "state.json"));
+          stored = fs.readFileSync(statePath(root));
         } else if (events.length === 2) {
           fs.renameSync(root, `${root}-original`);
           fs.mkdirSync(root);
@@ -57,16 +57,16 @@ test("watch reports unavailable and recovery without adopting a replacement dire
           fs.rmdirSync(root);
           fs.renameSync(`${root}-original`, root);
         } else if (events.length === 4) {
-          fs.writeFileSync(path.join(root, ".bridge", "state.json"), JSON.stringify({ version: 999 }));
+          fs.writeFileSync(statePath(root), JSON.stringify({ version: 999 }));
         } else if (events.length === 5) {
           assert.equal(event.type, "unavailable");
-          assert.equal(JSON.parse(fs.readFileSync(path.join(root, ".bridge", "state.json"))).version, 999);
-          fs.writeFileSync(path.join(root, ".bridge", "state.json"), stored);
+          assert.equal(JSON.parse(fs.readFileSync(statePath(root))).version, 999);
+          fs.writeFileSync(statePath(root), stored);
         } else if (events.length === 6) controller.abort();
       } });
     assert.deepEqual(events.map((event) => event.type), ["snapshot", "change", "unavailable", "recovered", "unavailable", "recovered"]);
     assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6]);
-    assert.deepEqual(fs.readFileSync(path.join(root, ".bridge", "state.json")), stored);
+    assert.deepEqual(fs.readFileSync(statePath(root)), stored);
     await assert.rejects(watchProject(root, { policy: "repair", emit() {} }), /read-only/);
     await assert.rejects(watchProject(root, { policy: "read-only", interval: 1, emit() {} }), /interval/);
   } finally {

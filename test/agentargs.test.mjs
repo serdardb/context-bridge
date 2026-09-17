@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -107,6 +108,7 @@ test("buildCommand puts the bridge's own --resume last so it wins", () => {
 
 test("buildCommand shields the codex delta behind -- so variadic flags cannot swallow it", () => {
   const project = makeProject();
+  ensureRuntimeStore(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   fs.writeFileSync(path.join(checkpointsDir(project), "delta.md"), "[Bridge Context Update]");
 

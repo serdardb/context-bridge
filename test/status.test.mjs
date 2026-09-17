@@ -1,11 +1,12 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, emptyLane, STATE_VERSION, writeCheckpoint, safeCheckpointPath, statePath } from "../src/state.mjs";
+import { defaultState, saveState, loadState, emptyLane, STATE_VERSION, writeCheckpoint, safeCheckpointPath, statePath, checkpointsDir, bridgeDir } from "../src/state.mjs";
 import { HOOK_DELTA_BYTES, hookBody, fullContextFor, untrimmedPointer } from "../src/delivery.mjs";
 import { projectStatus } from "../src/status.mjs";
 
@@ -202,7 +203,7 @@ function fixture() {
   };
   saveState(project, s);
 
-  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  const checkpoints = checkpointsDir(project);
   fs.mkdirSync(checkpoints, { recursive: true });
   for (const name of [
     "2026-07-22T07-19-19-498Z-codex-to-claude.md.consumed",
@@ -230,7 +231,7 @@ test("every switch says which day it happened, not just the hour", () => {
   }
   saveState(project, s);
 
-  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  const checkpoints = checkpointsDir(project);
   fs.mkdirSync(checkpoints, { recursive: true });
   const stamp = (d) => d.toISOString().replace(/:/g, "-").replace(".", "-");
   const now = new Date();
@@ -265,7 +266,7 @@ test("an agent whose switch records were pruned is not called one that never swi
     s.agents[id] = { id: `${id}-1`, transcriptPath: transcript, mark: id === "codex" ? "2026-07-20T10:00:00.000Z" : null, idle: false };
   }
   saveState(project, s);
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true }); // pruned bare
+  fs.mkdirSync(checkpointsDir(project), { recursive: true }); // pruned bare
 
   const out = status(project);
   assert.doesNotMatch(out, /Codex\s+has never handed off/, "that is a false statement, not a gap");
@@ -285,7 +286,7 @@ test("a trimmed switch list says it was trimmed", () => {
 
   // One switch survives; Codex's own are gone, so the list is bounded by
   // retention rather than by what happened.
-  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  const checkpoints = checkpointsDir(project);
   fs.mkdirSync(checkpoints, { recursive: true });
   fs.writeFileSync(path.join(checkpoints, "2026-07-22T09-00-00-000Z-claude-to-codex.md"), "x");
 
@@ -307,7 +308,7 @@ test("a history pruned to nothing still says it was pruned", () => {
     s.agents[id] = { id: `${id}-1`, transcriptPath: transcript, mark: "2026-07-20T10:00:00.000Z", idle: false };
   }
   saveState(project, s);
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true }); // every one gone
+  fs.mkdirSync(checkpointsDir(project), { recursive: true }); // every one gone
 
   const out = status(project);
   assert.match(out, /no longer kept/, "with nothing left to show, saying why matters more, not less");
@@ -336,13 +337,14 @@ test("a project that has genuinely never switched says nothing about pruning", (
 // may appear.
 test("status will not read switch history through a symlinked lane checkpoints dir", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-status-symlink-")));
-  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  ensureRuntimeStore(project);
+  fs.mkdirSync(path.join(bridgeDir(project), "lanes", "feature"), { recursive: true });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   fs.writeFileSync(path.join(outside, "2026-07-22T07-29-41-089Z-claude-to-codex.md"), "x");
-  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+  fs.symlinkSync(outside, checkpointsDir(project, "feature"));
 
   fs.writeFileSync(
-    path.join(project, ".bridge", "state.json"),
+    statePath(project),
     JSON.stringify(
       { version: STATE_VERSION, project, activeLane: "feature", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null },
       null,

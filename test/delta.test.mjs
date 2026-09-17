@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -471,6 +472,7 @@ test("a summary too large for the road it is travelling fails, and writes nothin
   const { defaultState, saveState, checkpointsDir, loadState } = await import("../src/state.mjs");
 
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-summary-road-")));
+  ensureRuntimeStore(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const rollout = path.join(project, "rollout.jsonl");
   fs.writeFileSync(
@@ -524,6 +526,7 @@ test("a summary the bridge will refuse never reaches the official import", async
   const { defaultState, saveState, checkpointsDir } = await import("../src/state.mjs");
 
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-import-")));
+  ensureRuntimeStore(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const transcript = path.join(project, "claude.jsonl");
   fs.writeFileSync(
@@ -589,6 +592,7 @@ test("a refused handoff does not take the one already waiting with it", async ()
   const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
 
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-supersede-")));
+  ensureRuntimeStore(project);
   const dir = checkpointsDir(project);
   fs.mkdirSync(dir, { recursive: true });
   const rollout = path.join(project, "rollout.jsonl");

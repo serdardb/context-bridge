@@ -125,7 +125,7 @@ function sampleRow(id) {
 function clean() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (/^(CLAUDECODE|CLAUDE_CODE_|GROK_|CODEX_|CONTEXT_BRIDGE_)/.test(key) && key !== "CONTEXT_BRIDGE_STORAGE") delete env[key];
+    if (/^(CLAUDECODE|CLAUDE_CODE_|GROK_|CODEX_|CONTEXT_BRIDGE_)/.test(key) && !["CONTEXT_BRIDGE_STORAGE", "CONTEXT_BRIDGE_HOME"].includes(key)) delete env[key];
   }
   return env;
 }

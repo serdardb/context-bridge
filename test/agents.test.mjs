@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -252,7 +253,7 @@ test("a v1 state file is migrated in place, with a backup kept", async () => {
     git: { sha: null, recordedAt: null },
     updatedAt: null,
   };
-  fs.writeFileSync(statePath(project), JSON.stringify(v1));
+  fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(v1));
 
   const s = loadState(project);
   assert.equal(s.version, STATE_VERSION);
@@ -282,7 +283,7 @@ test("a state file from a newer bridge is refused, not guessed at", async () => 
   const { loadState, statePath, STATE_VERSION } = await import("../src/state.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-v9-")));
   fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
-  fs.writeFileSync(statePath(project), JSON.stringify({ version: 99, agents: {} }));
+  fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify({ version: 99, agents: {} }));
   assert.throws(() => loadState(project), /newer than this bridge understands/);
 });
 
@@ -428,12 +429,13 @@ test("an installed skill that drifted behind the repo is reported as stale, not 
 // these words. The last answer was being destroyed by the code written to save it.
 test("closing words that cannot fit the delta are pointed at rather than cut off later", async () => {
   const { appendFinalWords } = await import("../src/launcher.mjs");
-  const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
+  const { defaultState, saveState, loadState, checkpointsDir, safeCheckpointPath, checkpointReference } = await import("../src/state.mjs");
   const { PROMPT_DELTA_BYTES } = await import("../src/delivery.mjs");
   const { project, sessionDir } = await withGrokFixture();
   const grok = adapterFor("grok");
   const ref = grok.discover(project);
 
+  ensureRuntimeStore(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const deltaRel = path.join(".bridge", "checkpoints", "big.md");
   const fullRel = path.join(".bridge", "checkpoints", "big-full.md");
@@ -443,9 +445,9 @@ test("closing words that cannot fit the delta are pointed at rather than cut off
   // passed on a defect. Sized this way there is none, and the notice plus the
   // delivery pointer land on the ceiling to the byte.
   const { deliverableBudget } = await import("../src/delivery.mjs");
-  const composerRoom = deliverableBudget(PROMPT_DELTA_BYTES, fullRel, adapterFor("grok").displayName);
-  fs.writeFileSync(path.join(project, deltaRel), "x".repeat(composerRoom));
-  fs.writeFileSync(path.join(project, fullRel), "# Bridge full context\n");
+  const composerRoom = deliverableBudget(PROMPT_DELTA_BYTES, checkpointReference(project, fullRel), adapterFor("grok").displayName);
+  fs.writeFileSync(safeCheckpointPath(project, deltaRel), "x".repeat(composerRoom));
+  fs.writeFileSync(safeCheckpointPath(project, fullRel), "# Bridge full context\n");
 
   const s = defaultState(project);
   s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, mark: grok.currentMark(ref), idle: false };
@@ -465,7 +467,7 @@ test("closing words that cannot fit the delta are pointed at rather than cut off
   // context file beside it, and since that file always exists the line is always
   // added, so a delta sized to the road exactly was still trimmed on the way out.
   const { promptBody, fullContextFor } = await import("../src/delivery.mjs");
-  const onDisk = fs.readFileSync(path.join(project, deltaRel), "utf8");
+  const onDisk = fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8");
   const delivered = promptBody(onDisk, fullContextFor(project, deltaRel));
 
   assert.ok(Buffer.byteLength(delivered) <= PROMPT_DELTA_BYTES, "what is delivered is what has to fit the road");
@@ -474,7 +476,7 @@ test("closing words that cannot fit the delta are pointed at rather than cut off
   assert.match(delivered, /did not fit in this delta/, "and its absence has to survive delivery, not just be written");
   assert.match(delivered, /The untrimmed version of this handoff is at/, "with the path that leads to them");
   assert.ok(
-    fs.readFileSync(path.join(project, fullRel), "utf8").includes(lastWord),
+    fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8").includes(lastWord),
     "the words themselves are never lost; the checkpoint has no budget over it"
   );
 });
@@ -484,16 +486,17 @@ test("closing words written after the handoff still reach the other agent", asyn
   // after it exits. Without this the substantive message is dropped in silence:
   // exactly what happened to Grok's assessment in the first three-agent chain.
   const { appendFinalWords } = await import("../src/launcher.mjs");
-  const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
+  const { defaultState, saveState, loadState, checkpointsDir, safeCheckpointPath, checkpointReference } = await import("../src/state.mjs");
   const { project, sessionDir } = await withGrokFixture();
   const grok = adapterFor("grok");
   const ref = grok.discover(project);
 
+  ensureRuntimeStore(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const deltaRel = path.join(".bridge", "checkpoints", "d.md");
   const fullRel = path.join(".bridge", "checkpoints", "d-full.md");
-  fs.writeFileSync(path.join(project, deltaRel), "[Bridge Context Update]\nbounded\n");
-  fs.writeFileSync(path.join(project, fullRel), "# Bridge full context\n");
+  fs.writeFileSync(safeCheckpointPath(project, deltaRel), "[Bridge Context Update]\nbounded\n");
+  fs.writeFileSync(safeCheckpointPath(project, fullRel), "# Bridge full context\n");
 
   const s = defaultState(project);
   s.agents.grok = { id: ref.id, transcriptPath: ref.transcriptPath, mark: grok.currentMark(ref), idle: false };
@@ -514,11 +517,11 @@ test("closing words written after the handoff still reach the other agent", asyn
 
   appendFinalWords(project, loadState(project), "grok");
 
-  const closedDelta = fs.readFileSync(path.join(project, deltaRel), "utf8");
+  const closedDelta = fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8");
   assert.match(closedDelta, /Closing words from Grok/);
   assert.ok(closedDelta.includes(assessment), "the last answer travels whole, warning and all");
   assert.doesNotMatch(closedDelta, /…/, "the clip character is the signature of the rule that was removed");
-  assert.ok(fs.readFileSync(path.join(project, fullRel), "utf8").includes(assessment));
+  assert.ok(fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8").includes(assessment));
   // The mark moves with it, so the next handoff does not send it a second time.
   assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
 });

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { handoff } from "../src/handoff.mjs";
 import { appendFinalWords } from "../src/launcher.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
-import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject } from "../src/state.mjs";
+import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject, safeCheckpointPath, checkpointsDir } from "../src/state.mjs";
 
 const BRIDGE_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
@@ -336,7 +336,7 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(out, /including catch-up from Claude Code/);
 
   const after = loadState(project);
-  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /From Claude Code/, "Claude's side must be attributed");
   assert.match(delta, /From Grok/, "Grok's side must be attributed");
   assert.match(delta, /claude decided the architecture/, "what Claude said reaches Codex through Grok");
@@ -345,15 +345,15 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
 
 test("handoff dry-run previews the route without changing state or checkpoints", async () => {
   const { project } = fixture();
-  const before = fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8");
-  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  const before = fs.readFileSync(statePath(project), "utf8");
+  const checkpoints = checkpointsDir(project);
   const beforeFiles = fs.existsSync(checkpoints) ? fs.readdirSync(checkpoints).sort() : null;
   const out = handoff(project, "codex", { from: "grok", decisions: "inspect", next: "continue", dryRun: true, checkTarget: () => {} });
   assert.match(out, /Dry run: would prepare Grok→Codex/);
   assert.match(out, /No state, checkpoint, pending marker/);
   assert.match(out, /\.md/);
   assert.match(out, /audit/);
-  assert.equal(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"), before);
+  assert.equal(fs.readFileSync(statePath(project), "utf8"), before);
   assert.equal(fs.existsSync(checkpoints), beforeFiles !== null);
   if (beforeFiles) assert.deepEqual(fs.readdirSync(checkpoints).sort(), beforeFiles);
   assert.equal(loadState(project).pendingInjection, null);
@@ -377,6 +377,7 @@ test("CLI dry-run upgrades legacy state only in memory and leaves storage unregi
   try {
     const state = loadState(project);
     const file = path.join(project, ".bridge", "state.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     const legacy = { ...state.lanes.main, version: 4, project, updatedAt: state.updatedAt };
     fs.writeFileSync(file, JSON.stringify(legacy));
     const before = fs.readFileSync(file);
@@ -403,6 +404,7 @@ test("read-only CLI commands do not persist old-schema upgrades or initialize gl
   try {
     const state = loadState(project);
     const file = path.join(project, ".bridge", "state.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ ...state.lanes.main, version: 4, project, updatedAt: state.updatedAt }));
     const snapshot = (dir) => fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
       .map((entry) => [entry.name, entry.isDirectory() ? snapshot(path.join(dir, entry.name)) : fs.readFileSync(path.join(dir, entry.name), "base64")]);
@@ -442,7 +444,7 @@ test("what a target already received is not sent to it twice", async () => {
   assert.ok(knownMark(mid, "codex", "grok"), "Grok's stream is marked as packed for Codex");
 
   const out = handoff(project, "codex", { from: "grok", checkTarget: () => {} });
-  const delta = fs.readFileSync(path.join(project, loadState(project).pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, loadState(project).pendingInjection.deltaFile), "utf8");
   assert.doesNotMatch(delta, /claude decided the architecture/, "already-delivered material is not resent");
   assert.doesNotMatch(out, /catch-up/);
 });
@@ -459,7 +461,7 @@ test("closing words move the packed mark, so they are delivered once and only on
   appendFinalWords(project, loadState(project), "grok");
 
   const withClosing = loadState(project);
-  const delta = fs.readFileSync(path.join(project, withClosing.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, withClosing.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /grok's closing verdict/);
 
   // Deliver, then hand off again: the closing verdict must not come back.
@@ -467,7 +469,7 @@ test("closing words move the packed mark, so they are delivered once and only on
   withClosing.pendingInjection = null;
   saveState(project, withClosing);
   handoff(project, "codex", { from: "grok", checkTarget: () => {} });
-  const second = fs.readFileSync(path.join(project, loadState(project).pendingInjection.deltaFile), "utf8");
+  const second = fs.readFileSync(safeCheckpointPath(project, loadState(project).pendingInjection.deltaFile), "utf8");
   assert.doesNotMatch(second, /grok's closing verdict/, "the matrix moved with the closing words");
 });
 
@@ -566,7 +568,7 @@ test("the official import still carries what the other agents did", () => {
   });
 
   const after = loadState(project);
-  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /grok found the bug/, "Grok's work never reached Codex, which is the whole flag");
   // Recorded as carried, but not yet as known: knownBy is committed on delivery,
   // because the departing agent's closing words are still to come.
@@ -592,7 +594,7 @@ test("the official import still carries the decisions written with it", () => {
   });
 
   const after = loadState(project);
-  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /adapter contract over per-agent branching/);
   assert.match(delta, /review the leak fix/);
 });
@@ -613,6 +615,6 @@ test("what the import already delivered is not sent a second time", () => {
   });
 
   const after = loadState(project);
-  const delta = fs.readFileSync(path.join(project, after.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile), "utf8");
   assert.doesNotMatch(delta, /claude decided the architecture/, "the import carried this already");
 });
