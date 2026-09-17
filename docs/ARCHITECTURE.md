@@ -237,6 +237,15 @@ directory-sync failure reports `BRIDGE_PUBLICATION_UNCERTAIN` with
 `published: true`; it does not remove the visible destination. This is not a
 complete power-loss durability guarantee: newly created ancestor directories,
 multi-file transaction ordering and cleanup require additional guarantees.
+Legacy migration additionally flushes the verified destination and backup trees
+before recording source retirement. On POSIX it flushes their ancestor directory
+chains, the journal's ancestors, and both sides of each source rename. Recovery
+repeats these barriers before proceeding. Completion receipts and their parents
+are flushed before the progress journal is removed. A failed barrier reports
+`BRIDGE_MIGRATION_SYNC_FAILED` and preserves published copies and retired originals
+for inspection; it does not guess a rollback. These are OS flush requests, not
+evidence of power-cut recovery on every filesystem or storage controller, and
+cannot make an uncoordinated old writer's subsequent writes durable.
 Windows retains content flush plus atomic publication without the POSIX directory
 sync guarantee. Artifact import handles a post-publication exception by re-reading
 the state receipt under the project lock. A visible commit keeps its seed and

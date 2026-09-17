@@ -27,6 +27,54 @@ import { pruneCheckpoints } from "../src/clean.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
 const LEGACY_CHECKPOINT = "2026-09-16T00-00-00-000Z-claude-to-codex.md";
 
+test("migration flush failures preserve originals and recovery evidence", () => {
+  for (const point of ["backup", "retired"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-migration-sync-"));
+    const project = path.join(root, "project"), home = path.join(root, "home");
+    const source = path.join(project, ".bridge", "state.json");
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, '{"marker":"must survive"}\n');
+    try {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import assert from 'node:assert/strict';
+        import fs from 'node:fs';
+        import path from 'node:path';
+        import { migrateLegacyStorage, planLegacyMigration } from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
+        const handles = new Map(), open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync;
+        fs.openSync = (...args) => { const fd = open(...args); handles.set(fd, String(args[0])); return fd; };
+        fs.closeSync = (fd) => { handles.delete(fd); return close(fd); };
+        let reached = false;
+        fs.fsyncSync = fd => {
+          const file = handles.get(fd) ?? '';
+          const segment = ${JSON.stringify(point)} === 'backup' ? 'migrations' : 'retired-migrations';
+          if (file.includes(path.sep + segment + path.sep) && file.endsWith(path.sep + 'state.json')) {
+            reached = true;
+            throw Object.assign(new Error('injected storage flush failure'), { code: 'EIO' });
+          }
+          return sync(fd);
+        };
+        assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}), { code: 'BRIDGE_MIGRATION_SYNC_FAILED', expected: true });
+        assert.ok(reached, 'must reach the selected real flush boundary');
+        if (${JSON.stringify(point)} === 'backup') {
+          assert.equal(fs.readFileSync(${JSON.stringify(source)}, 'utf8'), '{"marker":"must survive"}\\n');
+          assert.equal(planLegacyMigration(${JSON.stringify(project)}).recovery, null);
+        } else {
+          const recovery = planLegacyMigration(${JSON.stringify(project)}).recovery;
+          assert.ok(recovery, 'the journal must survive a partial source retirement');
+          assert.equal(fs.readFileSync(path.join(recovery.retired, 'state.json'), 'utf8'), '{"marker":"must survive"}\\n');
+        }
+        fs.fsyncSync = sync;
+        const completed = migrateLegacyStorage(${JSON.stringify(project)});
+        assert.equal(fs.readFileSync(path.join(completed.target, 'state.json'), 'utf8'), '{"marker":"must survive"}\\n');
+        assert.equal(fs.readFileSync(path.join(completed.retired, 'state.json'), 'utf8'), '{"marker":"must survive"}\\n');
+        assert.deepEqual(planLegacyMigration(${JSON.stringify(project)}).blockers, []);
+      `], { encoding: "utf8", timeout: 30000, env: { ...process.env,
+        CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "" } });
+      assert.equal(child.status, 0, `${point}: ${child.stderr}`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
 test("stalled optional Git probes cannot prevent local identity and have no surviving probe process", { skip: process.platform === "win32" }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-git-stall-"));
   const bin = path.join(root, "bin"); fs.mkdirSync(bin);

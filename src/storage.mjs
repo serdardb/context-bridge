@@ -348,6 +348,50 @@ function copyTree(source, destination) {
   fs.copyFileSync(source, destination);
 }
 
+function syncMigrationPath(file) {
+  const stat = fs.lstatSync(file);
+  if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+    throw new BridgeError("Unsafe migration evidence during durability check.", { nextCommand: "bridge storage plan" });
+  }
+  // Node cannot portably flush Windows directories; do not claim that guarantee.
+  if (stat.isDirectory() && process.platform === "win32") return;
+  let fd;
+  try {
+    fd = fs.openSync(file, "r");
+    fs.fsyncSync(fd);
+  } catch (cause) {
+    const error = new BridgeError("Migration evidence could not be flushed to storage. Copies and any retired originals are preserved; inspect the migration before retrying.", {
+      code: "BRIDGE_MIGRATION_SYNC_FAILED", operation: "flush migration evidence", nextCommand: "bridge storage plan",
+    });
+    error.cause = cause;
+    throw error;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function syncMigrationTree(root) {
+  if (fs.lstatSync(root).isDirectory()) {
+    for (const entry of fs.readdirSync(root)) syncMigrationTree(path.join(root, entry));
+  }
+  syncMigrationPath(root);
+}
+
+function syncMigrationAncestors(directory) {
+  // Include newly created parents, not only the directory containing the file.
+  for (let dir = fs.realpathSync(directory);; dir = path.dirname(dir)) {
+    syncMigrationPath(dir);
+    if (dir === path.dirname(dir)) break;
+  }
+}
+
+function syncMigrationCopies(target, backup) {
+  syncMigrationTree(target);
+  syncMigrationTree(backup);
+  syncMigrationAncestors(path.dirname(target));
+  syncMigrationAncestors(path.dirname(backup));
+}
+
 function treeEntries(root, prefix = "") {
   const result = [];
   for (const name of fs.readdirSync(root)) {
@@ -543,10 +587,15 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
           writeJsonAtomic(journal, record);
         }
       }
+      syncMigrationCopies(target, record.backup);
+      syncMigrationPath(journal);
+      syncMigrationAncestors(path.dirname(journal));
       finishLegacyCleanup(legacy, target, record.backup, record.retired);
       const stagingCleanup = cleanupMigrationStaging(identity.id, target, record.backup);
       writeMigrationReceipt(identity.id, record.backup, record.retired);
+      syncMigrationAncestors(path.join(storageHome(), "migration-receipts"));
       fs.unlinkSync(journal);
+      syncMigrationPath(path.dirname(journal));
       return { identity, target, backup: record.backup, retired: record.retired, recovered: true, stagingCleanup };
     }
     // Re-read after acquiring the lock. Another process may have completed the
@@ -582,12 +631,16 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
       throw new Error("Legacy bridge storage changed or could not be verified before backup.");
     }
     fs.renameSync(backupStaging, backup);
+    syncMigrationCopies(target, backup);
     const retired = retirementRoot === null ? retiredMigrationDir(backup) : path.join(retirementRoot, path.basename(backup));
     writeJsonAtomic(journal, { version: 1, source: legacy, target, backup, retired });
+    syncMigrationAncestors(path.dirname(journal));
     finishLegacyCleanup(legacy, target, backup, retired);
     const stagingCleanup = cleanupMigrationStaging(identity.id, target, backup);
     writeMigrationReceipt(identity.id, backup, retired);
+    syncMigrationAncestors(path.join(storageHome(), "migration-receipts"));
     fs.unlinkSync(journal);
+    syncMigrationPath(path.dirname(journal));
     return { identity, target, backup, retired, stagingCleanup };
     } catch (err) {
       try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
@@ -764,10 +817,14 @@ function finishLegacyCleanup(legacy, target, backup, retired = retiredMigrationD
     if (!fs.lstatSync(destination).isFile() || crypto.createHash("sha256").update(fs.readFileSync(destination)).digest("hex") !== hash) {
       throw new BridgeError(`A legacy writer changed ${name} during retirement. The newer file is preserved at ${destination}; stop old bridge processes before recovery.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
     }
+    syncMigrationPath(destination);
+    syncMigrationAncestors(path.dirname(destination));
+    syncMigrationPath(path.dirname(file));
   }
   inspectLegacyCleanup(legacy, target, backup, retired);
   if (hasLegacyRuntime(legacy)) throw new BridgeError("Legacy runtime files reappeared during migration. Stop old bridge processes; all source and retired files are preserved.", { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
   if (fs.existsSync(legacy)) removeEmptyLegacyDirs(legacy);
+  syncMigrationPath(path.dirname(legacy));
 }
 
 export function runtimePath(projectDir, name, options = {}) {
