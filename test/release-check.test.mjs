@@ -13,11 +13,12 @@ test("release verification requires every supported agent, not just those instal
   const agents = Object.fromEntries(AGENT_IDS.map((id) => [id, { version: "fixture", smoke: { ok: true } }]));
   const routes = Object.fromEntries(AGENT_IDS.flatMap((from) => AGENT_IDS.filter((to) => to !== from)
     .map((to) => [`${from}->${to}`, { configured: true }])));
-  assert.equal(verifyReport({ agents, routes }, { all: true }).ok, true);
+  const bridge = { locking: { ok: true } };
+  assert.equal(verifyReport({ agents, routes, bridge }, { all: true }).ok, true);
   for (const id of AGENT_IDS) {
     const missing = { ...agents, [id]: {} };
-    assert.equal(verifyReport({ agents: missing, routes }).ok, true);
-    const report = verifyReport({ agents: missing, routes }, { all: true });
+    assert.equal(verifyReport({ agents: missing, routes, bridge }).ok, true);
+    const report = verifyReport({ agents: missing, routes, bridge }, { all: true });
     assert.equal(report.ok, false);
     assert.ok(report.failures.some((message) => message.startsWith(`${id} is required`)));
   }

@@ -369,12 +369,13 @@ test("verify requires a real smoke result and every installed route", async () =
   const routes = {};
   for (const from of installed) for (const to of installed) if (from !== to) routes[`${from}->${to}`] = { configured: true };
 
-  assert.deepEqual(verifyReport({ agents, routes }), { ok: true, agents: 2, routes: 2, failures: [] });
+  const bridge = { locking: { ok: true } };
+  assert.deepEqual(verifyReport({ agents, routes, bridge }), { ok: true, agents: 2, routes: 2, failures: [] });
   agents.codex.smoke = { ok: false };
-  assert.equal(verifyReport({ agents, routes }).ok, false, "a configured but non-responsive agent cannot pass verification");
+  assert.equal(verifyReport({ agents, routes, bridge }).ok, false, "a configured but non-responsive agent cannot pass verification");
   agents.codex.smoke = { ok: true };
   delete routes["claude->codex"];
-  const routeReport = verifyReport({ agents, routes });
+  const routeReport = verifyReport({ agents, routes, bridge });
   assert.equal(routeReport.ok, false, "a missing directed route cannot pass verification");
   assert.ok(routeReport.failures.includes("claude->codex is not configured"));
 });

@@ -24,6 +24,7 @@ import { loadState, agentSlot } from "./state.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { installHooks as installCodexHooks, hooksPath as codexHooksPath } from "./agents/codex.mjs";
 import { projectIdentity, projectStoreDir, runtimeStoreDir, storageHome } from "./storage.mjs";
+import { kernelLockHealth } from "./locking.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CODEX_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
@@ -33,7 +34,7 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   // Installed and authenticated is not the same as working: --deep asks each
   // agent a harmless one-line question and reports what actually came back.
   r.deep = deep;
-  if (deep) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+  if (deep && r.bridge.locking.ok) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   refreshIntegration(r);
   if (json) {
     log(JSON.stringify(r, null, 2));
@@ -49,7 +50,7 @@ export async function runVerify(projectDir, { json = false, all = false } = {}) 
   const r = collect(projectDir);
   r.deep = true;
   for (const agentId of AGENT_IDS) {
-    if (r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+    if (r.bridge.locking.ok && r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   }
   refreshIntegration(r);
   r.verify = verifyReport(r, { all });
@@ -67,6 +68,7 @@ export async function runVerify(projectDir, { json = false, all = false } = {}) 
 export function verifyReport(r, { all = false } = {}) {
   const installed = AGENT_IDS.filter((id) => r.agents[id]?.version);
   const failures = [];
+  if (r.bridge?.locking?.ok !== true) failures.push("native locking is unavailable or unverified; mutations cannot be verified");
   if (all) for (const id of AGENT_IDS) {
     if (!installed.includes(id)) failures.push(`${id} is required for release verification but is not installed`);
   }
@@ -101,7 +103,7 @@ function anyRouteReady(r) {
   const drifted = AGENT_IDS.some(
     (id) => SESSION_BROKEN.has(r.agents[id].session.status) || r.agents[id].discovery?.status === "blind"
   );
-  return !drifted && Object.values(r.routes).some((route) => route.ready);
+  return r.bridge.locking.ok && !drifted && Object.values(r.routes).some((route) => route.ready);
 }
 
 function smoke(agentId, health) {
@@ -113,6 +115,7 @@ function smoke(agentId, health) {
 }
 
 export function collect(projectDir) {
+  const locking = kernelLockHealth();
   // Every agent answers for itself; this file only knows how to arrange answers.
   const agents = {};
   for (const agentId of AGENT_IDS) agents[agentId] = adapterFor(agentId).health(projectDir);
@@ -209,6 +212,7 @@ export function collect(projectDir) {
       stateError,
       linked,
       storage,
+      locking,
     },
     routes,
   };
@@ -385,6 +389,7 @@ function render(r) {
 
   log("");
   log(bold("Bridge"));
+  row(r.bridge.locking.ok, `Native locking (${r.bridge.locking.platform}/${r.bridge.locking.arch}): ${r.bridge.locking.detail}`, "repair the native runtime, then run bridge doctor --json");
   row(r.bridge.onPath, r.bridge.onPath ? "bridge on PATH (hooks can reach it)" : "bridge not on PATH", "run `npm link` in the context-bridge repo");
   rowInfo(
     r.bridge.state,

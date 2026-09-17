@@ -105,7 +105,24 @@ prefix_rule(pattern=["bridge"], decision="allow")
 
 ## How bridge doctor works
 
-`src/doctor.mjs` collects a result object and renders it. Everything it reports is generated from the adapter registry, so a new agent appears in the health rows and in all its directed routes without touching this file.
+`src/doctor.mjs` collects a result object and renders it. Agent health rows and
+directed routes come from the adapter registry; the Bridge section also checks
+the shared runtime.
+
+Both `doctor` and `verify` report `bridge.locking` with `ok`, `platform`, `arch`
+and a diagnostic. The native lock probe acquires, releases and reacquires a
+private temporary file in a child process with a five-second deadline. Failure
+makes either command exit non-zero, even when agents and routes are configured.
+Live model probes are skipped when native locking fails. This tests the local
+native backend, not the safety of arbitrary network filesystems or mixed
+old/new writers; cross-process exclusion has separate regression tests.
+
+Koffi is loaded only when locking is needed. A missing or incompatible backend
+refuses mutation with a clean diagnostic rather than falling back to PID-only
+locking. Reinstall with optional dependencies enabled for the target platform,
+then rerun `bridge doctor --json`. Read-only inspection such as `status --json`
+and `storage plan --json` does not need the native backend. Native error numbers
+are preserved in diagnostics; internal require stacks are not printed.
 
 `bridge verify` is the strict release and automation gate. It runs a real smoke
 question against every installed supported agent, checks that each agent's

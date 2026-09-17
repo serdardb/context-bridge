@@ -1,6 +1,8 @@
 // Kernel ownership lives on a stable file, never on the disposable PID marker.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -8,14 +10,29 @@ const entered = new Set();
 let backend;
 
 function nativeError(operation, number) {
-  const error = new Error(`Kernel lock ${operation} failed (native error ${number}).`);
+  const error = new Error(`Kernel lock ${operation} failed on ${process.platform}/${process.arch} (native error ${number}).`);
   error.code = "BRIDGE_LOCK_FAILED";
   error.nativeCode = number;
+  error.expected = true;
+  error.operation = `kernel-lock:${operation}`;
+  error.nextCommand = "bridge doctor --json";
   return error;
 }
 
 function lockBackend() {
   if (backend) return backend;
+  try { return loadBackend(); }
+  catch (cause) {
+    const error = new Error(`Native locking is unavailable on ${process.platform}/${process.arch}; mutation refused. Reinstall context-bridge with optional dependencies enabled for this platform, then run bridge doctor --json. Read-only inspection remains available.`, { cause });
+    error.code = "BRIDGE_LOCK_UNAVAILABLE";
+    error.expected = true;
+    error.operation = "kernel-lock:initialize";
+    error.nextCommand = "bridge doctor --json";
+    throw error;
+  }
+}
+
+function loadBackend() {
   // Inspection commands must not need to load native code. Mutations fail
   // closed if the platform binary is unavailable, never fall back to PID races.
   const koffi = require("koffi");
@@ -47,7 +64,10 @@ function lockBackend() {
     const lib = koffi.load(null);
     const flock = lib.func("int flock(int fd, int operation)");
     backend = {
-      open(file) { return fs.openSync(file, fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600); },
+      open(file) {
+        try { return fs.openSync(file, fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600); }
+        catch (error) { throw nativeError("open", error.code); }
+      },
       tryLock(fd) {
         for (;;) {
           if (flock(fd, 2 | 4) === 0) return true; // LOCK_EX | LOCK_NB
@@ -57,12 +77,53 @@ function lockBackend() {
           throw nativeError("acquire", code);
         }
       },
-      close(fd) { fs.closeSync(fd); },
+      close(fd) {
+        try { fs.closeSync(fd); } catch (error) { throw nativeError("close", error.code); }
+      },
     };
   } else {
     throw new Error(`Kernel locking is not supported on ${process.platform}; mutation refused.`);
   }
   return backend;
+}
+
+/** Probe outside the project/store, in a bounded process, including release/reacquire. */
+export function kernelLockHealth() {
+  const platform = process.platform, arch = process.arch;
+  let dir;
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lock-health-"));
+    const script = `
+      import { withKernelLockSync } from ${JSON.stringify(import.meta.url)};
+      try {
+        for (let i = 0; i < 2; i++) withKernelLockSync(${JSON.stringify(path.join(dir, "guard"))}, () => {});
+        console.log(JSON.stringify({ ok: true }));
+      } catch (error) {
+        console.log(JSON.stringify({ ok: false, code: error.expected ? error.code : "BRIDGE_LOCK_FAILED",
+          detail: error.expected ? error.message : "Native lock probe failed; check temporary-directory permissions and native runtime installation.",
+          nativeCode: error.nativeCode, operation: error.operation }));
+        process.exitCode = 1;
+      }
+    `;
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+    });
+    if (result.error || result.signal) return { ok: false, platform, arch,
+      code: result.error?.code === "ETIMEDOUT" ? "BRIDGE_LOCK_PROBE_TIMEOUT" : "BRIDGE_LOCK_PROBE_FAILED",
+      detail: "Native lock probe could not complete; mutations are not verified. Check the native runtime and run bridge doctor --json again." };
+    const report = JSON.parse(result.stdout);
+    if (report.ok === true && result.status === 0) return { ok: true, platform, arch, detail: "Native lock acquisition, release and reacquisition succeeded." };
+    return { ...report, ok: false, platform, arch };
+  } catch {
+    return { ok: false, platform, arch, code: "BRIDGE_LOCK_PROBE_FAILED",
+      detail: "Cannot complete the native lock probe; check temporary-directory permissions and native runtime installation." };
+  } finally {
+    if (dir) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); }
+      catch { return { ok: false, platform, arch, code: "BRIDGE_LOCK_PROBE_CLEANUP_FAILED",
+        detail: "Cannot remove the temporary native lock probe; check temporary-directory permissions." }; }
+    }
+  }
 }
 
 /** Run a synchronous critical section. The guard file must NEVER be unlinked. */
