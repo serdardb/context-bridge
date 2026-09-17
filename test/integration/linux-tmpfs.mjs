@@ -1,0 +1,94 @@
+// Actual birthtime-free filesystem acceptance; isolated, no Git or agent accounts.
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { projectIdentity, registeredProjects, adoptProject } from "../../src/storage.mjs";
+import { directoryIdentity } from "../../src/directory-identity.mjs";
+import { loadState, mutateProject } from "../../src/state.mjs";
+import { watchProject } from "../../src/watch.mjs";
+
+assert.equal(process.platform, "linux");
+const root = fs.mkdtempSync("/dev/shm/bridge-tmpfs-acceptance-");
+const external = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-tmpfs-adopt-"));
+const cli = fileURLToPath(new URL("../../bin/bridge.mjs", import.meta.url));
+process.env.CONTEXT_BRIDGE_HOME = path.join(root, "home");
+delete process.env.CONTEXT_BRIDGE_STORAGE;
+delete process.env.CONTEXT_BRIDGE_ADAPTERS;
+const project = path.join(root, "project"), moved = path.join(root, "moved");
+const run = (...args) => {
+  const result = spawnSync(process.execPath, [cli, ...args], {
+    cwd: project, env: { ...process.env, PATH: "" }, encoding: "utf8", timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  return result.stdout;
+};
+let client;
+try {
+  fs.mkdirSync(project);
+  assert.equal(fs.statSync(project, { bigint: true }).birthtimeNs, 0n);
+  assert.match(directoryIdentity(project), /^v3:linux-tmpfs:/);
+  assert.equal(JSON.parse(run("status", "--json")).state, "absent");
+  assert.equal(fs.existsSync(process.env.CONTEXT_BRIDGE_HOME), false);
+  client = new Client({ name: "tmpfs-acceptance", version: "1" });
+  await client.connect(new StdioClientTransport({ command: process.execPath,
+    args: [cli, "mcp", "--project", project], env: { ...process.env, PATH: "" }, stderr: "pipe" }));
+  assert.equal((await client.callTool({ name: "bridge_status", arguments: {} })).structuredContent.state, "absent");
+  assert.equal(fs.existsSync(process.env.CONTEXT_BRIDGE_HOME), false);
+  run("lane", "new", "work");
+  const original = projectIdentity(project).id;
+  mutateProject(project, (state) => { state.tmpfsSecret = "retained original only"; });
+  assert.equal(registeredProjects().find((record) => record.id === original).availability, "present");
+  assert.deepEqual(fs.readdirSync(project), []);
+  fs.renameSync(project, moved);
+  assert.equal(projectIdentity(moved, { create: true }).id, original);
+  fs.mkdirSync(project);
+  assert.equal((await client.callTool({ name: "bridge_status", arguments: {} })).isError, true);
+  await client.close(); client = null;
+  run("lane", "new", "new-project");
+  assert.notEqual(projectIdentity(project).id, original);
+  assert.equal(loadState(project).tmpfsSecret, undefined);
+  assert.equal(loadState(moved).tmpfsSecret, "retained original only");
+
+  const controller = new AbortController(), events = [];
+  await watchProject(project, { policy: "read-only", interval: 100, signal: controller.signal,
+    emit(event) {
+      events.push(event.type);
+      if (event.type === "snapshot") { fs.renameSync(project, path.join(root, "watched-original")); fs.mkdirSync(project); }
+      else controller.abort();
+    } });
+  assert.deepEqual(events, ["snapshot", "unavailable"]);
+
+  const race = path.join(root, "race"); fs.mkdirSync(race);
+  const open = fs.openSync;
+  const registry = path.join(process.env.CONTEXT_BRIDGE_HOME, "projects.json");
+  const before = fs.readFileSync(registry);
+  let injected = false;
+  fs.openSync = (name, ...args) => {
+    const fd = open(name, ...args);
+    if (name === race && !injected) { injected = true; fs.renameSync(race, race + "-old"); fs.mkdirSync(race); }
+    return fd;
+  };
+  try { assert.throws(() => projectIdentity(race, { create: true }), { code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE" }); }
+  finally { fs.openSync = open; }
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(registry), before);
+
+  const copied = path.join(external, "adopted"); fs.mkdirSync(copied);
+  assert.notEqual(fs.statSync(copied).dev, fs.statSync(moved).dev);
+  fs.rmdirSync(moved);
+  assert.equal(adoptProject(copied, original).id, original);
+  assert.equal(loadState(copied).tmpfsSecret, "retained original only");
+  assert.deepEqual(fs.readdirSync(copied), []);
+  console.log(JSON.stringify({ passed: true, platform: process.platform, uid: process.getuid(),
+    birthtime: false, cli: true, mcp: true, watch: true, replacementRefused: true,
+    identityRaceRefused: true, crossFilesystemAdoption: true, gitRequired: false, nativeAgents: false }));
+} finally {
+  await client?.close();
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(external, { recursive: true, force: true });
+}

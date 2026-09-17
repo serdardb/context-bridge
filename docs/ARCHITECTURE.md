@@ -471,8 +471,18 @@ an explicitly confirmed older registration in its original directory may leave
 legacy `.bridge` evidence in place: adoption does not read, merge or migrate that
 evidence. Subsequent migration retains its conflict/backup checks. A different
 destination containing legacy data remains ineligible for adoption. Matching
-creation identities preserve same-filesystem rename behavior. Filesystems that
-report no positive birth time currently cannot register or adopt projects;
+creation identities preserve same-filesystem rename behavior. Linux64-bit
+x64/arm64 little-endian tmpfs has a fallback: `fstatfs` filesystem identity,
+opaque `name_to_handle_at(AT_EMPTY_PATH)` handle and kernel boot UUID. Both
+native queries use the same opened directory; path identity is checked before
+and after. The fingerprint is `v3:linux-tmpfs:<sha256>`, separate from unchanged
+`v2` birthtime identities. Mount numbers are not identity: they can be recycled.
+Only tmpfs semantics are supported by this fallback, not arbitrary network
+filesystems. Zero filesystem IDs, unavailable native support and changed paths
+cannot select an existing store. tmpfs contents themselves do not survive a
+reboot; moving/restoring a project across filesystems requires explicit adoption.
+No project marker, Git metadata or path-only match is used. Filesystems with
+neither identity mechanism still cannot register or adopt projects;
 existing uncertain associations are refused rather than exposing old context.
 This is an open filesystem compatibility limitation, not universal identity
 support or a guarantee against adversarial metadata forgery.
@@ -682,11 +692,12 @@ unavailability. No repair is attempted and private filesystem errors are not
 included in the public message. Worktree status separately marks unavailable
 child workspaces rather than claiming their state was read.
 It emits snapshot/change/unavailable/recovered JSON events and pins the
-selected directory's device, inode and nanosecond birth time. MCP applies the
+selected directory's creation fingerprint through the shared identity helper. MCP applies the
 same creation-instance check before each tool call. A recreated directory is
 not accepted merely because its inode was recycled. Both long-lived readers
-refuse startup without a positive birth time; ordinary one-shot absent-state
-inspection remains available. This is the same open filesystem compatibility
+refuse startup without a supported identity; the Linux tmpfs fallback is shared
+with storage. Ordinary one-shot absent-state inspection remains available.
+This is the same open filesystem compatibility
 limitation as automatic project registration. Neither performs repair, switch or
 acknowledgement. Polling can miss intermediate transitions; this stream is
 not a durable event log or a delivery receipt.

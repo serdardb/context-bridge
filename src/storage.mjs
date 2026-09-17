@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { writeJsonAtomic, writeFileExclusive, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
+import { directoryIdentity as fileIdentity, isVerifiedDirectoryIdentity } from "./directory-identity.mjs";
 
 export const PROJECT_ID_KEY = "context-bridge.project-id";
 const REGISTRY_VERSION = 1;
@@ -154,16 +155,8 @@ export function pathLocator(projectDir) {
   return crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 32);
 }
 
-function fileIdentity(projectDir) {
-  const stat = fs.statSync(projectDir, { bigint: true });
-  // Inodes are recycled after deletion. Never reconnect a different creation
-  // instance merely because it received a former project's inode.
-  if (!stat.isDirectory() || stat.birthtimeNs <= 0n) return null;
-  return `v2:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
-}
-
 function requireFileIdentity(identity) {
-  if (!identity) throw new BridgeError("This filesystem does not provide a directory creation identity. Automatic project registration or adoption is unsafe here; use a filesystem with directory birth times. No existing project context was selected.", {
+  if (!identity) throw new BridgeError("This filesystem does not provide a supported directory creation identity. Automatic project registration or adoption is unsafe here; use a filesystem with directory birth times or supported Linux tmpfs handles. No existing project context was selected.", {
     code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE", operation: "identify project",
   });
 }
@@ -313,7 +306,7 @@ export function projectIdentity(projectDir, { create = false } = {}) {
     // the only automatic same-machine move signal; cross-device moves require an
     // explicit adoption operation.
     const legacy = records.find((record) => record.path === canonical &&
-      !record.fileIdentity?.startsWith("v2:"));
+      !isVerifiedDirectoryIdentity(record.fileIdentity));
     if (legacy) throw new BridgeError("This project's older registration cannot distinguish a moved directory from a recycled inode. Verify the project UUID before explicitly adopting its stored context.", {
       code: "BRIDGE_PROJECT_IDENTITY_UNVERIFIED", nextCommand: `bridge project adopt ${legacy.id}`,
     });
@@ -368,7 +361,7 @@ export function registeredProjects() {
       else if (!stat.isDirectory()) availability = "not-directory";
       else {
         const current = fileIdentity(root);
-        availability = !recorded?.startsWith("v2:") || !current ? "unverified" :
+        availability = !isVerifiedDirectoryIdentity(recorded) || !current ? "unverified" :
           recorded !== current ? "replaced" : "present";
       }
     } catch (error) {
@@ -417,7 +410,7 @@ export function adoptProject(projectDir, id) {
   // Confirming an old registration in place changes only its fingerprint.
   // Migration still owns conflict detection, backups and source retirement.
   const upgradingInPlace = (record) => record.path === canonical &&
-    !record.fileIdentity?.startsWith("v2:");
+    !isVerifiedDirectoryIdentity(record.fileIdentity);
   if (hasLegacyRuntime(legacyBridgeDir(canonical)) && !upgradingInPlace(existing)) {
     throw new Error("This directory contains legacy bridge state; refusing to merge it with another project.");
   }
