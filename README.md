@@ -425,6 +425,10 @@ The source lane is an explicit launch link, not a second owner of those sessions
 `status --json` follows that link for pending/delivery diagnostics without changing
 lanes. Run handoff and context-management commands from the worktree itself.
 Seeding from a linked worktree lane is likewise done inside that worktree.
+If seed creation fails, automatic rollback removes only a still-empty lane
+record with no live launcher. Existing files are retained for inspection, not
+recursively deleted. A changed lane or failed state write is reported as an
+incomplete rollback; inspect `bridge lane` and `bridge status` before retrying.
 
 If creation succeeds but later state setup fails, the bridge preserves the code
 and branch. Reconnect with `bridge lane attach experiment --worktree ../project-experiment`;

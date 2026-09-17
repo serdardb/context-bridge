@@ -8,6 +8,7 @@ import {
   mutateProject,
   mutateState,
   createLane,
+  emptyLane,
   switchActiveLane,
   removeLaneFromState,
   unlinkAgent,
@@ -902,10 +903,9 @@ function runLane(projectDir, args, flags, seedSource) {
       try {
         writeSeed(projectDir, name, prepared);
       } catch (e) {
-        // The seed write failed after the lane was created: roll the lane back so
-        // nothing half-made survives, which is the promise the validation makes.
-        rollbackLane(projectDir, name, seedSource);
-        log(`${BAD} Could not seed lane '${name}' (${e.message}); it was rolled back.`);
+        const rolledBack = rollbackLane(projectDir, name, seedSource);
+        log(`${BAD} Could not seed lane '${name}' (${e.message}); ${rolledBack ? "the empty lane record was rolled back" : "automatic rollback could not be completed"}.`);
+        log(dim("  Existing files were preserved. Inspect 'bridge lane' and 'bridge status' before retrying."));
         return 1;
       }
       log(`${OK} Created lane ${bold(name)}, seeded from ${bold(seedSource)}, and switched to it.`);
@@ -1191,24 +1191,21 @@ async function pickLane(projectDir) {
 }
 
 /**
- * Undo a lane that was created but could not be seeded: switch the default away from
- * it, remove it from state, then delete its directory (containment-checked, never
- * following a symlink out). Best-effort, so a partial seed failure never leaves a
- * lane the write did not finish filling.
+ * Undo only the still-empty lane record after a failed seed. Files may predate
+ * this attempt, or the seed/state write may have published before reporting an
+ * error. Preserve them; failed rollback must not delete recoverable evidence.
  */
 function rollbackLane(projectDir, name, fallback) {
   try {
     mutateProject(projectDir, (disk) => {
+      if (laneHasLiveLauncher(disk, name) || JSON.stringify(disk.lanes?.[name]) !== JSON.stringify(emptyLane())) {
+        throw new Error("Lane changed during seed preparation; refusing automatic rollback.");
+      }
       if (disk.activeLane === name) disk.activeLane = disk.lanes?.[fallback] ? fallback : DEFAULT_LANE;
       removeLaneFromState(disk, name);
     });
+    return true;
   } catch {
-    // Already consistent, or the lane was never recorded; the directory sweep runs regardless.
-  }
-  const laneDir = path.join(bridgeDir(projectDir), "lanes", name);
-  if (isInsideDir(laneDir, bridgeDir(projectDir))) {
-    try {
-      fs.rmSync(laneDir, { recursive: true, force: true });
-    } catch {}
+    return false;
   }
 }

@@ -174,6 +174,25 @@ test("lane new --seed rolls the lane back if the seed write fails", () => {
   assert.match(res.stdout, /rolled back/);
   assert.equal(loadState(project).lanes.x, undefined, "no half-made lane survives in state");
   assert.equal(loadState(project).activeLane, "main", "the active lane was moved off the rolled-back one");
+  assert.equal(fs.readFileSync(path.join(bridgeDir(project), "lanes", "x"), "utf8"), "not a directory", "rollback must not delete files it did not create");
+
+  const refused = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import { main } from ${JSON.stringify(new URL("../src/cli.mjs", import.meta.url).href)};
+    const rename = fs.renameSync;
+    let writes = 0;
+    fs.renameSync = (from, to) => {
+      if (to === ${JSON.stringify(statePath(project))} && ++writes === 2) {
+        throw Object.assign(new Error('rollback state write denied'), {code: 'EACCES'});
+      }
+      return rename(from, to);
+    };
+    await main(['lane', 'new', 'x', '--seed', 'main']);
+  `], { cwd: project, encoding: "utf8" });
+  assert.equal(refused.status, 1);
+  assert.match(refused.stdout, /automatic rollback could not be completed/);
+  assert.ok(loadState(project).lanes.x, "failed state rollback leaves the record available for recovery");
+  assert.equal(fs.readFileSync(path.join(bridgeDir(project), "lanes", "x"), "utf8"), "not a directory");
 
   fs.rmSync(project, { recursive: true });
 });
