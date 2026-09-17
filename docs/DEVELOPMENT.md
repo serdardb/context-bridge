@@ -78,6 +78,14 @@ Legacy migration cases deliberately create project-local input, then verify
 the production migration and its retained evidence. Passing this suite does
 not replace real-agent, platform or release acceptance.
 
+Run `node test/integration/migration-io.mjs` for the opt-in migration I/O fault
+matrix. It enumerates managed mkdir/open/write calls in a real pending-handoff
+migration, injects ENOSPC at each point in an isolated child with Git absent,
+then checks original-state survival, exact state/context after retry, user-file
+preservation and an idempotent second retry. It does not run in `npm test` and
+does not prove power-loss durability, arbitrary partial writes or all concurrent
+writer schedules. The core suite separately covers process-exit boundaries.
+
 New fixtures should register their project before creating checkpoint files,
 use `checkpointsDir` / `safeCheckpointPath` for physical storage, and retain
 logical checkpoint references in state. Explicit migration and hostile legacy
