@@ -11,6 +11,7 @@ import { ensureState, loadState, statePath, mutateState, withProjectStateReadLoc
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { AdapterResultError } from "./adapter-contract.mjs";
 import { laneWorkspace } from "./worktree.mjs";
+import { withProjectOperation } from "./storage.mjs";
 
 function assertHandoffWorkspace(projectDir) {
   const workspace = laneWorkspace(projectDir, process.env.CONTEXT_BRIDGE_LANE || null);
@@ -430,7 +431,12 @@ export function handoff(
   // argument is only as good as the day someone changes one of its halves.
   checkSummaryFits(summary);
   assertHandoffWorkspace(projectDir);
+  return withProjectOperation(projectDir, "handoff", () => handoffOwned(projectDir, target, {
+    summary, decisions, nextNotes, adopt, from, transfer, checkTarget, targetAdapter,
+  }));
+}
 
+function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt, from, transfer, checkTarget, targetAdapter }) {
   const s = ensureState(projectDir);
   // A handoff run inside an agent the launcher spawned inherits that launcher's
   // lane through the environment; run standalone it works the project's active

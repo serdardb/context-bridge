@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { writeJsonAtomic, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
+import { writeJsonAtomic, writeFileExclusive, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -44,6 +44,46 @@ export function withProjectRuntimeLock(projectDir, fn) {
     try { return fn(); }
     finally { runtimeOwners.delete(scope); }
   });
+}
+
+/** Presence blocks identity changes, including uncertain/abandoned records. */
+export function projectOperations(id) {
+  if (!PROJECT_UUID.test(id)) throw new BridgeError("Invalid project UUID.");
+  const base = path.join(storageHome(), "operations"), dir = path.join(base, id);
+  for (const candidate of [base, dir]) {
+    try {
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throw new BridgeError("Unsafe project operation directory; identity changes refused.");
+    } catch (error) { if (error.code === "ENOENT") return []; throw error; }
+  }
+  return fs.readdirSync(dir).sort();
+}
+
+/** Reserve a synchronous long operation without monopolizing state access. */
+export function withProjectOperation(projectDir, operation, fn) {
+  if (process.env.CONTEXT_BRIDGE_STORAGE === "project") return fn();
+  const owned = withProjectRuntimeLock(projectDir, () => {
+    const { id } = projectIdentity(projectDir);
+    projectOperations(id); // validate existing parents before creating anything
+    const dir = path.join(storageHome(), "operations", id);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${crypto.randomUUID()}.json`);
+    writeFileExclusive(file, JSON.stringify({ version: 1, project: id, operation, pid: process.pid, startedAt: new Date().toISOString() }));
+    return { id, file };
+  });
+  let failure;
+  try { return fn(); }
+  catch (error) { failure = error; throw error; }
+  finally {
+    try {
+      withKernelLockSync(path.join(storageHome(), "locks", `${owned.id}.runtime.guard`), () => fs.unlinkSync(owned.file));
+    } catch (cause) {
+      if (failure) failure.message += " Operation reservation remains; inspect the project before retrying.";
+      else throw new BridgeError("Operation completed, but its reservation could not be cleared. Inspect the project before repeating the operation.", {
+        code: "BRIDGE_OPERATION_CLEANUP_FAILED", cause, nextCommand: `bridge project inspect ${owned.id} --json`,
+      });
+    }
+  }
 }
 
 function git(projectDir, args) {
@@ -317,6 +357,9 @@ export function adoptProject(projectDir, id) {
     const registry = readRegistry();
     const record = registry.projects[id];
     if (!record || record.id !== id) throw new Error(`Unknown bridge project '${id}'.`);
+    if (projectOperations(id).length) throw new BridgeError("Project has an unfinished operation; adoption refused. Inspect its operation records before retrying.", {
+      code: "BRIDGE_PROJECT_BUSY", nextCommand: `bridge project inspect ${id} --json`,
+    });
     const identity = fileIdentity(canonical);
     if (!identity || identity !== destinationIdentity || fs.realpathSync.native(canonical) !== canonical ||
         hasLegacyRuntime(legacyBridgeDir(canonical))) {

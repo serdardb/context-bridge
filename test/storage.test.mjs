@@ -408,7 +408,7 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
       import fs from 'node:fs';
       import path from 'node:path';
       import { spawnSync } from 'node:child_process';
-      import { withProjectRuntimeLock, projectIdentity, projectStoreDir } from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
+      import { withProjectRuntimeLock, withProjectOperation, projectOperations, projectIdentity, projectStoreDir } from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
       import { ensureState, mutateState, writeCheckpoint } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
       const project = ${JSON.stringify(project)};
       const stateUrl = ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
@@ -454,6 +454,22 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
       assert.equal(adopted.status, 0, adopted.stderr);
       assert.equal(projectIdentity(moved).id, id);
       assert.equal(fs.statSync(guard).ino, before.ino);
+      const final = project + '-final';
+      const adoptFinal = 'const { adoptProject } = await import(' +
+        JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
+        '); adoptProject(' + JSON.stringify(final) + ', ' + JSON.stringify(id) + ');';
+      withProjectOperation(moved, 'handoff', () => {
+        assert.equal(projectOperations(id).length, 1);
+        const writer = run('mutateState(' + JSON.stringify(moved) + ', "main", s => { s.activeAgent = "claude"; });');
+        assert.equal(writer.status, 0, 'a reservation must not block ordinary state work: ' + writer.stderr);
+        fs.renameSync(moved, moved + '-retained');
+        fs.mkdirSync(final);
+        const refused = run(adoptFinal);
+        assert.equal(refused.status, 1);
+        assert.match(refused.stderr, /BRIDGE_PROJECT_BUSY/);
+      });
+      assert.deepEqual(projectOperations(id), []);
+      assert.equal(run(adoptFinal).status, 0);
     `], { encoding: "utf8", timeout: 15000, env: {
       ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
     } });

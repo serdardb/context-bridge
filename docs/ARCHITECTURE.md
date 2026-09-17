@@ -349,6 +349,15 @@ not acquire runtime ownership. Handoff preparation completion also owns the
 project scope; preparation creation/recovery resolve their checkpoint directory
 inside state ownership rather than carrying a pre-lock resolved path into it.
 
+Long handoff preparation uses an operation reservation, not a runtime lock held
+through the native transfer (which can take up to 120 seconds). After read-only
+preview/initial validation, a short runtime scope publishes a unique record in
+`operations/<UUID>/`; normal state writers remain available while the handoff
+runs. Adoption refuses any record, including uncertain or interrupted records.
+Completion removes its own record under the stable UUID guard. Project inspection
+lists reservations even if the old project directory is gone. Interrupted-record
+recovery is not implemented yet; records must not be treated as stale by age alone.
+
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
 integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the

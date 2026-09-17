@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { registeredProjects, storageHome } from "./storage.mjs";
+import { registeredProjects, storageHome, projectOperations } from "./storage.mjs";
 import { STATE_VERSION, liveLaunchers } from "./state.mjs";
 import { BridgeError, readOwnedFile } from "./util.mjs";
 
@@ -9,8 +9,10 @@ export function inspectRegisteredProject(id) {
   const project = registeredProjects().find(record => record.id === id);
   if (!project) throw new BridgeError("Unknown registered project UUID.", { code: "BRIDGE_PROJECT_UNKNOWN" });
   const report = { ...project, store: "absent", state: "absent", files: 0, bytes: 0,
-    pending: [], launchers: [], preparations: [], migrationEvidence: [], issues: [], complete: true };
+    pending: [], launchers: [], preparations: [], operations: [], migrationEvidence: [], issues: [], complete: true };
   const issue = (file, reason) => { report.complete = false; report.issues.push({ file, reason }); };
+  try { report.operations = projectOperations(id); }
+  catch { issue("operations", "unreadable-operation-records"); }
   // These survive outside the UUID store. Inventory only: a receipt's presence
   // does not validate its contents or the external retirement location it names.
   for (const area of ["migrations", "migration-receipts", "retired-migrations"]) {

@@ -226,6 +226,7 @@ export async function main(argv) {
           log(`${report.id}  [${report.availability}]  ${report.root}`);
           log(`Store: ${report.store}; state: ${report.state}; ${report.files} files, ${report.bytes} bytes.`);
           log(`Pending: ${report.pending.length}; live launchers: ${report.launchers.length}; preparations: ${report.preparations.length}.`);
+          log(`Unfinished operation records: ${report.operations.length} (may include interrupted processes).`);
           log(`Migration evidence entries: ${report.migrationEvidence.length} (metadata only; contents and external locations not verified).`);
           for (const issue of report.issues) log(`${WARN} ${issue.file}: ${issue.reason}`);
           log("Read-only observation, not authorization to remove this project store.");
