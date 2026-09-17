@@ -403,8 +403,13 @@ For references with a transcript file, collection compares device, inode, size,
 mtime and ctime before capturing the mark and after extracting activity. A change
 makes the source partial and withholds its watermark, including ordinary appends
 that may therefore be repeated. This is bounded change detection, not an atomic
-read: separate audit reads, secondary files and database-backed references are
-not covered by that stamp.
+read: secondary files and database-backed references are not covered by that
+stamp. Audit collection compares the same stamp against the conversation's and
+around its own read. Failed, partial or changed audit sources are disclosed in
+the delta and manifest, and withhold the source watermark. Error-only manifests
+are retained even when no commands could be recovered. A file changing after
+these checks or auxiliary evidence changing independently remains outside this
+bounded detection; this is not a vendor transaction.
 Delivery marks are captured before extraction, including closing-word collection.
 For append-only streams this favors possible repetition of concurrent arrivals
 over acknowledging a later row that the payload never read. It does not prove

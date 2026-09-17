@@ -16,11 +16,12 @@
 // dead for weeks, a failed parse being indistinguishable from an empty result.
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { adapterFor } from "./agents/index.mjs";
 import { checkpointRel, safeCheckpointsDir, safeCheckpointPath, latestCheckpoint, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { ensureRuntimeStore, gitMetadata } from "./storage.mjs";
 import { assertCheckpointName } from "./checkpoint-kinds.mjs";
-import { writeFileExclusive, BridgeError } from "./util.mjs";
+import { writeFileExclusive, BridgeError, transcriptStamp } from "./util.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -34,7 +35,7 @@ const SHOWN_READS = 10;
  * Build the manifest for one handoff, from every agent the target has not caught
  * up with, in the same shape the delta is gathered.
  */
-export function buildManifest(projectDir, { source, target, via = null, sources = {} }, marks = {}) {
+export function buildManifest(projectDir, { source, target, via = null, sources = {}, sourceStamps = {} }, marks = {}) {
   const agents = {};
   const readerErrors = [];
   for (const [id, ref] of Object.entries(sources)) {
@@ -42,7 +43,12 @@ export function buildManifest(projectDir, { source, target, via = null, sources 
     if (!adapter?.auditSince || !ref) continue;
     let audit;
     try {
+      const before = transcriptStamp(ref);
       audit = adapter.auditSince(ref, marks[id] ?? null);
+      if (!isDeepStrictEqual(before, transcriptStamp(ref)) ||
+          (Object.hasOwn(sourceStamps, id) && !isDeepStrictEqual(before, sourceStamps[id]))) {
+        readerErrors.push({ agent: id, reason: "audit source changed during collection" });
+      }
     } catch {
       // A reader that throws must not take the handoff down with it. The delta
       // is the product; the manifest is a convenience beside it.

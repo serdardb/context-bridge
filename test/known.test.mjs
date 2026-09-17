@@ -389,7 +389,7 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(fs.readFileSync(safeCheckpointPath(project, restored.pendingInjection.deltaFile), "utf8"), /claude decided the architecture/);
   // The shape read succeeds; fail either the probe's parse or the subsequent
   // real extraction. Preflight alone must never authorize acknowledging loss.
-  for (const fault of ["io", "malformed", "rewrite"]) for (const failAt of [2, 3]) {
+  for (const fault of ["io", "malformed", "rewrite"]) for (const failAt of [2, 3, 4]) {
     saveState(project, s);
     fs.writeFileSync(claudeTranscript, sourceBytes);
     let reads = 0;
@@ -413,11 +413,16 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     const file = safeCheckpointPath(project, failedRead.pendingInjection.deltaFile);
     for (const p of [file, file.replace(/\.md$/, "-full.md")]) {
       const body = fs.readFileSync(p, "utf8");
-      assert.match(body, fault === "io"
+      assert.match(body, failAt === 4 ? /Claude Code: audit evidence is incomplete or changed/ : fault === "io"
         ? /Claude Code: source could not be read reliably/
         : /Claude Code: source was only partially readable/);
       if (fault === "malformed") assert.match(body, /claude decided the architecture/);
       assert.doesNotMatch(body, /private I\/O detail/);
+    }
+    if (failAt === 4) {
+      const manifest = JSON.parse(fs.readFileSync(file.replace(/\.md$/, "-audit.json"), "utf8"));
+      assert.ok(manifest.readerErrors.some((error) => error.agent === "claude"));
+      assert.match(fs.readFileSync(file, "utf8"), /Audit of what was actually run/);
     }
     commitKnown(failedRead, failedRead.pendingInjection);
     assert.equal(knownMark(failedRead, "codex", "claude"), null);

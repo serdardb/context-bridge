@@ -31,7 +31,7 @@ import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
 import { beginPreparation, finishPreparation, recoverPreparations } from "./preparation.mjs";
-import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log, debugLog } from "./util.mjs";
+import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log, debugLog, transcriptStamp } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
 function underLauncher() {
@@ -184,13 +184,6 @@ function kb(bytes) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function transcriptStamp(ref) {
-  if (!ref.transcriptPath) return null;
-  const stat = fs.statSync(ref.transcriptPath, { bigint: true });
-  if (!stat.isFile()) throw new Error("Source transcript is not a regular file");
-  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs];
-}
-
 function readHandoffSource(adapter, projectDir, slot, since, warnings) {
   const unavailable = () => {
     warnings.push(`${adapter.displayName}: source could not be read reliably. Its conversation is not included and its delivery watermark was not advanced.`);
@@ -211,10 +204,17 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     const unchanged = isDeepStrictEqual(before, transcriptStamp(ref));
     const complete = unchanged && probe.status === "readable" && activity.sourceComplete !== false;
     if (!complete) warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
-    return { ref, activity, mark, complete };
+    return { ref, activity, mark, complete, stamp: before };
   } catch (error) {
     if (error instanceof AdapterResultError) throw error;
     return unavailable();
+  }
+}
+
+function discloseAuditLimits(manifest, warnings, packed = {}) {
+  for (const agent of new Set((manifest.readerErrors ?? []).map((error) => error.agent))) {
+    delete packed[agent];
+    warnings.push(`${adapterFor(agent).displayName}: audit evidence is incomplete or changed during collection. Its delivery watermark was not advanced.`);
   }
 }
 
@@ -243,6 +243,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const warnings = [];
   const auditRefs = {};
   const auditMarks = {};
+  const sourceStamps = {};
   let messageCount = 0;
   for (const otherId of AGENT_IDS) {
     if (otherId === target) continue;
@@ -253,6 +254,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     if (!read) continue;
     const { ref, activity } = read;
     auditRefs[otherId] = ref;
+    sourceStamps[otherId] = read.stamp;
     auditMarks[otherId] = knownMark(s, target, otherId);
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
     streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
@@ -284,11 +286,12 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     return `\n\nFull context checkpoint: ${fullReference}\n${omission}It is kept with this handoff's other checkpoints until they are pruned together.` +
       (targetAdapter.injection === "prompt" ? "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back." : "");
   };
+  const manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs, sourceStamps }, auditMarks);
+  discloseAuditLimits(manifest, warnings);
   const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
   checkSummaryFits(summary, summaryBudget);
   const delta = composeForRoad({ ...sections, summaryBudget }, roadBudget, trailingFor);
-  const manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs }, auditMarks);
-  const auditRel = Object.keys(manifest.agents ?? {}).length
+  const auditRel = Object.keys(manifest.agents ?? {}).length || manifest.readerErrors?.length
     ? checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`)
     : null;
   return [
@@ -546,6 +549,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
   // risking a different answer.
   const auditRefs = {};
   const auditMarks = {};
+  const sourceStamps = {};
   const streams = [];
   const work = [];
   const warnings = [];
@@ -561,6 +565,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
     if (!read) continue;
     const { ref, activity, mark, complete } = read;
     auditRefs[otherId] = ref;
+    sourceStamps[otherId] = read.stamp;
     auditMarks[otherId] = since;
     if (complete) packed[otherId] = mark;
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
@@ -605,8 +610,9 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
   let manifest = null;
   let auditRel = null;
   try {
-    manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs }, auditMarks);
-    if (Object.keys(manifest.agents).length) auditRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
+    manifest = buildManifest(projectDir, { source: sourceId, target, via, sources: auditRefs, sourceStamps }, auditMarks);
+    discloseAuditLimits(manifest, warnings, packed);
+    if (Object.keys(manifest.agents).length || manifest.readerErrors?.length) auditRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
   } catch {
     manifest = null;
     auditRel = null;
