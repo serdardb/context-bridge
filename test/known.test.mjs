@@ -335,7 +335,7 @@ test("preparation cleanup preserves changed evidence and an already committed ha
 test("a chain carries what the target missed from EVERY agent, labelled by source", async () => {
   // Claude talks to Grok, Grok works, then Grok hands to Codex. Codex has seen
   // neither, so it must receive both streams, not just Grok's.
-  const { project } = fixture();
+  const { project, claudeTranscript } = fixture();
   const s = loadState(project);
   // Claude spoke, then handed to Grok: Grok knows Claude up to that point.
   s.knownBy = { grok: { claude: "2026-07-20T10:00:00.000Z" } };
@@ -351,6 +351,38 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(delta, /From Grok/, "Grok's side must be attributed");
   assert.match(delta, /claude decided the architecture/, "what Claude said reaches Codex through Grok");
   assert.match(delta, /grok found the bug/);
+
+  saveState(project, s);
+  const sourceBytes = fs.readFileSync(claudeTranscript);
+  fs.unlinkSync(claudeTranscript);
+  const preview = handoff(project, "codex", { from: "grok", dryRun: true });
+  assert.match(preview, /Claude Code: source could not be read reliably/);
+  handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+  const missing = loadState(project);
+  assert.equal(Object.hasOwn(missing.pendingInjection.sources, "claude"), false, "missing evidence must not be acknowledged");
+  const missingDelta = safeCheckpointPath(project, missing.pendingInjection.deltaFile);
+  for (const file of [missingDelta, missingDelta.replace(/\.md$/, "-full.md")]) {
+    assert.match(fs.readFileSync(file, "utf8"), /Claude Code: source could not be read reliably/);
+  }
+  assert.doesNotMatch(fs.readFileSync(missingDelta, "utf8"), /Nothing above was left out/);
+  commitKnown(missing, missing.pendingInjection);
+  assert.equal(knownMark(missing, "codex", "claude"), null);
+  saveState(project, s);
+  fs.writeFileSync(claudeTranscript, sourceBytes);
+  handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+  const restored = loadState(project);
+  assert.match(fs.readFileSync(safeCheckpointPath(project, restored.pendingInjection.deltaFile), "utf8"), /claude decided the architecture/);
+  for (const partial of [true, false]) {
+    saveState(project, s);
+    fs.writeFileSync(claudeTranscript, partial ? sourceBytes.toString() + "{broken\n" : "");
+    handoff(project, "grok", { from: "claude", summary: "Continue from the supplied notes.", checkTarget: () => {} });
+    const limited = loadState(project);
+    assert.equal(Object.hasOwn(limited.pendingInjection.sources, "claude"), !partial);
+    assert.equal(limited.agents.claude.mark === null, partial, "the departing slot follows the same completeness rule");
+    const body = fs.readFileSync(safeCheckpointPath(project, limited.pendingInjection.deltaFile), "utf8");
+    if (partial) assert.match(body, /Claude Code: source was only partially readable/);
+    else assert.doesNotMatch(body, /Claude Code: source/);
+  }
 });
 
 test("handoff dry-run previews the route without changing state or checkpoints", async () => {

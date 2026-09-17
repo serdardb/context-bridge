@@ -390,6 +390,16 @@ interruption after the first append can repeat closing words on retry. These
 checks do not lock unrelated filesystem writers or prove hostile parent-swap
 resistance.
 
+Handoff collection distinguishes unavailable, partial and readable source sessions
+using each adapter's parser probe. Source limitations appear in the preview,
+delta and full-context record, with their text charged to the delivery budget.
+Unavailable sources are omitted; partial sources may contribute readable messages
+but neither advances its delivery watermark. Notes-only recovery remains valid,
+and an empty readable session is not called unavailable. Closing-word collection
+also declines a source that is not fully readable. Probing and extracting vendor
+sessions are separate operations, not an atomic snapshot of a concurrently
+changing vendor store; a probe cannot eliminate all read-time races.
+
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
 integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the

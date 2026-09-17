@@ -184,6 +184,25 @@ function kb(bytes) {
   return bytes >= 1024 * 1024 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
+function readHandoffSource(adapter, projectDir, slot, since, warnings) {
+  const unavailable = () => {
+    warnings.push(`${adapter.displayName}: source could not be read reliably. Its conversation is not included and its delivery watermark was not advanced.`);
+    return null;
+  };
+  try {
+    const ref = adapter.hydrate(projectDir, slot);
+    if (!ref) return unavailable();
+    const probe = adapter.parseProbe(ref);
+    if (!["readable", "partial"].includes(probe.status)) return unavailable();
+    const activity = adapter.activitySince(ref, since);
+    if (probe.status === "partial") warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
+    return { ref, activity, complete: probe.status === "readable" };
+  } catch (error) {
+    if (error instanceof AdapterResultError) throw error;
+    return unavailable();
+  }
+}
+
 /**
  * Preview a handoff without linking, importing, pruning, or writing anything.
  * This deliberately reports the plan rather than pretending a dry run is a
@@ -206,6 +225,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const targetSlot = agentSlot(s, target);
   const streams = [];
   const work = [];
+  const warnings = [];
   const auditRefs = {};
   const auditMarks = {};
   let messageCount = 0;
@@ -214,11 +234,11 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     const slot = agentSlot(s, otherId);
     if (!slot.id) continue;
     const adapter = adapterFor(otherId);
-    const ref = adapter.hydrate(projectDir, slot);
-    if (!ref) continue;
+    const read = readHandoffSource(adapter, projectDir, slot, knownMark(s, target, otherId), warnings);
+    if (!read) continue;
+    const { ref, activity } = read;
     auditRefs[otherId] = ref;
     auditMarks[otherId] = knownMark(s, target, otherId);
-    const activity = adapter.activitySince(ref, knownMark(s, target, otherId));
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
     streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
     messageCount += activity.messages.length;
@@ -227,6 +247,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const git = gitDelta(projectDir, s.git.sha);
   const sections = {
     summary,
+    warnings,
     sources: streams.length ? streams : [{ id: sourceId, label: sourceAdapter.displayName, messages: [] }],
     decisions: splitNotes(decisions),
     work: [...work, ...git.lines],
@@ -244,7 +265,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     sourceAdapter.displayName
   );
   const trailingFor = (lost) => {
-    const omission = lost ? "What did not fit above is whole there. " : "Nothing above was left out, so it holds the same conversation in its original form. ";
+    const omission = warnings.length ? "This checkpoint contains only successfully extracted source content; the source limitations above also apply to it. " : lost ? "What did not fit above is whole there. " : "Nothing above was left out, so it holds the same conversation in its original form. ";
     return `\n\nFull context checkpoint: ${fullReference}\n${omission}It is kept with this handoff's other checkpoints until they are pruned together.` +
       (targetAdapter.injection === "prompt" ? "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back." : "");
   };
@@ -259,6 +280,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
     `${OK} Dry run: would prepare ${sourceAdapter.displayName}→${targetAdapter.displayName} context delta.`,
     `  Road: ${via} (${kb(via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES)} limit), estimated delta ${kb(Buffer.byteLength(delta))}.`,
     `  Content: ${messageCount} conversation message(s), ${sections.work.length} work item(s), ${sections.decisions.length} decision note(s), ${sections.next.length} next note(s).`,
+    ...warnings.map(warning => `  Source limitation: ${warning}`),
     `  Files: ${deltaRel}, ${fullRel}${auditRel ? `, ${auditRel}` : ""}.`,
     "  No state, checkpoint, pending marker, prune, or vendor session/import was changed.",
     `  Run without --dry-run to create the handoff for ${targetAdapter.displayName}.`,
@@ -511,35 +533,30 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
   const auditMarks = {};
   const streams = [];
   const work = [];
+  const warnings = [];
   let messageCount = 0;
   for (const otherId of AGENT_IDS) {
     if (otherId === target) continue;
     const slot = agentSlot(s, otherId);
     if (!slot.id) continue;
     const adapter = adapterFor(otherId);
-    const ref = adapter.hydrate(projectDir, slot);
-    if (!ref) continue;
     // An adopted source is new to everyone, so it starts from the beginning.
     const since = otherId === sourceId && adopted ? null : knownMark(s, target, otherId);
+    const read = readHandoffSource(adapter, projectDir, slot, since, warnings);
+    if (!read) continue;
+    const { ref, activity, complete } = read;
     auditRefs[otherId] = ref;
     auditMarks[otherId] = since;
-    let activity;
-    try {
-      activity = adapter.activitySince(ref, since);
-    } catch (error) {
-      if (error instanceof AdapterResultError) throw error;
-      continue;
-    }
-    packed[otherId] = adapter.currentMark(ref);
+    if (complete) packed[otherId] = adapter.currentMark(ref);
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
     streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
     messageCount += activity.messages.length;
     work.push(...activity.patchedFiles.map((f) => `Modified via ${adapter.displayName}: ${f}`));
   }
-  const sourceRef = sourceAdapter.hydrate(projectDir, sourceSlot);
   const git = gitDelta(projectDir, s.git.sha);
   const sections = {
     summary,
+    warnings,
     sources: streams.length ? streams : [{ id: sourceId, label: sourceAdapter.displayName, messages: [] }],
     decisions: splitNotes(decisions),
     work: [...work, ...git.lines],
@@ -550,6 +567,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
   const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
   const fullReference = checkpointReference(projectDir, fullRel);
   const firstSwitch = !targetSlot.id;
+  const sourceRef = auditRefs[sourceId] ?? null;
 
   // The road is decided before anything happens to the disk, because it decides
   // how much the delta may carry and therefore how much of it the summary may
@@ -606,7 +624,9 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
     // like part of the filename, to a reader and to the agent that has to open it.
     out +=
       `\n\nFull context checkpoint: ${fullReference}\n` +
-      (firstSwitch
+      (warnings.length
+        ? "This checkpoint contains only successfully extracted source content; the source limitations above also apply to it. "
+        : firstSwitch
         ? "This is the first switch, so the summary above is your entry point and the whole conversation to date is in that file. "
         : lost
           ? "What did not fit above is whole there. "
@@ -712,7 +732,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
       // before it was even written.
       sources: packed,
     };
-    sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
+    sourceSlot.set({ ...(Object.hasOwn(packed, sourceId) ? { mark: packed[sourceId] } : {}), idle: false });
 
     // Preparation runs outside the state lock. Only apply the computed snapshot
     // if its lane is still unchanged; hooks and other commands may have written

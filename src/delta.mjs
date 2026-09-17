@@ -103,7 +103,7 @@ export function composeDelta(sections, budget) {
   const streams = normaliseSources(sections);
   const conversationBlock =
     plan.every((p) => p.candidates === 0)
-      ? "No conversation activity since last sync."
+      ? sections.warnings?.length ? "No readable conversation was extracted. See source limitations above." : "No conversation activity since last sync."
       : plan
           .map((p) => {
             const body = [omissionNote(p), ...p.kept.map((m) => messageBlock(m, p.label))].filter(Boolean).join("\n\n");
@@ -218,6 +218,7 @@ function shell(sections, streams, conversationBlock) {
     `While you were away, work continued in ${streams.map((st) => st.label).join(", ")}.`,
     "",
     summaryBlock(sections.summary, sections.summaryBudget ?? DEFAULT_SUMMARY_BYTES),
+    ...(sections.warnings?.length ? ["", "Source limitations", ...sections.warnings.map(warning => `- ${warning}`)] : []),
     "",
     `Conversation\n\n${conversationBlock}`,
     "",
@@ -432,7 +433,7 @@ function normaliseSources({ fromAgent, conversation, sources }) {
   return [{ label: cap(fromAgent ?? "agent"), messages: conversation ?? [] }];
 }
 
-export function composeFullContext({ fromAgent, conversation, sources, decisions, work, next, summary }) {
+export function composeFullContext({ fromAgent, conversation, sources, decisions, work, next, summary, warnings = [] }) {
   const streams = normaliseSources({ fromAgent, conversation, sources });
   const list = (items, empty) => (items.length ? items.map((i) => `- ${i}`).join("\n") : `- ${empty}`);
   // The summary belongs here as well. This file is what the delta points at when
@@ -447,8 +448,9 @@ export function composeFullContext({ fromAgent, conversation, sources, decisions
     });
   const who = streams.map((st) => st.label).join(", ");
   const values = [
-    summaryText || "_No agent-written summary was available for this handoff._",
-    blocks.length ? blocks.join("\n\n") : "_No conversation activity since last sync._",
+    (summaryText || "_No agent-written summary was available for this handoff._") +
+      (warnings.length ? `\n\nSource limitations\n${warnings.map(warning => `- ${warning}`).join("\n")}` : ""),
+    blocks.length ? blocks.join("\n\n") : warnings.length ? "_No readable conversation was extracted._" : "_No conversation activity since last sync._",
     list(decisions, "No explicit decisions were recorded."),
     list(work, "No file or git changes detected."),
     list(next, "Nothing was flagged as unresolved."),

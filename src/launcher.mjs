@@ -675,6 +675,10 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   if (!ref) return;
   let tail;
   try {
+    if (adapter.parseProbe(ref).status !== "readable") {
+      log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
+      return;
+    }
     tail = adapter.activitySince(ref, slot.mark);
   } catch {
     return;
