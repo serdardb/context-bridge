@@ -8,7 +8,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { writeJsonAtomic, processAlive as processIsAlive } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
-import { withKernelLockSync } from "./locking.mjs";
+import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
 export const PROJECT_ID_KEY = "context-bridge.project-id";
 const REGISTRY_VERSION = 1;
@@ -96,15 +96,6 @@ function registryLockPath() {
   return `${registryPath()}.lock`;
 }
 
-function sleepSync(ms) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    const until = Date.now() + ms;
-    while (Date.now() < until) {}
-  }
-}
-
 function createStampedLock(lock) {
   const fd = fs.openSync(lock, "wx");
   let closed = false;
@@ -144,10 +135,8 @@ function withRegistryPidLock(fn) {
       // recovery when its owner is absent or provably dead.
       if (age > 15000 && !processIsAlive(owner)) {
         try { fs.rmSync(lock, { force: true }); } catch {}
-        continue;
       }
-      const until = Date.now() + 25;
-      while (Date.now() < until) {}
+      waitForLock(lock);
     }
   }
   try {
@@ -182,9 +171,8 @@ function withMigrationPidLock(projectId, fn) {
       try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
       if (age > 15000 && !processIsAlive(owner)) {
         try { fs.rmSync(lock, { force: true }); } catch {}
-        continue;
       }
-      sleepSync(25);
+      waitForLock(lock);
     }
   }
   try { return fn(); } finally {

@@ -124,6 +124,14 @@ then rerun `bridge doctor --json`. Read-only inspection such as `status --json`
 and `storage plan --json` does not need the native backend. Native error numbers
 are preserved in diagnostics; internal require stacks are not printed.
 
+Mutation lock retries default to 30 seconds. Set
+`CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` to a positive integer number of milliseconds
+to change that budget. Nested kernel/PID acquisitions share the remaining
+budget. On timeout, the owner is not killed and its lock is not deleted; wait
+for it to finish and retry. Do not manually remove a live owner's lock or a
+permanent `.guard` file. Critical-section work and blocking filesystem calls
+are not covered by this retry budget.
+
 `bridge verify` is the strict release and automation gate. It runs a real smoke
 question against every installed supported agent, checks that each agent's
 session and discovery readers are healthy, and verifies every directed route

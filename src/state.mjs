@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic, writeFileExclusive, nowIso, fileExists, log, dim, OK, processAlive } from "./util.mjs";
-import { withKernelLockSync } from "./locking.mjs";
+import { withKernelLockSync, waitForLock } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
 export { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
@@ -718,17 +718,6 @@ export function saveState(projectDir, s) {
   });
 }
 
-/** A synchronous pause with no busy spin, so lock retries do not peg a core. */
-function sleepSync(ms) {
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    // SharedArrayBuffer unavailable: fall back to a short spin.
-    const until = Date.now() + ms;
-    while (Date.now() < until) {}
-  }
-}
-
 /**
  * Serialise the read-modify-write of `state.json` across processes.
  *
@@ -745,7 +734,7 @@ function sleepSync(ms) {
  * with no readable pid that is older than `staleMs`. A living owner is never
  * stolen, at any age: a review found that stealing a slow-but-live holder let its
  * own `finally` delete the new owner's fresh lock, so a stuck live process is
- * waited on rather than raced. The stable kernel guard serializes the entire
+ * waited on until the retry budget expires rather than raced. The stable kernel guard serializes the entire
  * PID-lock acquire/recovery/callback/release sequence among updated writers.
  * Old binaries do not take that guard: stop them before upgrading. The PID
  * marker remains for compatibility, not as a standalone race-safe protocol.
@@ -768,7 +757,7 @@ function withStatePidLock(lock, fn, staleMs) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       if (stealableLock(lock, staleMs)) stealLock(lock);
-      sleepSync(25);
+      waitForLock(lock);
       continue;
     }
     // We own the lock the instant the create succeeds. Set `held` before writing

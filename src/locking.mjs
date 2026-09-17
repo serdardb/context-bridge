@@ -4,10 +4,43 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { performance } from "node:perf_hooks";
 
 const require = createRequire(import.meta.url);
 const entered = new Set();
 let backend;
+let waitBudget = null;
+
+function configuredTimeout() {
+  const raw = process.env.CONTEXT_BRIDGE_LOCK_TIMEOUT_MS;
+  const ms = raw === undefined ? 30000 : Number(raw);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    const error = new Error("CONTEXT_BRIDGE_LOCK_TIMEOUT_MS must be a positive integer number of milliseconds.");
+    error.expected = true;
+    error.code = "BRIDGE_LOCK_TIMEOUT_INVALID";
+    throw error;
+  }
+  return ms;
+}
+
+/** Charge actual retry waits to one budget shared by nested synchronous locks. */
+export function waitForLock(file) {
+  if (!waitBudget) throw new Error("Lock retry outside a kernel guard scope.");
+  const timeout = () => {
+    const error = new Error(`Lock wait timed out after ${waitBudget.limit} ms. The owner was not evicted. Wait for the other process to finish and retry; stop old bridge processes before upgrading.`);
+    error.expected = true;
+    error.code = "BRIDGE_LOCK_TIMEOUT";
+    error.operation = "lock:acquire";
+    error.path = file;
+    error.nextCommand = "bridge status --json";
+    return error;
+  };
+  if (waitBudget.remaining <= 0) throw timeout();
+  const started = performance.now();
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(25, waitBudget.remaining));
+  waitBudget.remaining -= performance.now() - started;
+  if (waitBudget.remaining <= 0) throw timeout();
+}
 
 function nativeError(operation, number) {
   const error = new Error(`Kernel lock ${operation} failed on ${process.platform}/${process.arch} (native error ${number}).`);
@@ -69,13 +102,10 @@ function loadBackend() {
         catch (error) { throw nativeError("open", error.code); }
       },
       tryLock(fd) {
-        for (;;) {
-          if (flock(fd, 2 | 4) === 0) return true; // LOCK_EX | LOCK_NB
-          const code = koffi.errno();
-          if (code === koffi.os.errno.EINTR) continue;
-          if (code === koffi.os.errno.EAGAIN || code === koffi.os.errno.EWOULDBLOCK) return false;
-          throw nativeError("acquire", code);
-        }
+        if (flock(fd, 2 | 4) === 0) return true; // LOCK_EX | LOCK_NB
+        const code = koffi.errno();
+        if ([koffi.os.errno.EINTR, koffi.os.errno.EAGAIN, koffi.os.errno.EWOULDBLOCK].includes(code)) return false;
+        throw nativeError("acquire", code);
       },
       close(fd) {
         try { fs.closeSync(fd); } catch (error) { throw nativeError("close", error.code); }
@@ -128,6 +158,16 @@ export function kernelLockHealth() {
 
 /** Run a synchronous critical section. The guard file must NEVER be unlinked. */
 export function withKernelLockSync(file, fn) {
+  const outer = waitBudget;
+  if (!outer) {
+    const limit = configuredTimeout();
+    waitBudget = { limit, remaining: limit };
+  }
+  try { return acquireKernelLock(file, fn); }
+  finally { waitBudget = outer; }
+}
+
+function acquireKernelLock(file, fn) {
   const native = lockBackend();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let key = path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
@@ -141,7 +181,7 @@ export function withKernelLockSync(file, fn) {
   const handle = native.open(key);
   entered.add(key);
   try {
-    while (!native.tryLock(handle)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    while (!native.tryLock(handle)) waitForLock(file);
     const current = fs.lstatSync(key);
     if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1) throw new Error(`Unsafe kernel lock file: ${key}`);
     if (process.platform !== "win32") {

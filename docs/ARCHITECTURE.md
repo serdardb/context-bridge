@@ -300,6 +300,15 @@ The existing PID marker protocol runs entirely inside this guard to serialize
 stale-owner recovery among updated processes. Do not run old writers during
 upgrade: old binaries do not participate in the new kernel protocol.
 
+Kernel and PID acquisition retries share a 30-second wait budget across nested
+synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
+integer override. Exhaustion raises `BRIDGE_LOCK_TIMEOUT` without evicting the
+owner or running the blocked critical section. A later attempt starts with a
+fresh budget. Retries sleep rather than spin; repeated POSIX `EINTR` also counts
+towards the budget. This bounds retry waiting, not the duration of a filesystem
+call or critical-section work; independent, non-nested lock scopes have separate
+budgets. It is not an end-to-end command deadline.
+
 Koffi provides the native binding, loaded only when a mutation needs a lock.
 POSIX uses `flock`; Windows uses `CreateFileW` and `LockFileEx` (the Windows
 branch still requires native platform acceptance before release). A missing

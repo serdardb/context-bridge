@@ -6,15 +6,10 @@ import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome } from "./sto
 import { ensureState, loadState, mutateState, withProjectStateReadLock, readableCheckpointsDir, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { writeJsonAtomic, writeFileExclusive } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
-import { withKernelLockSync } from "./locking.mjs";
+import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
 export const ARTIFACT_VERSION = 1;
 const PACKAGE_VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-
-function sleepSync(ms) {
-  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
-  catch { const until = Date.now() + ms; while (Date.now() < until) {} }
-}
 
 function withImportLock(hash, fn) {
   return withKernelLockSync(path.join(storageHome(), "locks", `${hash}.import.guard`), () => withImportPidLock(hash, fn));
@@ -52,8 +47,8 @@ function withImportPidLock(hash, fn) {
       } else if (age > 15000) {
         throw new Error("Artifact import lock has no valid owner; refusing automatic removal.");
       }
-      if (age > 15000 && !alive) { try { fs.rmSync(lock, { force: true }); } catch {} continue; }
-      sleepSync(25);
+      if (age > 15000 && !alive) { try { fs.rmSync(lock, { force: true }); } catch {} }
+      waitForLock(lock);
     }
   }
   try { return fn(dir); } finally { try { fs.rmSync(lock, { force: true }); } catch {} }
