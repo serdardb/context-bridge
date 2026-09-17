@@ -18,6 +18,7 @@ import {
   runtimePath,
   storageHome,
   planLegacyMigration,
+  migrateLegacyStorage,
   adoptProject,
   registeredProjects,
 } from "../src/storage.mjs";
@@ -57,8 +58,22 @@ test("project creation identity rejects recycled inodes and requires explicit le
     assert.throws(() => projectIdentity(moved, { create: true }), { code: "BRIDGE_PROJECT_IDENTITY_UNVERIFIED" });
     assert.equal(fs.readFileSync(registryPath, "utf8"), before);
     assert.equal(registeredProjects()[0].availability, "unverified");
-    adoptProject(moved, original.id);
+    const legacyState = path.join(moved, ".bridge", "state.json");
+    fs.mkdirSync(path.dirname(legacyState));
+    const evidence = JSON.stringify(defaultState(moved));
+    fs.writeFileSync(legacyState, evidence);
+    const adopted = spawnSync(process.execPath, [path.join(process.cwd(), "bin", "bridge.mjs"), "project", "adopt", original.id, "--json"], {
+      cwd: moved, encoding: "utf8", env: { ...process.env, PATH: "" },
+    });
+    assert.equal(adopted.status, 0, adopted.stderr);
+    assert.equal(JSON.parse(adopted.stdout).id, original.id);
+    assert.equal(fs.readFileSync(legacyState, "utf8"), evidence, "identity confirmation must not migrate or merge evidence");
     assert.equal(projectIdentity(moved).id, original.id);
+    assert.throws(() => adoptProject(moved, original.id), /legacy bridge state/, "a normal adoption still refuses legacy data");
+    const migrated = migrateLegacyStorage(moved);
+    assert.equal(migrated.identity.id, original.id);
+    assert.equal(fs.readFileSync(path.join(migrated.target, "state.json"), "utf8"), evidence);
+    assert.equal(fs.existsSync(legacyState), false);
     fs.statSync = (...args) => {
       const value = stat(...args);
       if (args[0] === fs.realpathSync(moved) && args[1]?.bigint) value.birthtimeNs = 0n;

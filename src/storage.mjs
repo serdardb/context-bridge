@@ -412,10 +412,15 @@ export function adoptProject(projectDir, id) {
   if (!fs.statSync(canonical).isDirectory()) throw new Error("Project adoption requires a directory.");
   const destinationIdentity = fileIdentity(canonical);
   requireFileIdentity(destinationIdentity);
-  if (hasLegacyRuntime(legacyBridgeDir(canonical))) {
+  const existing = readRegistry().projects[id];
+  if (!existing) throw new Error(`Unknown bridge project '${id}'.`);
+  // Confirming an old registration in place changes only its fingerprint.
+  // Migration still owns conflict detection, backups and source retirement.
+  const upgradingInPlace = (record) => record.path === canonical &&
+    !record.fileIdentity?.startsWith("v2:");
+  if (hasLegacyRuntime(legacyBridgeDir(canonical)) && !upgradingInPlace(existing)) {
     throw new Error("This directory contains legacy bridge state; refusing to merge it with another project.");
   }
-  if (!readRegistry().projects[id]) throw new Error(`Unknown bridge project '${id}'.`);
   // Adoption names the existing UUID, not the new directory's provisional id.
   // Never hold registry ownership while waiting for the runtime owner.
   return withKernelLockSync(path.join(storageHome(), "locks", `${id}.runtime.guard`), () => withRegistryLock(() => {
@@ -428,7 +433,7 @@ export function adoptProject(projectDir, id) {
     });
     const identity = fileIdentity(canonical);
     if (!identity || identity !== destinationIdentity || fs.realpathSync.native(canonical) !== canonical ||
-        hasLegacyRuntime(legacyBridgeDir(canonical))) {
+        (hasLegacyRuntime(legacyBridgeDir(canonical)) && !upgradingInPlace(record))) {
       throw new BridgeError("Adoption destination changed while waiting for ownership; refusing to reconnect sessions. Inspect the destination and retry.", {
         code: "BRIDGE_ADOPTION_CHANGED",
       });

@@ -438,6 +438,10 @@ Automatic directory matching uses device, inode and nanosecond birth time, not
 device/inode alone: Linux can reuse an inode immediately after deletion. Older
 registrations require explicit `project adopt <id>` after checking ownership;
 they are listed as `unverified`, not silently upgraded from a pathname. Matching
+an explicitly confirmed older registration in its original directory may leave
+legacy `.bridge` evidence in place: adoption does not read, merge or migrate that
+evidence. Subsequent migration retains its conflict/backup checks. A different
+destination containing legacy data remains ineligible for adoption. Matching
 creation identities preserve same-filesystem rename behavior. Filesystems that
 report no positive birth time currently cannot register or adopt projects;
 existing uncertain associations are refused rather than exposing old context.
