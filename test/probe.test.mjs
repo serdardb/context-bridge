@@ -48,10 +48,12 @@ test("a missing transcript is distinct from an I/O failure", () => {
       assert.equal(shape.status, "unreadable");
       assert.equal(shape.errorCode, code);
       assert.ok(!JSON.stringify(shape).includes(file));
-      for (const id of ["claude", "codex", "grok"]) {
+      for (const id of ["claude", "codex", "grok", "antigravity"]) {
         const result = adapterFor(id).parseProbe({ transcriptPath: file, eventsPath: file });
         assert.equal(result.status, "unreadable", id);
         assert.equal(result.messages, null, "an I/O failure must not be retried as empty activity");
+        assert.throws(() => adapterFor(id).activitySince({ transcriptPath: file, eventsPath: file }, null),
+          (error) => error.code === "BRIDGE_TRANSCRIPT_UNREADABLE" && error.cause.code === code);
       }
     }
   } finally { fs.readFileSync = read; }

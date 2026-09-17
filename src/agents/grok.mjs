@@ -21,6 +21,7 @@ import {
   REPO_ROOT,
   sharedSkillPath,
   installedCopyStatus,
+  BridgeError,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
 
@@ -112,9 +113,9 @@ export function promptArgs(delta) {
  */
 export function currentMark(ref) {
   let rows = 0;
-  for (const _ of readJsonl(ref.transcriptPath)) rows++;
+  for (const _ of readJsonl(ref.transcriptPath, true)) rows++;
   let ts = null;
-  for (const e of readJsonl(ref.eventsPath)) {
+  for (const e of readJsonl(ref.eventsPath, true)) {
     if (e.ts && (!ts || e.ts > ts)) ts = e.ts;
   }
   return { rows, ts };
@@ -132,7 +133,7 @@ export function activitySince(ref, mark) {
   const { rows: from, ts: since } = normaliseMark(mark);
   const messages = [];
   let index = 0;
-  for (const r of readJsonl(ref.transcriptPath)) {
+  for (const r of readJsonl(ref.transcriptPath, true)) {
     const i = index++;
     if (i < from) continue;
     const role = r.type === "user" ? "user" : r.type === "assistant" ? "assistant" : null;
@@ -149,7 +150,7 @@ export function activitySince(ref, mark) {
   }
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const e of readJsonl(ref.eventsPath)) {
+  for (const e of readJsonl(ref.eventsPath, true)) {
     if (since && e.ts && e.ts <= since) continue;
     if (e.type === "turn_ended") turnsCompleted++;
     if (e.type === "tool_completed" && e.outcome === "success") {
@@ -270,11 +271,14 @@ export function idleAfter(ref, sinceIso) {
   return false;
 }
 
-function* readJsonl(p) {
+function* readJsonl(p, required = false) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
-  } catch {
+  } catch (cause) {
+    if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
+      code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
+    });
     return;
   }
   for (const line of content.split("\n")) {

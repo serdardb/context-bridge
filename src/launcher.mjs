@@ -682,6 +682,7 @@ function appendFinalWordsOwned(projectDir, s, agent) {
     }
     tail = adapter.activitySince(ref, slot.mark);
   } catch {
+    log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
     return;
   }
   if (!tail.messages.length) return;

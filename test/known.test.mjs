@@ -385,6 +385,32 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   handoff(project, "codex", { from: "grok", checkTarget: () => {} });
   const restored = loadState(project);
   assert.match(fs.readFileSync(safeCheckpointPath(project, restored.pendingInjection.deltaFile), "utf8"), /claude decided the architecture/);
+  // The shape read succeeds; fail either the probe's parse or the subsequent
+  // real extraction. Preflight alone must never authorize acknowledging loss.
+  for (const failAt of [2, 3]) {
+    saveState(project, s);
+    let reads = 0;
+    fs.readFileSync = (file, ...args) => {
+      if (file === claudeTranscript && ++reads >= failAt) {
+        throw Object.assign(new Error("private I/O detail"), { code: "EIO" });
+      }
+      return originalRead(file, ...args);
+    };
+    try { handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
+    finally { fs.readFileSync = originalRead; }
+    assert.ok(reads >= failAt, "failure must occur after a successful shape read");
+    const failedRead = loadState(project);
+    assert.equal(Object.hasOwn(failedRead.pendingInjection.sources, "claude"), false,
+      "a failed extraction must not acknowledge content missing from the delivery");
+    const file = safeCheckpointPath(project, failedRead.pendingInjection.deltaFile);
+    for (const p of [file, file.replace(/\.md$/, "-full.md")]) {
+      const body = fs.readFileSync(p, "utf8");
+      assert.match(body, /Claude Code: source could not be read reliably/);
+      assert.doesNotMatch(body, /private I\/O detail/);
+    }
+    commitKnown(failedRead, failedRead.pendingInjection);
+    assert.equal(knownMark(failedRead, "codex", "claude"), null);
+  }
   for (const partial of [true, false]) {
     saveState(project, s);
     fs.writeFileSync(claudeTranscript, partial ? sourceBytes.toString() + "{broken\n" : "");

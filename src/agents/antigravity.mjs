@@ -12,7 +12,7 @@
 // of its objections changed this file; one of its claims did not survive checking.
 import fs from "node:fs";
 import path from "node:path";
-import { tryExec, fileExists, HOME } from "../util.mjs";
+import { tryExec, fileExists, HOME, BridgeError } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -193,7 +193,7 @@ function wasTruncated(row) {
  */
 export function currentMark(ref) {
   let last = -1;
-  for (const row of readJsonl(ref.transcriptPath)) {
+  for (const row of readJsonl(ref.transcriptPath, true)) {
     if (typeof row.step_index === "number" && row.step_index > last) last = row.step_index;
   }
   return last < 0 ? null : last;
@@ -202,7 +202,7 @@ export function currentMark(ref) {
 export function activitySince(ref, mark) {
   const from = typeof mark === "number" ? mark : -1;
   const messages = [];
-  for (const row of readJsonl(ref.transcriptPath)) {
+  for (const row of readJsonl(ref.transcriptPath, true)) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (!isConversationRow(row)) continue;
     const text = textOf(row);
@@ -332,11 +332,14 @@ export function smokeCommand() {
   return { cmd: "agy", args: ["--print", "Reply with exactly: bridge-ok"] };
 }
 
-function* readJsonl(p) {
+function* readJsonl(p, required = false) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
-  } catch {
+  } catch (cause) {
+    if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
+      code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
+    });
     return;
   }
   for (const line of content.split("\n")) {

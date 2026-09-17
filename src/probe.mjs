@@ -88,6 +88,11 @@ export function probeWithActivity(adapter, ref, shape) {
     const activity = adapter.activitySince(ref, null);
     return { ...shape, messages: activity.messages.length };
   } catch (err) {
+    if (err.code === "BRIDGE_TRANSCRIPT_UNREADABLE") {
+      const code = err.cause?.code;
+      return { ...shape, status: "unreadable", messages: null,
+        errorCode: /^[A-Z][A-Z0-9_]*$/.test(code ?? "") ? code : "READ_FAILED" };
+    }
     // The file looked familiar but the parser blew up walking it. That is drift
     // too, and a louder kind: report it rather than swallowing the exception.
     return { ...shape, status: "mismatch", messages: null, detail: err.message };

@@ -81,6 +81,8 @@ test("grok marks by row count because its chat rows have no timestamps", async (
 test("grok drops harness noise from either role, and protocol text only from the user", () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-grok-roles-")));
   const transcript = path.join(dir, "chat_history.jsonl");
+  const eventsPath = path.join(dir, "events.jsonl");
+  fs.writeFileSync(eventsPath, "");
   fs.writeFileSync(
     transcript,
     [
@@ -97,7 +99,7 @@ test("grok drops harness noise from either role, and protocol text only from the
 
   assert.deepEqual(
     adapterFor("grok")
-      .activitySince({ transcriptPath: transcript }, null)
+      .activitySince({ transcriptPath: transcript, eventsPath }, null)
       .messages.map((m) => `${m.role}:${m.text}`),
     [
       "user:the real question",

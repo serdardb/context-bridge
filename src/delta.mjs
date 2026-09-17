@@ -15,7 +15,7 @@ import { tryExec, BridgeError } from "./util.mjs";
 /** Claude transcript records (user/assistant text) newer than sinceIso. */
 export function claudeMessagesSince(transcriptPath, sinceIso) {
   const out = [];
-  for (const r of readJsonl(transcriptPath)) {
+  for (const r of readJsonl(transcriptPath, true)) {
     if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
     if (r.isSidechain) continue;
     if (r.type === "user") {
@@ -34,7 +34,7 @@ export function codexActivitySince(rolloutPath, sinceIso) {
   const messages = [];
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const r of readJsonl(rolloutPath)) {
+  for (const r of readJsonl(rolloutPath, true)) {
     if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
     const p = r.payload || {};
     if (r.type === "event_msg") {
@@ -515,11 +515,14 @@ function cap(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function* readJsonl(p) {
+function* readJsonl(p, required = false) {
   let content;
   try {
     content = fs.readFileSync(p, "utf8");
-  } catch {
+  } catch (cause) {
+    if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
+      code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
+    });
     return;
   }
   for (const line of content.split("\n")) {

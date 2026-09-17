@@ -558,6 +558,12 @@ JSONL probes distinguish an absent file (`missing`, ENOENT) from an I/O failure
 not imply vendor schema drift or authorize treating the session as empty.
 Doctor reports checking permissions/storage rather than claiming the file is
 gone; Grok's combined chat/events probe retains this failure status too.
+Claude/Codex, Grok and Antigravity conversation extraction also requires its
+source files at the actual read, not just during the earlier probe. Read failure
+is disclosed and does not advance the source watermark. Grok/Antigravity marks
+likewise require the underlying files. Optional audit/discovery/idle readers
+retain their existing fallback semantics; this is not an atomic native snapshot
+or protection against content rewrites between successful reads.
 
 ## Per-agent launch flags
 
