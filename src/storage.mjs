@@ -244,7 +244,22 @@ export function projectStoreDir(projectDir, { createIdentity = false } = {}) {
 }
 
 export function registeredProjects() {
-  return Object.values(readRegistry().projects).map(({ id, path: root, createdAt }) => ({ id, root, createdAt }));
+  return Object.values(readRegistry().projects).map(({ id, path: root, createdAt, fileIdentity: recorded }) => {
+    let availability;
+    let errorCode = null;
+    try {
+      const stat = fs.lstatSync(root);
+      if (stat.isSymbolicLink()) availability = "redirected";
+      else if (!stat.isDirectory()) availability = "not-directory";
+      else if (recorded && recorded !== `${stat.dev}:${stat.ino}`) availability = "replaced";
+      else availability = "present";
+    } catch (error) {
+      availability = error.code === "ENOENT" || error.code === "ENOTDIR" ? "missing" : "unreadable";
+      errorCode = error.code ?? "UNKNOWN";
+    }
+    // A missing path may be a move or an offline volume, never deletion consent.
+    return { id, root, createdAt, availability, errorCode };
+  });
 }
 
 // A vendor may retain its old cwd after explicit project adoption. This only

@@ -19,6 +19,7 @@ import {
   storageHome,
   planLegacyMigration,
   adoptProject,
+  registeredProjects,
 } from "../src/storage.mjs";
 import { bridgeDir, checkpointsDir, defaultState, emptyLane, ensureState, loadState, writeCheckpoint, saveState, mutateState, mutateProject, statePath } from "../src/state.mjs";
 import { loadConfig, saveConfig } from "../src/config.mjs";
@@ -1483,9 +1484,35 @@ test("explicit adoption reconnects a different-inode directory without Git or ch
     const store = projectStoreDir(source);
     writeCheckpoint(source, "main", "2026-09-16T00-00-00-000Z-claude-to-codex.md", "preserved evidence");
     const originalState = fs.readFileSync(path.join(store, "state.json"), "utf8");
+    const registryBefore = fs.readFileSync(path.join(runtimeHome, "projects.json"), "utf8");
+    assert.equal(registeredProjects()[0].availability, "present");
+    const lstat = fs.lstatSync;
+    try {
+      fs.lstatSync = (...args) => {
+        if (args[0] === fs.realpathSync(source)) throw Object.assign(new Error("denied"), { code: "EACCES" });
+        return lstat(...args);
+      };
+      assert.equal(registeredProjects()[0].availability, "unreadable");
+      assert.equal(registeredProjects()[0].errorCode, "EACCES");
+    } finally { fs.lstatSync = lstat; }
     // A different inode models copy-and-remove moves across filesystems; retain
     // the fixture directory elsewhere so the test cannot accidentally reuse it.
     fs.renameSync(source, `${source}-retired`);
+    const listed = spawnSync(process.execPath, [path.join(process.cwd(), "bin", "bridge.mjs"), "project", "list", "--json"], {
+      cwd: moved, encoding: "utf8", env: { ...process.env, PATH: "" },
+    });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.equal(JSON.parse(listed.stdout)[0].availability, "missing");
+    fs.mkdirSync(source);
+    assert.equal(registeredProjects()[0].availability, "replaced");
+    fs.rmdirSync(source);
+    fs.writeFileSync(source, "not a project");
+    assert.equal(registeredProjects()[0].availability, "not-directory");
+    fs.unlinkSync(source);
+    fs.symlinkSync(`${source}-retired`, source, "dir");
+    assert.equal(registeredProjects()[0].availability, "redirected");
+    fs.unlinkSync(source);
+    assert.equal(fs.readFileSync(path.join(runtimeHome, "projects.json"), "utf8"), registryBefore, "inspection must never alter the registry");
     assert.notEqual(projectIdentity(moved).fileIdentity, identity.fileIdentity);
     const result = spawnSync(process.execPath, [path.join(process.cwd(), "bin", "bridge.mjs"), "project", "adopt", identity.id, "--json"], {
       cwd: moved, encoding: "utf8",

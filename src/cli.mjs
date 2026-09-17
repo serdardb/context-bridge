@@ -215,7 +215,7 @@ export async function main(argv) {
         const projects = registeredProjects();
         if (flags.has("--json")) log(JSON.stringify(projects, null, 2));
         else if (!projects.length) log("No registered bridge projects.");
-        else for (const project of projects) log(`${project.id}  ${project.root}`);
+        else for (const project of projects) log(`${project.id}  [${project.availability}${project.errorCode ? `: ${project.errorCode}` : ""}]  ${project.root}`);
       } else if (args[1] === "adopt" && args.length === 3) {
         const result = adoptProject(projectDir, args[2]);
         log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
