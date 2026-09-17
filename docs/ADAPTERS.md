@@ -171,6 +171,13 @@ they have already discarded. Direct vendor-module imports also bypass wrappers.
 Health, discovery/parse probes, audit and capability observations are also
 shape-checked. Invalid audit readers are reported as `readerErrors` and rendered
 as `INCOMPLETE`, rather than being mistaken for an empty successful audit.
+Audit results may include `sourceComplete: false` when readable records were
+recovered but some source material could not be parsed or read. Those records
+remain in the manifest beside an incomplete-source warning. Claude, Codex, Grok
+and Antigravity JSONL audits throw on unavailable required input and report
+malformed rows as partial; Grok's optional hunk file may be absent, but other
+read errors are not treated as absence. This is not an atomic vendor snapshot
+or proof of completeness for adapters that omit the optional field.
 
 ## Acceptance Evidence
 

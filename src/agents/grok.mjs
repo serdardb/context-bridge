@@ -280,6 +280,7 @@ function* readJsonl(p, required = false, readStatus = null) {
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });
+    if (readStatus && cause.code !== "ENOENT") readStatus.unreadable = true;
     return;
   }
   for (const line of content.split("\n")) {
@@ -432,7 +433,8 @@ export function auditSince(ref, mark) {
   const commands = [];
   let pending = null;
   let dropped = 0;
-  for (const e of readJsonl(ref?.eventsPath ?? ref?.transcriptPath)) {
+  const readStatus = { malformed: 0 };
+  for (const e of readJsonl(ref?.eventsPath ?? ref?.transcriptPath, true, readStatus)) {
     if (since && e?.ts && e.ts <= since) continue;
     if (e?.type === "tool_started") {
       pending = { tool: e.tool_name ?? null, args: null, at: e.ts ?? null, ok: null, exitCode: null, durationMs: null };
@@ -445,10 +447,11 @@ export function auditSince(ref, mark) {
     }
   }
   const filesChanged = new Set();
-  for (const h of readJsonl(path.join(path.dirname(String(ref?.transcriptPath ?? "")), "hunk_records.jsonl"))) {
+  for (const h of readJsonl(path.join(path.dirname(String(ref?.transcriptPath ?? "")), "hunk_records.jsonl"), false, readStatus)) {
     // Hunk records name the field timestamp, not ts, unlike the event stream.
     if (since && h?.timestamp && h.timestamp <= since) continue;
     if (h?.filePath && h?.authorType === "agent") filesChanged.add(h.filePath);
   }
-  return { commands, filesRead: [], filesChanged: [...filesChanged], dropped };
+  return { commands, filesRead: [], filesChanged: [...filesChanged], dropped,
+    sourceComplete: readStatus.malformed === 0 && !readStatus.unreadable };
 }

@@ -50,6 +50,7 @@ export function buildManifest(projectDir, { source, target, via = null, sources 
       continue;
     }
     if (!audit) continue;
+    if (audit.sourceComplete === false) readerErrors.push({ agent: id, reason: "audit source was only partially readable" });
     agents[id] = {
       commands: audit.commands ?? [],
       // Scoped to this project, like everything else the bridge records. An

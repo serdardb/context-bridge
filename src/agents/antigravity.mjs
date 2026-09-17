@@ -429,8 +429,9 @@ export function auditSince(ref, mark) {
   const filesChanged = new Set();
   let pendingArgs = null;
   let dropped = 0;
+  const readStatus = { malformed: 0 };
 
-  for (const row of readJsonl(ref?.transcriptPath)) {
+  for (const row of readJsonl(ref?.transcriptPath, true, readStatus)) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (row.type === "PLANNER_RESPONSE" && (row.tool_calls ?? []).length) {
       const call = row.tool_calls[0];
@@ -470,5 +471,5 @@ export function auditSince(ref, mark) {
       pendingArgs = null;
     }
   }
-  return { commands, filesRead: [...filesRead], filesChanged: [...filesChanged], dropped };
+  return { commands, filesRead: [...filesRead], filesChanged: [...filesChanged], dropped, sourceComplete: readStatus.malformed === 0 };
 }

@@ -609,8 +609,9 @@ export function codexAuditSince(rolloutPath, sinceIso) {
   const order = [];
   const filesChanged = new Set();
   let dropped = 0;
+  const readStatus = { malformed: 0 };
 
-  for (const r of readJsonl(rolloutPath)) {
+  for (const r of readJsonl(rolloutPath, true, readStatus)) {
     if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
     const p = r.payload || {};
     // Codex issues a call two ways: function_call (exec_command) carries its args
@@ -633,6 +634,7 @@ export function codexAuditSince(rolloutPath, sinceIso) {
     commands,
     filesChanged: [...filesChanged],
     filesRead: [], // Codex runs everything through exec_command; see its capabilities
+    sourceComplete: readStatus.malformed === 0,
     // Never a silent cap. A manifest that quietly stops at 200 reads as a
     // complete account of a session that was in fact longer.
     dropped,

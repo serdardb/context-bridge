@@ -70,15 +70,44 @@ test("work done in other projects stays out of this project's manifest", () => {
   assert.ok(elsewhere);
 });
 
-test("an extractor that throws costs the audit, never the handoff", () => {
-  const { project } = fixture();
-  const broken = { auditSince: () => { throw new Error("vendor format moved"); }, capabilities: {} };
-  const original = adapterFor("codex").auditSince;
-  assert.equal(typeof original, "function");
-
-  const m = buildManifest(project, { source: "codex", target: "grok", sources: { codex: null } });
-  assert.deepEqual(Object.keys(m.agents), [], "a null session is skipped quietly");
-  assert.ok(broken);
+test("audit manifests distinguish unavailable and partial sources from empty records", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "audit-unavailable-"));
+  const file = path.join(project, "source.jsonl");
+  const read = fs.readFileSync;
+  try {
+    for (const id of ["claude", "codex", "grok", "antigravity"]) {
+      const record = {
+        claude: { message: { content: [{ type: "tool_use", id: "call", name: "Bash", input: { command: "echo retained" } }] } },
+        codex: { timestamp: "2026-09-18T00:00:00Z", payload: { type: "function_call", call_id: "call", name: "exec_command", arguments: '{"cmd":"echo retained"}' } },
+        grok: { type: "tool_completed", tool_name: "run_terminal_command", outcome: "success" },
+        antigravity: { step_index: 1, type: "RUN_COMMAND", content: "completed successfully" },
+      }[id];
+      for (const mode of ["missing", "denied", "malformed", "empty", ...(id === "grok" ? ["hunk-denied"] : [])]) {
+        if (mode === "missing") fs.rmSync(file, { force: true });
+        else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : "");
+        fs.readFileSync = (...args) => {
+          if (args[0] === file && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
+          if (args[0] === path.join(project, "hunk_records.jsonl") && mode === "hunk-denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
+          return read(...args);
+        };
+        const m = buildManifest(project, { source: id, target: "opencode", sources: {
+          [id]: { transcriptPath: file, eventsPath: file },
+        } });
+        const rendered = renderManifest(m);
+        assert.equal(Boolean(m.readerErrors?.length), mode !== "empty", `${id}/${mode}`);
+        assert.equal(rendered.includes("INCOMPLETE"), mode !== "empty", `${id}/${mode}`);
+        assert.doesNotMatch(JSON.stringify(m) + rendered, /private-path-secret/);
+        if (mode === "missing" || mode === "denied") assert.equal(m.agents[id], undefined);
+        else assert.ok(m.agents[id], "readable evidence is retained even when partial");
+        if (mode === "malformed") assert.equal(m.agents[id].commands.length, 1);
+      }
+    }
+    const m = buildManifest(project, { source: "codex", target: "grok", sources: { codex: null } });
+    assert.deepEqual(Object.keys(m.agents), [], "a null session is skipped quietly");
+  } finally {
+    fs.readFileSync = read;
+    fs.rmSync(project, { recursive: true, force: true });
+  }
 });
 
 // Ordering by usefulness rather than by completeness. One real session produced

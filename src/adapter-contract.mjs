@@ -123,6 +123,7 @@ export function validateAdapterResult(id, operation, result) {
   } else if (operation === "auditSince") {
     if (!object(result) || !Array.isArray(result.commands) || !strings(result.filesRead) ||
       !strings(result.filesChanged) || !count(result.dropped)) fail();
+    if (Object.hasOwn(result, "sourceComplete") && typeof result.sourceComplete !== "boolean") fail();
     for (const command of result.commands) {
       if (!object(command) || !nullableString(command.tool) || !nullableString(command.at) ||
         !(command.ok == null || typeof command.ok === "boolean") ||

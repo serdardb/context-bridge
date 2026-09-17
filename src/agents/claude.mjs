@@ -18,7 +18,7 @@ import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
 import { claudeMessagesSince } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
-import { nowIso, tryExec, fileExists, readJson, HOME, CLAUDE_DIR } from "../util.mjs";
+import { nowIso, tryExec, fileExists, readJson, HOME, CLAUDE_DIR, BridgeError } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -250,11 +250,12 @@ export function auditSince(ref, sinceIso) {
   const filesRead = new Set();
   const filesChanged = new Set();
   let dropped = 0;
+  let sourceComplete = true;
   let content;
   try {
     content = fs.readFileSync(ref?.transcriptPath, "utf8");
-  } catch {
-    return { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
+  } catch (cause) {
+    throw new BridgeError("The audit transcript could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause });
   }
 
   for (const line of content.split("\n")) {
@@ -263,6 +264,7 @@ export function auditSince(ref, sinceIso) {
     try {
       row = JSON.parse(line);
     } catch {
+      sourceComplete = false;
       continue;
     }
     if (sinceIso && row.timestamp && row.timestamp <= sinceIso) continue;
@@ -278,5 +280,5 @@ export function auditSince(ref, sinceIso) {
       }
     }
   }
-  return { commands: order.map((id) => uses.get(id)).filter(Boolean), filesRead: [...filesRead], filesChanged: [...filesChanged], dropped };
+  return { commands: order.map((id) => uses.get(id)).filter(Boolean), filesRead: [...filesRead], filesChanged: [...filesChanged], dropped, sourceComplete };
 }
