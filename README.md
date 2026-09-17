@@ -117,7 +117,7 @@ directions, and want the agent you return to to still be the session you left.
 
 ```
 shell
-└── bridge                     ← launcher (Node CLI, zero dependencies)
+└── bridge                     ← launcher (local Node CLI)
     └── one agent child at a time
         claude ⇄ codex ⇄ grok ⇄ antigravity ⇄ opencode  ← real sessions, any direction
 
@@ -318,13 +318,13 @@ bridge lane rm <name> --yes    delete a lane and its checkpoints (--dry-run to p
 
 A new lane starts empty on purpose: a different line of work inherits nothing, which is the whole reason to open one. A bare `bridge` resumes the lane you were last in, so a project that only ever has one lane never has to think about them.
 
-**Lanes isolate context, not the working tree.** Every lane shares the one checkout, so switching lanes does not switch files: this is parallel *conversation*, not parallel *code*. Two lanes editing the same files collide exactly as two plain agents in one directory would. Real parallel code needs a git worktree, which is a separate, later feature.
+**Ordinary lanes isolate context, not files.** They share one checkout, so switching an ordinary lane does not switch files. Two lanes editing the same files can collide. For code isolation, use the optional [worktree-backed lanes](#isolated-worktree-lanes) below. Only that feature requires Git; ordinary lanes and handoffs also work without Git installed.
 
 ## Architecture
 
 | Piece | What it is |
 |---|---|
-| `bridge` CLI | Zero-dependency Node CLI: launcher loop, state, deltas, doctor |
+| `bridge` CLI | Local Node CLI: launcher loop, state, deltas, doctor |
 | `global project store/state.json` | Versioned machine-local state: session references, sync watermarks, optional Git metadata, pending markers. Migrated forward automatically, keeping the original as `state.json.v<n>.backup` and saying so once. Never transcripts. |
 | `src/agents/` | One adapter per agent: discovery, resume command, activity parsing, idle signal, conflicting flags, health. Adding an agent is one file. |
 | `knownBy` matrix | Per pair, how far into each agent's own stream has been packed for each other agent. This is what makes chains keep their history. |

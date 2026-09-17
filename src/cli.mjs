@@ -143,7 +143,6 @@ Docs and write-ups: https://dogrubakar.com/projects/context-bridge
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "verify", "eval", "release-check", "storage", "project", "status", "adapters", "mcp", "watch", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -245,7 +244,10 @@ export async function main(argv) {
         if (plan.needed) log(`Backup directory: ${plan.backupRoot}`);
         if (plan.recovery) log(`Resume verified source cleanup using backup: ${plan.recovery.backup}`);
         if (plan.removedEntries.length) log(`Files removed after verified backup: ${plan.removedEntries.join(", ")}`);
-        if (plan.retainedEntries.length) log(`Kept in the project: ${plan.retainedEntries.join(", ")}`);
+        if (plan.retainedEntries.length) {
+          log(`Kept in the project: ${plan.retainedEntries.join(", ")}`);
+          log("These files are not deleted automatically. Review and move files you want to keep; remove .bridge only when empty, then run bridge storage cleanup-ignore.");
+        }
         for (const candidate of plan.staging.removable) log(`Verified abandoned staging copy: ${candidate}`);
         for (const candidate of plan.staging.retained) log(`Staging copy retained: ${candidate.path} (${candidate.reason})`);
         for (const blocker of plan.blockers) log(`${BAD} ${blocker}`);

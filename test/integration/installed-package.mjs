@@ -37,6 +37,18 @@ try {
   JSON.parse(run(empty, ["project", "list", "--json"]));
   assert.deepEqual(fs.readdirSync(empty), []);
   assert.equal(fs.existsSync(env.CONTEXT_BRIDGE_HOME), false, "read-only CLI must not initialize storage");
+  const plugins = path.join(root, "experimental.json");
+  const installedRequire = createRequire(path.join(installed, "package.json"));
+  fs.writeFileSync(plugins, JSON.stringify({ apiVersion: 1, modules: ["aider", "pi"].map((id) =>
+    installedRequire.resolve(`@serdardb/context-bridge/experimental/${id}`)) }));
+  const candidates = spawnSync(process.execPath, [cli, "adapters", "--json"], {
+    cwd: empty, env: { ...env, CONTEXT_BRIDGE_ADAPTERS: plugins }, encoding: "utf8", timeout: 15000,
+  });
+  assert.equal(candidates.status, 0, candidates.stderr || candidates.error?.message);
+  assert.deepEqual(JSON.parse(candidates.stdout).adapters.map((item) => item.id).slice(-2), ["aider", "pi"]);
+  assert.equal(JSON.parse(run(empty, ["adapters", "--json"])).adapters.length, 5, "candidates never load implicitly");
+  assert.equal(fs.existsSync(env.CONTEXT_BRIDGE_HOME), false, "loading descriptors must not initialize storage");
+  assert.deepEqual(fs.readdirSync(empty), []);
   const { ensureState, writeCheckpoint } = await load("src/state.mjs");
   const { composeFullContext } = await load("src/delta.mjs");
   const { verifyArtifact } = await load("src/artifact.mjs");
@@ -62,7 +74,7 @@ try {
   assert.deepEqual((await client.callTool({ name: "bridge_status", arguments: {} })).structuredContent, { state: "absent" });
   assert.deepEqual(fs.readdirSync(empty), []);
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
-    installedArtifact: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
+    installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
     actualMcpStdio: true, credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {
   await client?.close();

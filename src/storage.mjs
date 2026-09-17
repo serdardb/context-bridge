@@ -658,7 +658,7 @@ export function cleanupLegacyIgnore(projectDir, { apply = false } = {}) {
   if (!result.matches.length) return result;
   try {
     fs.lstatSync(legacyBridgeDir(projectDir));
-    result.blocked = "Project-local .bridge still exists; migrate or inspect its retained files before removing ignore rules.";
+    result.blocked = "Project-local .bridge still exists. Run bridge storage plan to inspect retained files; move user files you want to keep, remove the directory only when empty, then rerun bridge storage cleanup-ignore. No files were deleted.";
   } catch (error) { if (error.code !== "ENOENT") throw error; }
   if (!apply || result.blocked) return result;
   const temporary = `${file}.bridge-${crypto.randomUUID()}.tmp`;

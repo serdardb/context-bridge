@@ -467,9 +467,45 @@ every change. It can install the Codex hooks, and then says plainly that Codex
 will not run them until they are reviewed once with `/hooks`, because that trust
 is not readable and claiming otherwise would be a green tick over an unknown.
 
+## Search, Observation and Isolation
+
+`search.mjs` reads retained checkpoint files across project lanes without
+creating state or building a separate index. Filters cover lane, agent, UTC
+date and the branch recorded in the handoff's audit, not the current checkout.
+Results are bounded line snippets, not complete transcripts or an importance
+ranking. Checkpoint retention therefore also bounds the available history.
+
+`watch.mjs` polls authoritative status under an explicit `read-only` policy.
+It emits snapshot/change/unavailable/recovered JSON events and pins the
+selected directory's device and inode. It performs no repair, switch or
+acknowledgement. Polling can miss intermediate transitions; this stream is
+not a durable event log or a delivery receipt.
+
+Ordinary lanes separate context, not working files. Optional worktree-backed
+lanes use Git worktrees for file isolation, starting from committed HEAD;
+uncommitted changes are not copied. Attached worktrees have independent
+runtime stores. Removing a lane does not delete its worktree or source files.
+Only this opt-in workflow requires Git, not ordinary bridge operation.
+
+## Read-Only MCP
+
+`mcp.mjs` exposes a local stdio server using the official SDK, without a TCP
+listener. The operator selects one project; the server pins its directory
+identity and refuses reads when that identity changes. Default tools expose
+status and adapter declarations. `--allow-content` explicitly enables search
+snippets, which can contain private conversation text. There are no mutation,
+agent-launch or arbitrary-file-read tools. Tool annotations describe the
+contract; the implementation's read-only operations enforce it.
+
+Adapter declarations are not live vendor acceptance. Explicit plugin manifests
+execute trusted local code even for read-only commands; see
+[the adapter contract](ADAPTERS.md) for that separate trust boundary and the
+opt-in Aider/Pi candidates.
+
 ## Security and privacy
 
-- Local only: no SaaS, no accounts, no telemetry, no server.
+- Local only: no bridge SaaS, accounts or telemetry. The optional MCP server
+  uses stdio, not a network listener.
 - No API keys read, requested or stored. Auth checks test for existence and
   never print secret values.
 - State holds references, timestamps and bounded delta files. Transcripts stay

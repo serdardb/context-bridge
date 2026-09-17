@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     "./adapter-sdk": "./src/adapter-sdk.mjs",
+    "./experimental/aider": "./src/experimental/aider.mjs",
+    "./experimental/pi": "./src/experimental/pi.mjs",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },

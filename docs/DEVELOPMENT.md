@@ -51,12 +51,27 @@ our Node 18.18 installation contract. Verify clean tarball installation with
 `--engine-strict` on the exact minimum Node version after dependency updates;
 a passing checkout suite does not prove consumer dependency resolution.
 
+Koffi supplies the native kernel-lock backend required for mutations. It is
+loaded on demand; read-only commands remain available when it cannot load,
+while diagnostics report the failure and mutations refuse safely. MCP is an
+optional command, not an optional installation dependency: its SDK, Zod and
+the Hono compatibility pin currently ship in every installation. The direct
+Hono pin is intentional because npm overrides in a dependency do not govern
+the consuming project's installation. Splitting MCP into a separately installed
+package remains a packaging decision, not an accomplished size reduction.
+
 ## Storage tests
 
 `npm test` (also `npm run test:global`) runs the suite against the production global runtime
 store. Its preload gives each worker an isolated `CONTEXT_BRIDGE_HOME` and
 removes the legacy storage override; CLI children inherit that worker's store.
 It never uses the developer's real runtime home.
+
+`CONTEXT_BRIDGE_STORAGE=project` is an internal legacy-fixture/migration
+compatibility switch, not a supported alternative runtime-store preference.
+Do not set it in normal CLI, hook or launcher environments: it bypasses the
+global-store migration path. Migration tests use it briefly to construct old
+input, then remove it before exercising production behavior.
 
 There is no suite-wide legacy storage pin. CI uses the same `npm test` command.
 Legacy migration cases deliberately create project-local input, then verify

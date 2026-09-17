@@ -56,6 +56,36 @@ state lanes and diagnostics. Prompt delivery requires no core changes. Hook
 delivery additionally needs vendor-specific hook installation and trust; declaring
 `injection: "hook"` does not install or verify those hooks.
 
+## Packaged Experimental Candidates
+
+Aider and Pi ship as opt-in candidates, not built-in supported agents. Their
+namespace modules under `src/agents/` are internal implementations; do not put
+those files directly in a plugin manifest. Use the SDK-envelope entry points:
+
+```json
+{
+  "apiVersion": 1,
+  "modules": [
+    "/absolute/path/to/context-bridge/src/experimental/aider.mjs",
+    "/absolute/path/to/context-bridge/src/experimental/pi.mjs"
+  ]
+}
+```
+
+Set `CONTEXT_BRIDGE_ADAPTERS` to that manifest's absolute path, then run
+`bridge adapters --json`. Include only the candidates you intend to enable.
+For a local package installation, resolve the paths with
+`require.resolve('@serdardb/context-bridge/experimental/aider')` and
+`require.resolve('@serdardb/context-bridge/experimental/pi')`. Global installs
+live under the package directory reported by `npm root -g`.
+
+Loading the manifest does not install Aider, Python or Pi, run a model, enable
+hooks, or prove vendor compatibility. The candidate-specific sections below
+describe prerequisites, experiments and remaining acceptance limits. Unsetting
+the manifest returns to the five built-ins without deleting native histories.
+Release preparation deliberately ignores custom adapter manifests: experimental
+candidates are not silently promoted to the supported-agent acceptance matrix.
+
 ## Operations
 
 All adapters must implement the operations listed in `REQUIRED_OPERATIONS`:
