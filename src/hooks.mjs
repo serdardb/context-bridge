@@ -3,7 +3,7 @@
 // have no bridge state (the plugin may be installed user-wide).
 import fs from "node:fs";
 import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeCheckpointPath, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
-import { fileExists, nowIso } from "./util.mjs";
+import { fileExists, nowIso, BridgeError } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, fullContextFor } from "./delivery.mjs";
 
@@ -191,7 +191,7 @@ function linkClaudeSession(s, input) {
 function hookSessionStart(projectDir, s, input) {
   let dirty = linkClaudeSession(s, input);
 
-  // Inject a pending Codex→Claude delta exactly once. Two delivery modes:
+  // Inject a pending Codex→Claude delta under the state lock. Two delivery modes:
   //  - id set: on resume of that original session (proven in T1)
   //  - id null: Codex-first project — deliver to the first Claude
   //    session that starts here, whatever its source.
@@ -200,46 +200,11 @@ function hookSessionStart(projectDir, s, input) {
     inj?.agent === "claude" &&
     (inj.id == null || (input.source === "resume" && inj.id === input.session_id));
   if (injectHere) {
-    // Resolve through the containment gate: a corrupt or hostile deltaFile must
-    // not let the hook read or rename a file outside .bridge. An unsafe path reads
-    // as an unreadable delta and falls through to the missing-context notice below.
-    const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
-    let delta = null;
-    if (deltaPath) {
-      try {
-        delta = fs.readFileSync(deltaPath, "utf8");
-      } catch {}
-    }
-    if (delta) {
-      try {
-        fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
-      } catch {
-        return 0;
-      }
-      commitKnown(s, inj);
-      s.pendingInjection = null;
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: "SessionStart",
-            additionalContext: delta,
-          },
-        })
-      );
-      return 0;
-    }
+    if (consumeForHook(projectDir, s, inj, { raw: true })) return 0;
     // Delta missing: never silently lose context — surface it in-session.
     s.pendingInjection = null;
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "SessionStart",
-          additionalContext:
-            "[Bridge] A Codex→Claude context delta was pending but its file could not be read. " +
-            `Context may be incomplete — ask the user what happened in Codex, or inspect the checkpoints at:\n${checkpointsDir(projectDir, s.activeLane)}`,
-        },
-      })
-    );
+    writeHookOutput("[Bridge] A Codex→Claude context delta was pending but its file could not be read. " +
+      `Context may be incomplete — ask the user what happened in Codex, or inspect the checkpoints at:\n${checkpointsDir(projectDir, s.activeLane)}`);
     return 0;
   }
 
@@ -247,27 +212,54 @@ function hookSessionStart(projectDir, s, input) {
 }
 
 /**
- * Claim a pending delta for hook delivery, exactly once. The rename is what
- * makes "exactly once" true across a crash or a race: whoever renames the file
- * owns the delivery, and everyone else can see it already happened.
+ * Output precedes acknowledgement under the state lock. A crash between them
+ * may repeat delivery; it must not mark unseen output as delivered. Native
+ * consumers do not acknowledge receipt, so exactly-once is not a valid promise.
  */
-function consumeForHook(projectDir, s, inj) {
+function consumeForHook(projectDir, s, inj, { raw = false } = {}) {
   const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
   if (!deltaPath) return null; // a deltaFile that escapes .bridge is never ours to deliver
-  let delta;
+  let delta, alreadyRenamed = false;
   try {
     delta = fs.readFileSync(deltaPath, "utf8");
-  } catch {
-    return null; // already taken, or never written; either way not ours to deliver
+  } catch (error) {
+    if (error.code !== "ENOENT") return null;
+    // A previous process may have renamed the file then died before saving state.
+    const consumed = safeCheckpointPath(projectDir, inj.deltaFile + CONSUMED_SUFFIX);
+    if (!consumed) return null;
+    try { delta = fs.readFileSync(consumed, "utf8"); alreadyRenamed = true; }
+    catch { return null; }
   }
+  if (!delta) return null;
+  writeHookOutput(raw ? delta : hookBody(delta, fullContextFor(projectDir, inj.deltaFile)));
   try {
-    fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
+    if (!alreadyRenamed) fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
   } catch {
-    return null;
+    throw new BridgeError("Hook output was written but delivery could not be recorded. Context remains pending and may be repeated on retry.", { code: "BRIDGE_HOOK_ACK_FAILED" });
   }
   commitKnown(s, inj);
   s.pendingInjection = null;
-  return hookBody(delta, fullContextFor(projectDir, inj.deltaFile));
+  return true;
+}
+
+function writeHookOutput(context) {
+  const data = Buffer.from(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } }));
+  const deadline = Date.now() + 5000;
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  let offset = 0;
+  while (offset < data.length) {
+    try {
+      const count = fs.writeSync(1, data, offset, data.length - offset);
+      if (!count) throw new Error("stdout accepted no bytes");
+      offset += count;
+    } catch (error) {
+      if (["EAGAIN", "EWOULDBLOCK", "EINTR"].includes(error.code) && Date.now() < deadline) {
+        Atomics.wait(wait, 0, 0, 10);
+        continue;
+      }
+      throw new BridgeError("Hook output failed before acknowledgement. Pending context was preserved for retry.", { code: "BRIDGE_HOOK_OUTPUT_FAILED" });
+    }
+  }
 }
 
 function hookStop(projectDir, s, input) {
@@ -362,12 +354,5 @@ function codexHook(projectDir, s, event, input) {
     dirty = true;
   }
 
-  // Codex reads this shape as extra developer context, which is what puts the
-  // delta inside the conversation rather than in front of it.
-  if (delivered) {
-    process.stdout.write(
-      JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: delivered } })
-    );
-  }
   return 0;
 }

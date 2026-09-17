@@ -153,10 +153,15 @@ A delta reaches its target one of three ways.
 
 **Hook.** Claude and Codex both accept `hookSpecificOutput.additionalContext`
 from a `SessionStart` hook, which places the delta inside the conversation. The
-hook renames the delta file to `*.consumed` before emitting, which is what makes
-handing it over happen exactly once even across a crash or a race: whoever
-renames the file owns it. Handed over is as far as this goes; whether the model
-then attends to it is not something any of this can observe.
+hook holds the state lock, writes the complete output to stdout, then renames
+the delta to `*.consumed` and commits the delivery state. An output failure leaves
+pending context intact. If the process dies or state publication fails after the
+rename, a retry reads the consumed file still named by pending state. A crash
+after output but before acknowledgement can repeat context; the vendor provides
+no receipt, so exactly-once delivery cannot be promised. Successful stdout writes
+do not prove the vendor accepted the context or that its model attended to it.
+Transient nonblocking-pipe errors have a five-second retry bound; this is not a
+deadline for a blocking operating-system write.
 
 A hook delivers *context*, not a *turn*. The delta lands as background, and the
 agent has nothing to answer, so it sits idle until a human types. `kickoffArgs`

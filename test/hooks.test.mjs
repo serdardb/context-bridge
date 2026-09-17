@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir, ensureState } from "../src/state.mjs";
+import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir, ensureState, statePath } from "../src/state.mjs";
 import { hookBody, fullContextFor } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,7 +42,7 @@ test("production hooks link, deliver and finish turns without Git or project-loc
       assert.equal(linked.agents[agent].transcriptPath, transcript);
       if (agent === "codex") assert.ok(linked.agents.codex.hookSeen);
       const stem = "2026-09-16T00-00-00-000Z-claude-to-codex";
-      const content = "[Bridge Context Update]\nPortable global hook evidence.\n";
+      const content = "[Bridge Context Update]\nPortable global hook evidence.\n" + "x".repeat(120 * 1024);
       const deltaRel = writeCheckpoint(project, "main", `${stem}.md`, content);
       writeCheckpoint(project, "main", `${stem}-full.md`, content);
       linked.pendingInjection = { agent, id, via: "hook", deltaFile: deltaRel };
@@ -65,6 +65,37 @@ test("production hooks link, deliver and finish turns without Git or project-loc
         assert.equal(hook("session-start", null), "");
       }
       const expected = agent === "codex" ? hookBody(content, fullContextFor(project, deltaRel)) : content;
+      const pendingBeforeFailure = loadState(project).pendingInjection;
+      for (const failure of ["output", "state"]) {
+        const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+          import fs from 'node:fs';
+          import { runHook } from ${JSON.stringify(new URL("../src/hooks.mjs", import.meta.url).href)};
+          const write = fs.writeSync, rename = fs.renameSync;
+          fs.writeSync = (fd, ...args) => {
+            if (${JSON.stringify(failure)} === 'output' && fd === 1) throw Object.assign(new Error('closed hook pipe'), {code: 'EPIPE'});
+            return write(fd, ...args);
+          };
+          fs.renameSync = (from, to) => {
+            if (${JSON.stringify(failure)} === 'state' && to === ${JSON.stringify(statePath(project))}) {
+              throw Object.assign(new Error('state publication denied'), {code: 'EACCES'});
+            }
+            return rename(from, to);
+          };
+          try { await runHook('session-start', ${JSON.stringify(agent)}); }
+          catch (error) { console.error(error.code); process.exitCode = 1; }
+        `], { cwd: project, encoding: "utf8", env: { ...cleanEnv(), PATH: "" },
+          input: JSON.stringify({ cwd: project, source: "resume", session_id: id, transcript_path: transcript }) });
+        assert.equal(result.status, 1, `${failure}: ${result.stderr}`);
+        assert.deepEqual(loadState(project).pendingInjection, pendingBeforeFailure, "unacknowledged context must remain pending");
+        if (failure === "output") {
+          assert.match(result.stderr, /BRIDGE_HOOK_OUTPUT_FAILED/);
+          assert.equal(fs.existsSync(safeCheckpointPath(project, deltaRel)), true);
+          assert.equal(fs.existsSync(safeCheckpointPath(project, deltaRel) + '.consumed'), false);
+        } else {
+          assert.equal(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, expected);
+          assert.equal(fs.readFileSync(safeCheckpointPath(project, deltaRel) + '.consumed', 'utf8'), content);
+        }
+      }
       const delivered = JSON.parse(hook("session-start")).hookSpecificOutput;
       assert.equal(delivered.hookEventName, "SessionStart");
       assert.equal(delivered.additionalContext, expected);
@@ -95,7 +126,7 @@ test("production hooks link, deliver and finish turns without Git or project-loc
   }
 });
 
-test("Claude SessionStart hook injects pending delta exactly once", () => {
+test("Claude SessionStart hook does not repeat an acknowledged delta", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hook-"));
   ensureState(project);
   const checkpointDir = checkpointsDir(project);
