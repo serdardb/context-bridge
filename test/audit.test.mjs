@@ -454,6 +454,21 @@ test("writeManifest refuses, and latestManifest will not read, through a symlink
     path.join(checkpointsDir(project, "feature"), "2026-01-01T00-00-00-000Z-claude-to-codex-audit.json"));
   assert.throws(() => latestManifest(project, "feature"), { code: "BRIDGE_CHECKPOINT_UNREADABLE" }, "a safe directory does not make its leaf links safe");
 
+  const readdir = fs.readdirSync;
+  const denied = Object.assign(new Error("private filesystem detail"), { code: "EACCES" });
+  try {
+    fs.readdirSync = (...args) => {
+      if (args[0] === checkpointsDir(project, "feature")) throw denied;
+      return readdir(...args);
+    };
+    assert.throws(() => latestManifest(project, "feature"), error => {
+      assert.equal(error.cause, denied, "retain the original diagnostic without exposing it in the public message");
+      assert.equal(error.code, "BRIDGE_CHECKPOINT_UNREADABLE");
+      assert.ok(!error.message.includes(denied.message));
+      return true;
+    });
+  } finally { fs.readdirSync = readdir; }
+
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
 });

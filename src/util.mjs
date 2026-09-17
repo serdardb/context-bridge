@@ -85,8 +85,8 @@ function escapeRegExp(value) {
  * exitCode 2 = a confirmation is needed (e.g. heuristic adopt), not a hard error.
  */
 export class BridgeError extends Error {
-  constructor(message, { exitCode = 1, code = null, operation = null, path = null, nextCommand = null } = {}) {
-    super(message);
+  constructor(message, { exitCode = 1, code = null, operation = null, path = null, nextCommand = null, cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "BridgeError";
     this.expected = true;
     this.exitCode = exitCode;

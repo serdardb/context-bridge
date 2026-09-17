@@ -1023,14 +1023,15 @@ export function readableCheckpointsDir(projectDir, lane) {
 export function latestCheckpoint(projectDir, lane = DEFAULT_LANE, kind = "fullContext") {
   const suffix = CHECKPOINT_KINDS[kind];
   if (!suffix) throw new Error("Unknown checkpoint kind.");
-  const fail = () => new BridgeError("The latest checkpoint could not be read safely. Check stored evidence before retrying; no older checkpoint was substituted.", {
+  const fail = (cause) => new BridgeError("The latest checkpoint could not be read safely. Check stored evidence before retrying; no older checkpoint was substituted.", {
     code: "BRIDGE_CHECKPOINT_UNREADABLE", operation: "read latest checkpoint",
+    cause,
   });
   const dir = readableCheckpointsDir(projectDir, lane);
   if (!dir) throw fail();
   let names;
   try { names = fs.readdirSync(dir).filter(name => name.endsWith(suffix)).sort(); }
-  catch (error) { if (error.code === "ENOENT") return null; throw fail(); }
+  catch (error) { if (error.code === "ENOENT") return null; throw fail(error); }
   if (!names.length) return null;
   const name = names.at(-1);
   const rel = checkpointRel(projectDir, lane, name);
@@ -1047,7 +1048,10 @@ export function latestCheckpoint(projectDir, lane = DEFAULT_LANE, kind = "fullCo
     const after = fs.fstatSync(fd);
     if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw fail();
     return { rel, text };
-  } catch { throw fail(); }
+  } catch (error) {
+    if (error.code === "BRIDGE_CHECKPOINT_UNREADABLE") throw error;
+    throw fail(error);
+  }
   finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 

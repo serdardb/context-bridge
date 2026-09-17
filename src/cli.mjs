@@ -893,7 +893,7 @@ function runLane(projectDir, args, flags, seedSource) {
       try {
         prepared = prepareSeed(projectDir, seedSource);
       } catch (e) {
-        log(`${BAD} Could not read lane '${seedSource}' to seed from: ${e.message}.`);
+        log(`${BAD} Could not read lane '${seedSource}' to seed from: ${e.message}`);
         return 1;
       }
     }
