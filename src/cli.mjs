@@ -358,12 +358,20 @@ export async function main(argv) {
         lane: { type: "string" }, agent: { type: "string" }, branch: { type: "string" }, since: { type: "string" }, until: { type: "string" }, json: { type: "boolean" },
       } });
       const query = parsed.positionals.join(" ");
-      const results = searchProject(projectDir, query, parsed.values);
-      if (parsed.values.json) log(JSON.stringify(results, null, 2));
-      else if (!results.length) log(`${NONE} No bridge evidence matched ${JSON.stringify(query)}.`);
+      const report = searchProject(projectDir, query, parsed.values);
+      const { results, incomplete, issues } = report;
+      if (parsed.values.json) log(JSON.stringify(report, null, 2));
+      else if (!results.length) log(`${NONE} No matches in the evidence that could be searched for ${JSON.stringify(query)}.`);
       else for (const result of results) {
         log(`${result.lane} ${result.kind} ${result.file}`);
         for (const match of result.matches) log(`  ${match.line}: ${match.text}`);
+      }
+      if (incomplete) {
+        if (!parsed.values.json) {
+          log(`${WARN} Search incomplete: ${issues.length} access or metadata issue(s). Results are not exhaustive.`);
+          for (const issue of issues) log(`  ${issue.lane ?? "lanes"}${issue.file ? `/${issue.file}` : ""}: ${issue.reason}`);
+        }
+        process.exitCode = 1;
       }
       return;
     }

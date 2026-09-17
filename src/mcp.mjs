@@ -43,9 +43,9 @@ export function createReadOnlyMcp(projectDir, { allowContent = false } = {}) {
       limit: z.number().int().min(1).max(100).default(20),
     }).strict(), annotations,
   }, read(({ query, limit, ...filters }) => {
-    const results = searchProject(root, query, filters);
-    return { results: results.slice(0, limit), totalMatches: results.length,
-      omittedResults: Math.max(0, results.length - limit), snippetsOnly: true };
+    const report = searchProject(root, query, filters);
+    return { ...report, results: report.results.slice(0, limit), totalMatches: report.results.length,
+      omittedResults: Math.max(0, report.results.length - limit) };
   }));
   return server;
 }

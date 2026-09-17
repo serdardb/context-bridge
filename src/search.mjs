@@ -3,13 +3,14 @@ import path from "node:path";
 import { loadState, laneDirsOnDisk, isValidLaneName, readableCheckpointsDir, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
-function lanesFor(projectDir, wanted) {
+function lanesFor(projectDir, wanted, issues) {
   if (wanted) {
     if (!isValidLaneName(wanted)) throw new Error(`Invalid lane name '${wanted}'.`);
     return [wanted];
   }
   const state = loadState(projectDir, { readOnly: true });
-  return [...new Set([DEFAULT_LANE, ...Object.keys(state?.lanes ?? {}), ...laneDirsOnDisk(projectDir)])].filter(isValidLaneName);
+  const disk = laneDirsOnDisk(projectDir, { onUnavailable: (reason, lane = null) => issues.push({ lane, reason }) });
+  return [...new Set([DEFAULT_LANE, ...Object.keys(state?.lanes ?? {}), ...disk])].filter(isValidLaneName);
 }
 
 function kindFor(name) {
@@ -53,24 +54,21 @@ export function searchProject(projectDir, query, { lane = null, agent = null, br
   const upper = dateBoundary(until, true);
   if (lower > upper) throw new Error("Search --since must not be after --until.");
   const results = [];
-  for (const currentLane of lanesFor(projectDir, lane)) {
+  const issues = [];
+  for (const currentLane of lanesFor(projectDir, lane, issues)) {
     const dir = readableCheckpointsDir(projectDir, currentLane);
-    if (!dir) continue;
+    const issue = (reason, file) => issues.push({ lane: currentLane, ...(file ? { file } : {}), reason });
+    if (!dir) { issue("unsafe-checkpoints-directory"); continue; }
     let names;
-    try { names = fs.readdirSync(dir); } catch { continue; }
+    try { names = fs.readdirSync(dir); } catch (error) {
+      if (error.code !== "ENOENT") issue("unreadable-checkpoints-directory");
+      continue;
+    }
     for (const name of names) {
       const kind = kindFor(name);
       if (!kind) continue;
       const base = name.endsWith(CONSUMED_SUFFIX) ? name.slice(0, -CONSUMED_SUFFIX.length) : name;
       const stem = base.slice(0, -CHECKPOINT_KINDS[kind].length);
-      if (branch !== null) {
-        // Branch belongs to the historical handoff, never the current checkout.
-        // Treat missing/old/unsafe metadata as unknown, not as a match.
-        try {
-          const audit = path.join(dir, stem + CHECKPOINT_KINDS.audit);
-          if (!fs.lstatSync(audit).isFile() || JSON.parse(fs.readFileSync(audit, "utf8")).git?.branch !== branch) continue;
-        } catch { continue; }
-      }
       const route = stem.match(/-([a-z]+)-to-([a-z]+)$/);
       if (agent && (!route || !route.slice(1).includes(agent))) continue;
       if (since || until) {
@@ -78,15 +76,27 @@ export function searchProject(projectDir, query, { lane = null, agent = null, br
         const time = stamp ? Date.parse(`${stamp[1]}T${stamp[2]}:${stamp[3]}:${stamp[4]}.${stamp[5]}Z`) : NaN;
         if (!Number.isFinite(time) || time < lower || time > upper) continue;
       }
+      if (branch !== null) {
+        // Unknown historical metadata cannot establish either a match or a miss.
+        let recorded;
+        try {
+          const audit = path.join(dir, stem + CHECKPOINT_KINDS.audit);
+          if (!fs.lstatSync(audit).isFile()) { issue("unknown-branch", name); continue; }
+          recorded = JSON.parse(fs.readFileSync(audit, "utf8")).git?.branch;
+        } catch { issue("unknown-branch", name); continue; }
+        if (typeof recorded !== "string" || !recorded.trim()) { issue("unknown-branch", name); continue; }
+        if (recorded !== branch) continue;
+      }
       let text;
       try {
         const file = path.join(dir, name);
-        if (!fs.lstatSync(file).isFile()) continue;
+        if (!fs.lstatSync(file).isFile()) { issue("unsafe-checkpoint", name); continue; }
         text = fs.readFileSync(file, "utf8");
-      } catch { continue; }
+      } catch { issue("unreadable-checkpoint", name); continue; }
       const found = matches(text, query.trim());
       if (found.length) results.push({ lane: currentLane, kind, file: name, matches: found });
     }
   }
-  return results.sort((a, b) => `${b.file}\0${a.lane}`.localeCompare(`${a.file}\0${b.lane}`));
+  results.sort((a, b) => `${b.file}\0${a.lane}`.localeCompare(`${a.file}\0${b.lane}`));
+  return { results, incomplete: issues.length > 0, issues, snippetsOnly: true };
 }

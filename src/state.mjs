@@ -54,15 +54,19 @@ function assertLaneName(name) {
  * skipped). Retention deletes what this returns, so a symlink here would let a
  * `clean --all` reach outside the project — a review reached exactly that.
  */
-export function laneDirsOnDisk(projectDir) {
+export function laneDirsOnDisk(projectDir, { onUnavailable = () => {} } = {}) {
   const lanesRoot = path.join(bridgeDir(projectDir), "lanes");
   try {
-    if (fs.lstatSync(lanesRoot).isSymbolicLink()) return [];
+    if (fs.lstatSync(lanesRoot).isSymbolicLink()) { onUnavailable("unsafe-lanes-root"); return []; }
     return fs
       .readdirSync(lanesRoot, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && isValidLaneName(d.name))
+      .filter((d) => {
+        if (d.isSymbolicLink() && isValidLaneName(d.name)) onUnavailable("unsafe-lane", d.name);
+        return d.isDirectory() && isValidLaneName(d.name);
+      })
       .map((d) => d.name);
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") onUnavailable("unreadable-lanes-root");
     return [];
   }
 }

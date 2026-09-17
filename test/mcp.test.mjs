@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { ensureState, writeCheckpoint } from "../src/state.mjs";
+import { ensureState, writeCheckpoint, checkpointsDir } from "../src/state.mjs";
 
 const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 async function connect(project, extra = [], globalStorage = false) {
@@ -70,8 +70,16 @@ test("opt-in MCP search returns bounded evidence without consuming or altering f
     assert.equal(result.structuredContent.totalMatches, 3);
     assert.equal(result.structuredContent.omittedResults, 2);
     assert.equal(result.structuredContent.snippetsOnly, true);
+    assert.equal(result.structuredContent.incomplete, false);
     assert.equal((await client.callTool({ name: "bridge_search", arguments: { query: "needle", path: "/etc/passwd" } })).isError, true);
     assert.equal((await client.callTool({ name: "bridge_search", arguments: { query: "needle", limit: 101 } })).isError, true);
     assert.deepEqual(snapshot(), before);
+    fs.symlinkSync(path.join(checkpointsDir(root), "2026-09-17T01-00-00-000Z-claude-to-codex.md"),
+      path.join(checkpointsDir(root), "2026-09-17T04-00-00-000Z-claude-to-codex.md"));
+    const partial = await client.callTool({ name: "bridge_search", arguments: { query: "needle", limit: 1 } });
+    assert.equal(partial.structuredContent.incomplete, true);
+    assert.equal(partial.structuredContent.issues[0].reason, "unsafe-checkpoint");
+    assert.equal(partial.structuredContent.totalMatches, 3);
+    assert.equal(partial.structuredContent.omittedResults, 2, "display limit is separate from inaccessible evidence");
   } finally { await client?.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

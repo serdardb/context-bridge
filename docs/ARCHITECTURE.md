@@ -491,6 +491,13 @@ creating state or building a separate index. Filters cover lane, agent, UTC
 date and the branch recorded in the handoff's audit, not the current checkout.
 Results are bounded line snippets, not complete transcripts or an importance
 ranking. Checkpoint retention therefore also bounds the available history.
+The result includes `incomplete` and logical-file `issues`: unreadable or unsafe
+entries and unknown metadata required by a branch filter are not silent misses.
+CLI returns available matches but exits 1 for an incomplete scan. MCP preserves
+the same coverage fields separately from `omittedResults`, which counts only
+matching files hidden by its display limit. No scan is an atomic filesystem
+snapshot; `incomplete: false` means no skip was observed, not that deleted history
+or concurrently arriving evidence was searched.
 
 `watch.mjs` polls authoritative status under an explicit `read-only` policy.
 It emits snapshot/change/unavailable/recovered JSON events and pins the
