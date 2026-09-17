@@ -7,7 +7,7 @@
 //
 // So there are three layers and the file is the last of them:
 //
-//   defaults   .bridge/config.json, applied to every launch of that agent
+//   defaults   machine-local config.json, applied to every launch of that agent
 //   moment     flags typed on the launcher command line, for that launch only
 //   save       --cb-save-args, which promotes the moment into the defaults
 //
@@ -16,8 +16,8 @@
 // them: a saved "stop asking" with no way to unsay it would be a trap.
 import fs from "node:fs";
 import path from "node:path";
-import { BridgeError } from "./util.mjs";
-import { bridgeDir } from "./state.mjs";
+import { BridgeError, writeJsonAtomic } from "./util.mjs";
+import { bridgeDir, withProjectStateReadLock } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs } from "./agentargs.mjs";
 
@@ -55,8 +55,9 @@ export function loadConfig(projectDir) {
   let raw;
   try {
     raw = fs.readFileSync(configPath(projectDir), "utf8");
-  } catch {
-    return { version: CONFIG_VERSION, agents: {} };
+  } catch (error) {
+    if (error.code === "ENOENT") return { version: CONFIG_VERSION, agents: {} };
+    throw new BridgeError("Bridge config could not be read; saved arguments were not reset.");
   }
   let parsed;
   try {
@@ -64,15 +65,17 @@ export function loadConfig(projectDir) {
   } catch (err) {
     // A broken config is the user's file, so it is worth a real complaint rather
     // than a silent reset that throws their saved flags away.
-    throw new BridgeError(`.bridge/config.json is not valid JSON (${err.message}). Fix or delete it.`);
+    throw new BridgeError("Bridge config is not valid JSON. Fix or delete it; contents are hidden because saved arguments may contain credentials.");
   }
   return { version: parsed.version ?? CONFIG_VERSION, agents: parsed.agents ?? {} };
 }
 
 export function saveConfig(projectDir, config) {
-  const dir = bridgeDir(projectDir);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath(projectDir), JSON.stringify({ ...config, version: CONFIG_VERSION }, null, 2) + "\n");
+  return withProjectStateReadLock(projectDir, () => writeConfig(projectDir, config));
+}
+
+function writeConfig(projectDir, config) {
+  writeJsonAtomic(configPath(projectDir), { ...config, version: CONFIG_VERSION });
 }
 
 /** The saved flags for one agent, always an array. */
@@ -101,12 +104,14 @@ export function saveArgs(projectDir, agent, args) {
   if (refused.length) {
     throw new BridgeError(
       `These flags cannot be saved for ${agent} because they break the bridge's session link:\n` +
-        refused.map((d) => `  ${d.arg} — ${d.why}`).join("\n")
+        refused.map((d) => `  Conflicting argument (value hidden): ${d.why}`).join("\n")
     );
   }
-  const config = loadConfig(projectDir);
-  config.agents[agent] = { ...(config.agents[agent] ?? {}), args: kept };
-  saveConfig(projectDir, config);
+  withProjectStateReadLock(projectDir, () => {
+    const config = loadConfig(projectDir);
+    config.agents[agent] = { ...(config.agents[agent] ?? {}), args: kept };
+    writeConfig(projectDir, config);
+  });
   return kept;
 }
 
@@ -115,12 +120,16 @@ export function clearArgs(projectDir, agent) {
   if (!AGENT_IDS.includes(agent)) {
     throw new BridgeError(`Unknown agent '${agent}'. Known agents: ${AGENT_IDS.join(", ")}.`);
   }
-  const config = loadConfig(projectDir);
-  const had = savedArgs(config, agent);
-  if (!had.length) return [];
-  delete config.agents[agent];
-  saveConfig(projectDir, config);
-  return had;
+  if (!savedArgs(loadConfig(projectDir), agent).length) return [];
+  return withProjectStateReadLock(projectDir, () => {
+    const config = loadConfig(projectDir);
+    const had = savedArgs(config, agent);
+    if (had.length) {
+      delete config.agents[agent];
+      writeConfig(projectDir, config);
+    }
+    return had;
+  });
 }
 
 /**

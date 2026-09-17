@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
@@ -88,7 +89,7 @@ test("Codex pairs by a real key, but its exit code and duration live inside a st
 });
 
 test("Codex observes every parsed process field it declares", () => {
-  const tmp = fs.mkdtempSync(path.join(fs.realpathSync(process.cwd()), ".tmp-codex-audit-"));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codex-audit-"));
   try {
     const transcriptPath = path.join(tmp, "rollout.jsonl");
     fs.writeFileSync(transcriptPath, fs.readFileSync(path.join(FIXTURES, "codex.jsonl"), "utf8"));

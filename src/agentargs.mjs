@@ -41,7 +41,7 @@ export function splitLauncherArgs(tail) {
     }
     if (arg.startsWith("--cb-") || arg === "--cb") {
       throw new BridgeError(
-        `Unknown bridge flag '${arg}'. The --cb-* namespace is reserved for context-bridge; ` +
+        "Unknown bridge flag (value hidden). The --cb-* namespace is reserved for context-bridge; " +
           "this version defines --cb-save-args and --cb-clear-args. " +
           "Agent flags are forwarded as-is, so drop the --cb- prefix."
       );
@@ -49,6 +49,12 @@ export function splitLauncherArgs(tail) {
     agentArgs.push(arg);
   }
   return { agentArgs, bridgeFlags };
+}
+
+// Arbitrary vendor flags and positional arguments can contain credentials.
+// Do not infer confidentiality from a list of known option names.
+export function argumentSummary(args) {
+  return `${args.length} argument${args.length === 1 ? "" : "s"} (values hidden)`;
 }
 
 /**

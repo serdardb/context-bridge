@@ -23,10 +23,11 @@ bin/bridge.mjs        CLI entry point
 src/
   cli.mjs             command dispatch (bridge | claude | codex | grok | doctor | verify | status | clean | handoff | internal-hook)
   agents/             one adapter per agent; the only place vendor knowledge lives
-    index.mjs         the registry and the contract every adapter implements
+    index.mjs         the validated built-in adapter registry
     claude.mjs codex.mjs grok.mjs antigravity.mjs opencode.mjs
-  state.mjs           .bridge/state.json — versioned, atomic writes, forward migrations
-  config.mjs          .bridge/config.json — per-agent launch flags
+  adapter-contract.mjs versioned structural contract and capability descriptors
+  state.mjs           machine-local state.json — versioned, atomic writes, forward migrations
+  config.mjs          machine-local config.json — per-agent launch flags
   launcher.mjs        flat child-process loop, session linking, idle-safe auto-switch
   handoff.mjs         `bridge handoff <agent>` for every direction
   delta.mjs           deterministic delta extraction (session files + git)
@@ -43,7 +44,12 @@ codex/SKILL.md        shared $bridge skill for Codex, Grok, Antigravity and Open
 docs/                 this documentation
 ```
 
-No runtime dependencies; plain Node ESM throughout.
+The bridge uses Node ESM. Runtime dependencies include the MCP SDK and Zod.
+`@hono/node-server` is pinned to the SDK-supported Node 18-compatible 1.x
+line: the SDK also permits 2.x, whose Node 20 requirement would invalidate
+our Node 18.18 installation contract. Verify clean tarball installation with
+`--engine-strict` on the exact minimum Node version after dependency updates;
+a passing checkout suite does not prove consumer dependency resolution.
 
 ## Running from source
 
@@ -81,7 +87,7 @@ New sessions pick up the update (or use `/reload-plugins` inside a session).
 Notes that matter:
 
 - The `/bridge` entry ships as a plugin **skill** whose name equals the plugin name — that is what makes it resolve as plain `/bridge`; plugin *commands* are always namespaced (`/plugin:command`).
-- Hooks are declared in `plugin/hooks/hooks.json` and call `bridge internal-hook <event>`; they silently no-op in projects without `.bridge/` state.
+- Hooks are declared in `plugin/hooks/hooks.json` and call `bridge internal-hook <event>`; they silently no-op in projects without machine-local bridge state.
 
 ## Installing/testing the Codex skill locally
 
@@ -137,12 +143,135 @@ Expected operational failures are printed as one actionable line without a
 stack trace. Unexpected programming failures retain the stack trace so they
 remain diagnosable during development.
 
+## Linux Acceptance
+
+These commands use the working tree and its existing JavaScript dependencies
+read-only. No user home, agent credentials or Docker socket is mounted. The
+image build downloads test tools; the test runs themselves have no network
+access beyond their isolated loopback interface.
+
+Git-absent storage, migration and portable-artifact acceptance:
+
+```sh
+docker run --rm --init --network none -v "$PWD:/workspace:ro" -w /workspace \
+  node:24-alpine node test/integration/linux-core.mjs
+```
+
+The runner asserts that Git is actually missing and its temporary filesystem is
+case-sensitive. It explicitly excludes Git-repository fixtures, not failed
+product checks. This is a selected integration matrix, not the full suite.
+
+For the full suite, build the test-only image with Git, SQLite, Bash, Python
+and Expect:
+
+```sh
+docker build --iidfile /tmp/bridge-linux-image.id \
+  -f test/integration/Dockerfile.linux test/integration
+docker run --rm --init --network none -v "$PWD:/workspace:ro" -w /workspace \
+  "$(cat /tmp/bridge-linux-image.id)" npm test
+docker run --rm --init --network none -v "$PWD:/workspace:ro" -w /workspace \
+  "$(cat /tmp/bridge-linux-image.id)" node test/integration/aider-parent.mjs /usr/bin/python3
+docker run --rm --init --network none -v "$PWD:/workspace:ro" -w /workspace \
+  "$(cat /tmp/bridge-linux-image.id)" node test/integration/aider-lock.mjs /usr/bin/python3
+```
+
+Use `--build-arg NODE_IMAGE=node@sha256:<digest>` to pin a particular base image
+and record that digest with the results. `--init` is significant: Node as PID 1
+does not reap orphaned grandchildren. Without it, the fallback-server cleanup
+test detects a remaining Linux `Z (zombie)` process even after termination.
+The test continues to reject that state rather than treating it as cleanup.
+
+The Python commands verify OS lock and parent-death primitives without Aider
+installed. Passing them does not prove Linux vendor transcript layouts, a
+supported Aider Python/SDK installation, authenticated agents, or Windows
+support. Native-agent acceptance remains a separate requirement.
+
+For Pi native acceptance, install the pinned vendor into a separate temporary
+directory using Linux rather than reusing macOS native dependencies. For example,
+after building the test image above:
+
+```sh
+PI_NATIVE=$(mktemp -d)
+docker run --rm --init -v "$PI_NATIVE:/native" node:24-alpine \
+  npm install --prefix /native --ignore-scripts --no-audit --no-fund \
+  @earendil-works/pi-coding-agent@0.85.1
+docker run --rm --init --network none -v "$PWD:/workspace:ro" \
+  -v "$PI_NATIVE:/native:ro" -w /workspace \
+  "$(cat /tmp/bridge-linux-image.id)" node test/integration/pi-native.mjs \
+  /native/node_modules/@earendil-works/pi-coding-agent/dist/cli.js --migrate
+```
+
+Only installation accesses the registry. The exercise uses a deterministic
+loopback provider, actual Pi TUI and bridge processes, and a synthetic Codex
+source. It checks pending migration, unchanged native session identity and
+byte-identical consumed context, without accessing account credentials. Keep
+the installation's lockfile and image digest with acceptance evidence; this
+does not constitute authenticated-model or cross-device-resume validation.
+
+Aider requires a separate image: the core Alpine image's Python is outside the
+candidate's supported Python 3.10-3.12 range. The following image installs SDK
+0.86.2 in a private Python 3.12 venv and validates dependency consistency:
+
+```sh
+docker build --iidfile /tmp/bridge-linux-aider-image.id \
+  -f test/integration/Dockerfile.aider-linux test/integration
+docker run --rm --init --network none -v "$PWD:/workspace:ro" -w /workspace \
+  "$(cat /tmp/bridge-linux-aider-image.id)"
+```
+
+Build arguments `NODE_IMAGE` and `PYTHON_IMAGE` accept immutable image digests.
+Record those digests and `/opt/aider/bin/python -m pip freeze` with the result;
+pinning the top-level SDK is not a complete dependency lock. No host home or
+account is mounted. This runs actual Aider with a local provider, including
+refusal/partial delivery, native edits, user-confirmed outbound handoff,
+terminal interruption and resume after killing only the wrapper. The handoff
+target is a fixture executable, not authenticated Codex. Cleanup timing starts
+when the signal is sent; a separate timeout bounds the complete invocation.
+
 ## Testing a handoff end-to-end
 
-Use a throwaway git repository:
+### Installed Package Acceptance
+
+Source-tree tests can accidentally depend on files or development dependencies
+that are absent from npm. Exercise the actual tarball in a clean installation:
+
+`npm run test:package` automates pack, a fresh production-only engine-strict
+install, and installed-package acceptance, cleaning its temporary directory
+afterwards. It needs registry access and does not run as part of `npm test`.
+CI runs it separately without installing checkout dependencies, on the exact
+Node 18.18.0 minimum and Node 24 on both Linux and macOS. Workflow configuration
+is not evidence that these jobs passed; the exact commit must have green runs.
+For a network-isolated runtime check, use the container sequence below:
+
+```sh
+PACK_DIR=$(mktemp -d)
+TARBALL=$(npm pack --silent --pack-destination "$PACK_DIR")
+docker run --rm --init -v "$PACK_DIR:/package" node:18.18.0-alpine \
+  npm install --prefix /package/install --ignore-scripts --omit=dev \
+  --engine-strict --no-audit --no-fund "/package/$TARBALL"
+docker run --rm --init --network none -v "$PACK_DIR/install:/installed:ro" \
+  -v "$PWD/test/integration/installed-package.mjs:/acceptance.mjs:ro" \
+  node:18.18.0-alpine node /acceptance.mjs \
+  /installed/node_modules/@serdardb/context-bridge
+```
+
+Use the exact minimum version above, not a floating `18` tag. Repeat with a
+current supported Node image and a fresh installation prefix. The
+runtime container mounts only the installation and standalone acceptance runner,
+not the checkout or its node_modules. The runner imports all product code and
+MCP client dependencies from that installation. It checks read-only CLI commands,
+global runtime without Git, artifact export/import preservation, packaged Python
+helpers, private/test-file exclusion and a real MCP stdio connection. Provider
+accounts, installed coding agents, every CLI command and the full release gate
+remain outside this test. `--ignore-scripts` is for this installation only; never
+use it to bypass publish checks. A tarball produced from a working tree is a
+local candidate, not evidence that its unchanged version has been published.
+
+Use a throwaway directory; Git is optional:
 
 ```bash
-mkdir /tmp/bridge-demo && cd /tmp/bridge-demo && git init
+mkdir /tmp/bridge-demo
+cd /tmp/bridge-demo
 bridge doctor        # routes must be CONFIGURED
 bridge               # starts Claude; the SessionStart hook records the session
 ```
@@ -158,14 +287,16 @@ bridge               # starts Claude; the SessionStart hook records the session
 Useful inspection points during all of this:
 
 - `bridge status` — where you are, the recent switches, and what each agent is holding. Session ids and raw watermarks are not shown at all; `--debug` adds them.
-- `.bridge/state.json` — the ground truth the launcher polls.
-- `.bridge/checkpoints/` — delta files; delivered ones are renamed `*.consumed`.
+- Machine-local `state.json` — the ground truth the launcher polls.
+- Machine-local checkpoints — logical `.bridge/checkpoints/` delta files; delivered ones are renamed `*.consumed`.
+- `bridge artifact export/import` handles explicit portable context; imported artifacts are verified before optional seed application.
+- `bridge search <text>` searches checkpoint groups without reading or exposing the physical storage root.
 
 ## Verifying first-import vs repeat-resume
 
 The single most important behavioral invariant:
 
-- **First** `/bridge codex` for a project → exactly one new entry appears in Codex's import ledger (`~/.codex/external_agent_session_imports.json`) and `agents.codex.id` appears in `.bridge/state.json`.
+- **First** `/bridge codex` for a project → exactly one new entry appears in Codex's import ledger (`~/.codex/external_agent_session_imports.json`) and `agents.codex.id` appears in machine-local state.
 - **Every subsequent** `/bridge codex` → the ledger count for this project **must not change**, the id **must not change**, and the linked thread receives the delta. Where it arrives depends on the road: with Codex hooks installed and trusted the delta lands inside the conversation and the command line stays bare, otherwise it rides as the opening prompt. Ask Codex about something from its earlier turns to confirm the thread's own context survived.
 
 If a change causes a second import, it has broken the product model (each import creates a disconnected new thread).
@@ -196,7 +327,7 @@ Treat these as hard rules; changes that violate them should not merge:
 | Grok CLI | 0.2.x | resume by id, per-project session directories, live `active_sessions.json`; hooks fire but ignore stdout for passive events |
 | OpenCode | 1.18.x | sessions in a SQLite database, authless delta insert via `preResume`, read-back via `opencode export`, discovery via `opencode session list --format json`; no hook and a resume that will not take an opening message, so no auto-start |
 | OS | macOS | Linux paths implemented, suite runs there in CI, vendor layouts unverified; Windows unsupported |
-| Node | ≥ 18.18 | no runtime dependencies |
+| Node | ≥ 18.18 | clean package and MCP stdio must work at the minimum version |
 
 Every CLI's session format is vendor-internal. When a new CLI release changes behavior, re-run the end-to-end handoff test above before assuming compatibility.
 
@@ -204,10 +335,38 @@ Every CLI's session format is vendor-internal. When a new CLI release changes be
 
 1. Identify the previous release tag first: `git describe --tags --abbrev=0`.
 2. Write the changelog only from the actual implementation diff: `git diff --stat <previous-tag>..HEAD -- src bin plugin codex package.json package-lock.json .github`. Do not turn a session summary, roadmap or cumulative feature list into the current release notes. Every entry must be attributable to a changed file or be explicitly marked as documentation/CI/release work.
-3. `npm test` and `npm run check` pass. `prepublishOnly` runs both before any publish, so a broken build cannot reach the registry by accident.
+3. `prepublishOnly` runs, in order, the full tests, syntax check, deterministic eval, `release-check --ci --json`, `verify --all --json`, and `eval --live codex --json`. Each failure stops the chain. This requires authenticated GitHub CLI access, successful exact-HEAD CI, a clean tree, and all supported agents installed and answering their smoke questions. Live steps use configured providers and may incur usage. Do not bypass the lifecycle with `--ignore-scripts` when publishing. Passing these checks does not replace the native handoff exercise below: smoke checks verify agent responses and route configuration, not actual transfers.
 4. `npm pack --dry-run` includes `bin/`, `src/`, `plugin/`, `codex/`, `.claude-plugin/`, `docs/`.
 5. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
 6. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
-7. Hygiene scan: no machine-specific paths, no credentials, no tracked `.bridge/` state.
+7. Hygiene scan: no machine-specific paths, no credentials, and no tracked runtime state.
 8. Version bumps kept in sync across all three manifests: `package.json`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`. The CLI reads its version from `package.json`; it is not a fourth source.
 9. Update README and docs if user-visible behaviour changed. The published package is `@serdardb/context-bridge`, because the plain name belongs to an unrelated library; publishing needs `--access public`.
+
+### Changelog Attribution
+
+Before the release commit, prepare `docs/release-evidence.json` for the newest
+changelog section. Its `version` matches that section, `baseTag` is `v` followed
+by the second changelog version, and `baseCommit` is that tag's resolved commit.
+The previous tag must be an ancestor of HEAD and contain the corresponding
+package version. A tag already on HEAD does not change the comparison base.
+
+Each `entries` item contains `sha256`, `files` and `rationale`. Obtain the entry
+hashes from the actual notes, not a session summary:
+
+```sh
+node --input-type=module -e 'import fs from "node:fs"; import { changelogEvidenceEntries } from "./src/release-provenance.mjs"; console.log(JSON.stringify(changelogEvidenceEntries(fs.readFileSync("CHANGELOG.md", "utf8")), null, 2));'
+```
+
+The format is a list of top-level Markdown bullets with indented continuations;
+section headings and blank lines are allowed. Unaccounted prose fails closed.
+Every current entry needs exactly one evidence record. List actual paths from
+`git diff --name-only <baseTag>..HEAD`; unchanged historical implementation files,
+the changelog itself and the evidence manifest are not supporting evidence.
+Explain how each file supports the claim in `rationale`. Commit the evidence
+with the release changes so clean-tree and exact-HEAD CI checks cover it.
+
+This proves traceability, not semantic truth: a reviewer must still read the
+diff and verify that the cited changes really implement the stated feature or
+fix. Rewording an entry invalidates its prior attribution. Do not fabricate
+evidence for an unfinished release just to make the gate green.

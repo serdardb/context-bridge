@@ -1,0 +1,22 @@
+set timeout 30
+log_user 1
+spawn -noecho {*}$argv
+expect {
+    -exact "INTERRUPTED_STREAM_8741" { send -- "\003" }
+    timeout { puts stderr "timeout before partial stream"; close; wait; exit 1 }
+    eof { puts stderr "EOF before partial stream: [wait]"; exit 1 }
+}
+expect {
+    -exact "^C again to exit" { after 2200; send -- "PTY_FOLLOW_UP_4529\r" }
+    timeout { puts stderr "timeout after interrupt"; close; wait; exit 1 }
+    eof { puts stderr "EOF after interrupt: [wait]"; exit 1 }
+}
+expect {
+    -exact "PTY_NATIVE_COMPLETED_5368" { after 300; send -- "/exit\r" }
+    timeout { puts stderr "timeout waiting for continuation"; close; wait; exit 1 }
+    eof { puts stderr "EOF waiting for continuation: [wait]"; exit 1 }
+}
+expect {
+    eof { set result [wait]; puts "PTY_NATIVE_COMPLETED_5368"; exit [lindex $result 3] }
+    timeout { close; wait; exit 1 }
+}

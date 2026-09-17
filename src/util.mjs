@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -142,18 +143,70 @@ export function readJson(p, fallback = null) {
   }
 }
 
-/** Atomic JSON write: tmp file + rename. */
+function syncPublishedDirectory(file) {
+  // Node cannot portably open Windows directories for FlushFileBuffers. Do not
+  // advertise POSIX directory durability on that platform.
+  if (process.platform === "win32") return;
+  let fd;
+  try {
+    fd = fs.openSync(path.dirname(file), "r");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+  } catch (cause) {
+    const error = new Error("File was published, but its directory could not be synced. Publication was not rolled back; inspect the current state before retrying.", { cause });
+    error.code = "BRIDGE_PUBLICATION_UNCERTAIN";
+    error.published = true;
+    throw error;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+/** Publish complete evidence without replacing an existing destination. */
+export function writeFileExclusive(file, content) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomUUID()}`);
+  let fd;
+  let owned = false;
+  try {
+    fd = fs.openSync(tmp, "wx", 0o600);
+    owned = true;
+    fs.writeFileSync(fd, content);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    // Unlike rename, hard-link creation fails if the destination exists. The
+    // temporary file shares its filesystem, and no partial body is published.
+    fs.linkSync(tmp, file);
+    syncPublishedDirectory(file);
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+    if (owned) try { fs.unlinkSync(tmp); } catch {}
+  }
+}
+
+/** Flush content, replace atomically, then sync its parent on POSIX.
+ * Newly created ancestors and multi-file ordering require a separate protocol.
+ */
 export function writeJsonAtomic(p, obj) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const tmp = `${p}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
+  let fd;
+  let owned = false;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + "\n");
+    fd = fs.openSync(tmp, "wx", 0o600);
+    owned = true;
+    fs.writeFileSync(fd, JSON.stringify(obj, null, 2) + "\n");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
     fs.renameSync(tmp, p);
+    syncPublishedDirectory(p);
   } finally {
-    // A failed rename must not leave a plausible-looking state fragment behind.
-    // The destination remains untouched; the temporary file is only an
-    // implementation detail and is safe to remove whether rename succeeded or not.
-    try { fs.rmSync(tmp, { force: true }); } catch {}
+    // Remove only this invocation's temporary file. After a successful rename,
+    // later sync errors must leave the already-published destination untouched.
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+    if (owned) try { fs.rmSync(tmp, { force: true }); } catch {}
   }
 }
 
@@ -219,12 +272,13 @@ export function installedCopyStatus(installedPath, sourcePath) {
   }
 }
 
-/** Does this pid exist? Signal 0 tests without touching the process. */
+/** Conservative ownership check: only ESRCH proves a valid pid is gone. */
 export function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM"; // alive, just owned by someone else
+    return e.code !== "ESRCH"; // permissions or unknown OS failures cannot justify stealing a lock
   }
 }

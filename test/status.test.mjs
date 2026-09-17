@@ -5,9 +5,86 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, emptyLane, STATE_VERSION } from "../src/state.mjs";
+import { defaultState, saveState, loadState, emptyLane, STATE_VERSION, writeCheckpoint, safeCheckpointPath, statePath } from "../src/state.mjs";
+import { HOOK_DELTA_BYTES, hookBody, fullContextFor, untrimmedPointer } from "../src/delivery.mjs";
+import { projectStatus } from "../src/status.mjs";
 
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
+
+test("production status diagnoses delivered size and missing evidence without exposing or mutating it", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-status-global-"));
+  const project = path.join(root, "project");
+  fs.mkdirSync(project);
+  const previous = { home: process.env.CONTEXT_BRIDGE_HOME, mode: process.env.CONTEXT_BRIDGE_STORAGE };
+  process.env.CONTEXT_BRIDGE_HOME = path.join(root, "runtime");
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  t.after(() => {
+    for (const [key, value] of [["CONTEXT_BRIDGE_HOME", previous.home], ["CONTEXT_BRIDGE_STORAGE", previous.mode]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const s = defaultState(project);
+  saveState(project, s);
+  const stem = "2026-09-16T10-00-00-000Z-claude-to-codex";
+  const fullRel = writeCheckpoint(project, "main", `${stem}-full.md`, "private conversation");
+  const deltaRel = writeCheckpoint(project, "main", `${stem}.md`, "placeholder");
+  s.pendingInjection = { agent: "codex", via: "hook", deltaFile: deltaRel };
+  s.lanes.review = emptyLane();
+  s.lanes.review.activeAgent = "claude";
+  s.lanes.review.agents.claude = { id: "private-session-id", transcriptPath: "/private/transcript", mark: "private-mark" };
+  const reviewRel = writeCheckpoint(project, "review", `${stem}.md`, "private review conversation");
+  s.lanes.review.pendingHandoff = { target: "grok" };
+  s.lanes.review.pendingInjection = { agent: "grok", via: "prompt", deltaFile: reviewRel };
+  saveState(project, s);
+  const deltaPath = safeCheckpointPath(project, deltaRel);
+  const fullPath = safeCheckpointPath(project, fullRel);
+  const full = fullContextFor(project, deltaRel);
+  const stateBefore = fs.readFileSync(statePath(project));
+  const report = () => {
+    const result = spawnSync(process.execPath, [BRIDGE, "status", "--json"], {
+      cwd: project, encoding: "utf8", env: { ...process.env, PATH: "" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout, /private conversation|private review|private-session|private-mark|private\/transcript|runtime\/projects/);
+    assert.deepEqual(fs.readFileSync(statePath(project)), stateBefore);
+    assert.equal(fs.existsSync(path.join(project, ".bridge")), false);
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed, projectStatus(project), "CLI and read-only API share one report");
+    assert.deepEqual(parsed.lanes.map((lane) => lane.name), ["main", "review"]);
+    const review = parsed.lanes.find((lane) => lane.name === "review");
+    assert.equal(review.active, false);
+    assert.deepEqual(review.linkedAgents, ["claude"]);
+    assert.deepEqual(review.pending, { kind: "handoff", target: "grok" });
+    assert.equal(review.delivery.via, "prompt");
+    assert.equal(review.delivery.deltaStatus, "pending");
+    assert.equal(review.recentSwitches.length, 1);
+    assert.equal(parsed.activeLane, "main", "inspection must not switch the lane");
+    return parsed.delivery;
+  };
+  for (const excess of [0, 1]) {
+    const delta = "x".repeat(HOOK_DELTA_BYTES - Buffer.byteLength(untrimmedPointer(full)) + excess);
+    fs.writeFileSync(deltaPath, delta);
+    const out = report();
+    assert.equal(out.via, "hook");
+    assert.equal(out.budgetBytes, HOOK_DELTA_BYTES);
+    assert.equal(out.deltaStatus, "pending");
+    assert.equal(out.deltaBytes, Buffer.byteLength(delta));
+    assert.equal(out.deliveredBytes, Buffer.byteLength(hookBody(delta, full)));
+    assert.equal(out.wouldTrim, excess === 1);
+    assert.equal(out.fullContextAvailable, true);
+    assert.equal(fs.readFileSync(deltaPath, "utf8"), delta);
+  }
+  fs.unlinkSync(fullPath);
+  fs.mkdirSync(fullPath);
+  assert.equal(report().fullContextAvailable, false, "a directory is not readable context evidence");
+  fs.renameSync(deltaPath, `${deltaPath}.consumed`);
+  assert.equal(report().deltaStatus, "consumed");
+  fs.unlinkSync(`${deltaPath}.consumed`);
+  assert.equal(report().deltaStatus, "missing", "absence does not prove delivery");
+  fs.symlinkSync(path.join(root, "outside"), deltaPath);
+  assert.equal(report().deltaStatus, "unsafe");
+});
 
 // What this output used to be: every agent's progress printed as its raw
 // watermark. Watermarks are opaque by design, so the same column held an ISO

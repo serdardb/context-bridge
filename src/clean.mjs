@@ -6,8 +6,10 @@
 // (a pending injection's delta) are never deleted, under any flag.
 import fs from "node:fs";
 import path from "node:path";
-import { loadState, checkpointsDir, laneDirsOnDisk, isValidLaneName, isInsideDir, bridgeDir, safeCheckpointPath, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { loadState, withProjectStateReadLock, checkpointsDir, laneDirsOnDisk, isValidLaneName, isInsideDir, bridgeDir, safeCheckpointPath, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { runtimeStorageBase } from "./storage.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
+import { preparationStems, preparationStemForName } from "./preparation.mjs";
 
 export const DEFAULT_KEEP_GROUPS = 20;
 export const DEFAULT_MAX_AGE_DAYS = 7;
@@ -52,10 +54,22 @@ const GROUP_RE = new RegExp(
 const refuse = (reason) => ({ groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0, [reason]: true });
 
 export function pruneCheckpoints(projectDir, opts = {}) {
+  let state;
+  try { state = loadState(projectDir, { readOnly: true }); }
+  catch { return refuse("skippedCorruptState"); }
+  // Never initialize storage for inspection of an unused project. Real deletion
+  // shares the writer lock so no preparation can reserve a group mid-scan.
+  if (opts.dryRun || !state) return pruneUnlocked(projectDir, opts);
+  const preflight = pruneUnlocked(projectDir, { ...opts, dryRun: true });
+  if (Object.keys(preflight).some((key) => key.startsWith("skipped"))) return preflight;
+  return withProjectStateReadLock(projectDir, () => pruneUnlocked(projectDir, opts));
+}
+
+function pruneUnlocked(projectDir, opts) {
   // ── Phase 1: validate everything, delete nothing ──────────────────────────
   let s = null;
   try {
-    s = loadState(projectDir);
+    s = loadState(projectDir, { readOnly: true });
   } catch {
     // Fail closed. A corrupt state file is different from a missing one: missing
     // means a fresh project with nothing to protect, but corrupt means we cannot
@@ -70,7 +84,7 @@ export function pruneCheckpoints(projectDir, opts = {}) {
   // resolves there too, and the containment check below passes — we would then
   // delete files the project does not own. Refuse entirely.
   const bridge = bridgeDir(projectDir);
-  if (!isInsideDir(bridge, projectDir)) {
+  if (!isInsideDir(bridge, runtimeStorageBase(projectDir))) {
     return refuse("skippedEscapingBridge");
   }
   // `.bridge/lanes` itself must not be a symlink. `laneDirsOnDisk` returns [] for
@@ -99,20 +113,18 @@ export function pruneCheckpoints(projectDir, opts = {}) {
   // Lanes from state AND from disk, unioned. Reading state alone would leave every
   // non-main lane's directory growing forever, and a lane directory with no state
   // entry (an orphan left by a deleted lane) would never be collected at all.
-  // Physical project root — a symlinked project root is fine, but symlinks inside
-  // .bridge/lanes are not. Building expected paths from the physical root means a
-  // project opened through an alias still prunes, while a lane directory or
-  // checkpoints directory that is a symlink resolves elsewhere and is refused.
+  // Normalize only the storage base (including OS aliases such as /var).
+  // Keep components beneath it lexical so symlinked lanes/checkpoints remain
+  // detectable, rather than blessing their destination as the expected path.
+  const storageBase = runtimeStorageBase(projectDir);
   let physicalRoot;
   try {
-    physicalRoot = fs.realpathSync(projectDir);
+    physicalRoot = fs.realpathSync(storageBase);
   } catch {
-    physicalRoot = path.resolve(projectDir);
+    physicalRoot = path.resolve(storageBase);
   }
-  const expectedDir = (lane) =>
-    lane === DEFAULT_LANE
-      ? path.join(physicalRoot, ".bridge", "checkpoints")
-      : path.join(physicalRoot, ".bridge", "lanes", lane, "checkpoints");
+  const expectedDir = (lane) => path.join(physicalRoot,
+    path.relative(path.resolve(storageBase), path.resolve(checkpointsDir(projectDir, lane))));
 
   const candidates = [...new Set([DEFAULT_LANE, ...stateLanes, ...laneDirsOnDisk(projectDir)])].filter(isValidLaneName);
   const laneNames = [];
@@ -164,7 +176,8 @@ export function pruneCheckpoints(projectDir, opts = {}) {
     if (typeof deltaFile !== "string" || deltaFile === "") {
       return refuse("skippedMalformedPending");
     }
-    const abs = path.resolve(projectDir, deltaFile);
+    const abs = safeCheckpointPath(projectDir, deltaFile);
+    if (!abs) return refuse("skippedMalformedPending");
     const dir = path.dirname(abs);
     const m = path.basename(abs).match(GROUP_RE);
     // The marker must name a real file inside a known lane's checkpoint directory.
@@ -180,6 +193,15 @@ export function pruneCheckpoints(projectDir, opts = {}) {
     protectedByDir.get(dir).add(m[1]);
   }
 
+  for (const lane of laneNames) {
+    try {
+      const stems = preparationStems(projectDir, lane);
+      const dir = dirOf.get(lane);
+      if (!protectedByDir.has(dir)) protectedByDir.set(dir, new Set());
+      for (const stem of stems) protectedByDir.get(dir).add(stem);
+    } catch { return refuse("skippedInvalidPreparation"); }
+  }
+
   // ── Phase 2: everything validated, delete ─────────────────────────────────
   // `--lane` scopes DELETION to one lane, but protection above still scanned every
   // lane's pending marker, so a delta in this lane that another lane's handoff is
@@ -187,8 +209,15 @@ export function pruneCheckpoints(projectDir, opts = {}) {
   const onlyLane = opts.lane ?? null;
   const toPrune = onlyLane ? laneNames.filter((l) => l === onlyLane) : laneNames;
   const total = { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0 };
+  if (opts.staging) Object.assign(total, { deletedStagingFiles: 0, retainedStagingFiles: 0 });
   for (const lane of toPrune) {
     const protectedStems = protectedByDir.get(dirOf.get(lane)) ?? new Set();
+    if (opts.staging) {
+      const r = pruneLaneStaging(checkpointsDir(projectDir, lane), protectedStems, opts.dryRun);
+      total.deletedStagingFiles += r.deleted;
+      total.retainedStagingFiles += r.retained;
+      continue;
+    }
     const r = pruneLaneCheckpoints(checkpointsDir(projectDir, lane), protectedStems, opts);
     total.groups += r.groups;
     total.deletedGroups += r.deletedGroups;
@@ -196,6 +225,43 @@ export function pruneCheckpoints(projectDir, opts = {}) {
     total.protectedGroups += r.protectedGroups;
   }
   return total;
+}
+
+function ownerIsGone(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return error.code === "ESRCH"; }
+}
+
+function pruneLaneStaging(dir, protectedStems, dryRun) {
+  const result = { deleted: 0, retained: 0 };
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return result; }
+  for (const name of names) {
+    const match = /^\.(.+)\.tmp-([1-9]\d*)-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(name);
+    const stem = match && (match[1].match(GROUP_RE)?.[1] ?? preparationStemForName(match[1]));
+    if (!stem) continue;
+    const pid = Number(match[2]);
+    const file = path.join(dir, name);
+    let before;
+    try { before = fs.lstatSync(file); } catch { result.retained++; continue; }
+    if (!before.isFile() || protectedStems.has(stem) || !Number.isSafeInteger(pid) || !ownerIsGone(pid)) {
+      result.retained++;
+      continue;
+    }
+    if (!dryRun) {
+      try {
+        const current = fs.lstatSync(file);
+        if (!current.isFile() || current.dev !== before.dev || current.ino !== before.ino ||
+            current.size !== before.size || current.mtimeMs !== before.mtimeMs || !ownerIsGone(pid)) {
+          result.retained++;
+          continue;
+        }
+        fs.unlinkSync(file);
+      } catch { result.retained++; continue; }
+    }
+    result.deleted++;
+  }
+  return result;
 }
 
 /** True when a directory holds at least one file the bridge would group as a checkpoint. */

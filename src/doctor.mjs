@@ -23,6 +23,7 @@ import { findCompanionScript } from "./transfer.mjs";
 import { loadState, agentSlot } from "./state.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { installHooks as installCodexHooks, hooksPath as codexHooksPath } from "./agents/codex.mjs";
+import { projectIdentity, projectStoreDir, runtimeStoreDir, storageHome } from "./storage.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CODEX_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
@@ -44,14 +45,14 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
 }
 
 /** Run strict real-agent verification for release and automation. */
-export async function runVerify(projectDir, { json = false } = {}) {
+export async function runVerify(projectDir, { json = false, all = false } = {}) {
   const r = collect(projectDir);
   r.deep = true;
   for (const agentId of AGENT_IDS) {
     if (r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   }
   refreshIntegration(r);
-  r.verify = verifyReport(r);
+  r.verify = verifyReport(r, { all });
   if (json) {
     log(JSON.stringify(r, null, 2));
     return r.verify.ok ? 0 : 1;
@@ -63,9 +64,12 @@ export async function runVerify(projectDir, { json = false } = {}) {
 }
 
 /** Pure verdict used by the CLI and tests without starting agent processes. */
-export function verifyReport(r) {
+export function verifyReport(r, { all = false } = {}) {
   const installed = AGENT_IDS.filter((id) => r.agents[id]?.version);
   const failures = [];
+  if (all) for (const id of AGENT_IDS) {
+    if (!installed.includes(id)) failures.push(`${id} is required for release verification but is not installed`);
+  }
   if (installed.length < 2) failures.push("fewer than two supported agents are installed");
   for (const id of installed) {
     const a = r.agents[id];
@@ -121,9 +125,25 @@ export function collect(projectDir) {
   let state = null;
   let stateError = null;
   try {
-    state = loadState(projectDir);
+    state = loadState(projectDir, { readOnly: true });
   } catch (e) {
     stateError = e.message;
+  }
+  const legacy = path.join(path.resolve(projectDir), ".bridge");
+  const legacyState = fs.existsSync(path.join(legacy, "state.json"));
+  let storage = {
+    mode: process.env.CONTEXT_BRIDGE_STORAGE === "project" ? "legacy-project" : legacyState ? "legacy-migration-pending" : "global",
+    home: storageHome(),
+    projectId: null,
+    projectStore: null,
+    runtimeStore: null,
+    gitOptional: true,
+  };
+  try {
+    const identity = projectIdentity(projectDir);
+    storage = { ...storage, projectId: identity.id, projectStore: projectStoreDir(projectDir), runtimeStore: runtimeStoreDir(projectDir) };
+  } catch (error) {
+    storage.error = error.message;
   }
   const linked = state ? AGENT_IDS.filter((agentId) => agentSlot(state, agentId).id) : [];
 
@@ -183,7 +203,13 @@ export function collect(projectDir) {
     agents,
     claude: { ...agents.claude, officialCodexPlugin: officialPlugin, companionScript: companion },
     codex: agents.codex,
-    bridge: { onPath: bridgeOnPath, state: !!state, stateError, linked },
+    bridge: {
+      onPath: bridgeOnPath,
+      state: !!state,
+      stateError,
+      linked,
+      storage,
+    },
     routes,
   };
 }
@@ -368,7 +394,7 @@ function render(r) {
         : "Project state present (nothing linked yet)"
       : "No project state yet (created on first use)"
   );
-  if (r.bridge.stateError) row(false, `State error: ${r.bridge.stateError}`, "inspect .bridge/state.json");
+  if (r.bridge.stateError) row(false, `State error: ${r.bridge.stateError}`, "run `bridge doctor --json` for the diagnostic");
 
   log("");
   log(bold("Available routes"));

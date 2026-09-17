@@ -1,0 +1,95 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { readAiderHistory, aiderHistoryMark, aiderHistorySince, readAiderEvidence,
+  aiderEvidenceMark, aiderDeliverySince, aiderMark, aiderActivity } from "../src/agents/aider-records.mjs";
+
+test("Aider native Markdown preserves headings, quotes and role-looking code without inventing message boundaries", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-aider-records-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "chat.md");
+  const prefix = "\n# aider chat started at 2026-09-17 12:00:00\n\n#### Explain the parser \n#### Include examples\n\n";
+  const answer = "# Important heading\n> Important quotation\n```md\n#### This is code, not a user message\n```\n\n";
+  fs.writeFileSync(file, prefix);
+  const mark = aiderHistoryMark(readAiderHistory(file));
+  fs.appendFileSync(file, answer);
+  const history = readAiderHistory(file);
+  assert.equal(aiderHistorySince(history), prefix + answer);
+  assert.equal(aiderHistorySince(history, mark), answer);
+  assert.equal(aiderHistorySince(history, aiderHistoryMark(history)), "");
+  fs.writeFileSync(file, prefix.replace("Explain", "Rewrite") + answer);
+  assert.throws(() => aiderHistorySince(readAiderHistory(file), mark), /refusing/);
+  fs.writeFileSync(file, "\n# aider chat started at 2026-09-17 12:00:00\n");
+  assert.throws(() => aiderHistorySince(readAiderHistory(file), mark), /refusing/);
+  fs.writeFileSync(file, prefix);
+  fs.appendFileSync(file, Buffer.from([0xe2, 0x82]));
+  assert.throws(() => readAiderHistory(file), /refusing/, "incomplete UTF-8 must not turn into replacement characters");
+  fs.appendFileSync(file, Buffer.from([0xac]));
+  assert.equal(aiderHistorySince(readAiderHistory(file), mark), "\u20ac");
+  const link = path.join(root, "alias.md");
+  fs.symlinkSync(file, link);
+  assert.throws(() => readAiderHistory(link), /refusing/);
+  fs.writeFileSync(file, "unrecognised format\n");
+  assert.throws(() => readAiderHistory(file), /refusing/);
+});
+
+test("Aider completion evidence binds identity, history and the observed prefix before acknowledging", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-aider-evidence-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const historyFile = path.join(root, "chat.md"), events = path.join(root, "events.jsonl");
+  fs.writeFileSync(historyFile, "# aider chat started at 2026-09-17 12:00:00\n");
+  const identity = { sessionId: "session-one", projectId: "project-one" };
+  const header = { type: "session", version: 1, ...identity };
+  const lines = [header];
+  const save = () => fs.writeFileSync(events, lines.map(JSON.stringify).join("\n") + "\n");
+  const read = () => readAiderEvidence(events, readAiderHistory(historyFile), identity);
+  const add = (completed) => {
+    fs.appendFileSync(historyFile, completed ? "Complete answer\n" : "Partial answer\n");
+    lines.push({ type: "turn", sequence: lines.length, at: "2026-09-17T12:00:00Z", completed,
+      messages: [{ role: "user", text: "# User question" }, { role: "assistant", text: "> Answer with #### literal code" }],
+      failed: !completed, responses: completed ? 1 : 0, history: aiderHistoryMark(readAiderHistory(historyFile)) });
+    save();
+  };
+  save();
+  const baseline = aiderEvidenceMark(read());
+  assert.equal(aiderDeliverySince(read(), baseline), false);
+  add(false);
+  assert.equal(aiderDeliverySince(read(), baseline), false);
+  const failed = aiderActivity(readAiderHistory(historyFile), read());
+  assert.equal(failed.deliveryObserved, false);
+  assert.match(failed.messages[1].text, /unsuccessful turn/);
+  const failedMark = aiderMark(readAiderHistory(historyFile), read());
+  add(true);
+  assert.equal(aiderDeliverySince(read(), baseline), true);
+  const current = aiderEvidenceMark(read());
+  assert.equal(aiderDeliverySince(read(), current), false, "old success is not new receipt");
+  const activity = aiderActivity(readAiderHistory(historyFile), read(), failedMark);
+  assert.equal(activity.deliveryObserved, true);
+  assert.deepEqual(activity.messages.map(({ role, text }) => ({ role, text })), lines[2].messages);
+  assert.equal(activity.turnsCompleted, 1);
+  const settled = aiderMark(readAiderHistory(historyFile), read());
+  fs.appendFileSync(historyFile, "Unobserved partial output\n");
+  const unfinished = aiderActivity(readAiderHistory(historyFile), read(), settled);
+  assert.deepEqual(unfinished.messages, []);
+  assert.equal(unfinished.deliveryObserved, false);
+  assert.equal(unfinished.unobservedText, "Unobserved partial output\n");
+  assert.throws(() => aiderDeliverySince(read(), null), /refusing/);
+  assert.throws(() => aiderDeliverySince(read(), { ...current, count: 0 }), /refusing/);
+  assert.throws(() => readAiderEvidence(events, readAiderHistory(historyFile), { ...identity, sessionId: "other" }), /refusing/);
+  fs.appendFileSync(events, '{"type":"turn"');
+  assert.equal(read().incompleteTail, true);
+  assert.equal(aiderDeliverySince(read(), baseline), false, "in-flight evidence is not acknowledgement");
+  fs.appendFileSync(events, "\n");
+  assert.throws(read, /refusing/, "malformed committed record is not ignored");
+  save();
+  lines[1].failed = false;
+  lines[1].responses = 1;
+  assert.throws(() => { save(); read(); }, /refusing/, "contradictory completion must fail");
+  lines[1].failed = true; lines[1].responses = 0; save();
+  lines[1].at = "2026-09-17T12:00:01Z"; save();
+  assert.throws(() => aiderDeliverySince(read(), current), /refusing/, "rewritten observed prefix is not append-only");
+  fs.writeFileSync(historyFile, fs.readFileSync(historyFile, "utf8").replace("Partial", "Altered"));
+  assert.throws(read, /refusing/, "same-size native rewrite invalidates completion proof");
+});

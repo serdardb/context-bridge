@@ -5,8 +5,17 @@
 // the target is whoever was asked for, and each side's behaviour comes from its
 // adapter rather than from its name.
 import path from "node:path";
-import { ensureState, loadState, mutateState, writeCheckpoint, checkpointRel, agentSlot, knownMark, CHECKPOINT_KINDS, STATE_VERSION, DEFAULT_LANE } from "./state.mjs";
+import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
+import { ensureState, loadState, statePath, mutateState, withProjectStateReadLock, writeCheckpoint, checkpointRel, checkpointReference, safeCheckpointPath, agentSlot, knownMark, CHECKPOINT_KINDS, CONSUMED_SUFFIX, STATE_VERSION, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
+import { AdapterResultError } from "./adapter-contract.mjs";
+import { laneWorkspace } from "./worktree.mjs";
+
+function assertHandoffWorkspace(projectDir) {
+  const workspace = laneWorkspace(projectDir, process.env.CONTEXT_BRIDGE_LANE || null);
+  if (workspace.isolated) throw new Error(`Run the handoff from the lane's worktree directory: ${workspace.projectDir}`);
+}
 import { transferClaudeSession } from "./transfer.mjs";
 import {
   gitDelta,
@@ -20,6 +29,7 @@ import {
 import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
+import { beginPreparation, finishPreparation, recoverPreparations } from "./preparation.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log, debugLog } from "./util.mjs";
 
 /** True when this handoff runs inside an agent spawned by the bridge launcher. */
@@ -42,6 +52,30 @@ function splitNotes(s) {
     .split(/;|\n/)
     .map((x) => x.trim())
     .filter(Boolean);
+}
+
+function discardPreparation(projectDir, deltaRel, written) {
+  if (!written.length) return;
+  withProjectStateReadLock(projectDir, (disk) => {
+    const delta = safeCheckpointPath(projectDir, deltaRel);
+    if (!delta) throw new Error("Unsafe preparation path");
+    // A write may have committed before a later error was reported. Never
+    // remove evidence that a consumer can already see or has consumed.
+    if (Object.values(disk?.lanes ?? {}).some((lane) =>
+      lane.pendingInjection && safeCheckpointPath(projectDir, lane.pendingInjection.deltaFile) === delta)) return;
+    if (fs.existsSync(`${delta}${CONSUMED_SUFFIX}`)) return;
+    const files = written.map(({ rel, content, dev, ino }) => {
+      const file = safeCheckpointPath(projectDir, rel);
+      if (!file) throw new Error("Unsafe preparation path");
+      let stat;
+      try { stat = fs.lstatSync(file); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+      if (!stat.isFile() || stat.dev !== dev || stat.ino !== ino || fs.readFileSync(file, "utf8") !== content) {
+        throw new Error("Preparation evidence changed");
+      }
+      return file;
+    });
+    for (const file of files) if (file) fs.unlinkSync(file);
+  });
 }
 
 /**
@@ -159,6 +193,7 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const targetAdapter = adapterFor(target);
   if (!targetAdapter) throw new BridgeError(`Unknown agent '${target}'. Known: ${AGENT_IDS.join(", ")}.`);
   checkSummaryFits(summary);
+  assertHandoffWorkspace(projectDir);
   const s = loadStateForPreview(projectDir);
   const lane = process.env.CONTEXT_BRIDGE_LANE && s.lanes?.[process.env.CONTEXT_BRIDGE_LANE]
     ? process.env.CONTEXT_BRIDGE_LANE
@@ -199,16 +234,17 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
   const now = nowIso();
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
   const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
+  const fullReference = checkpointReference(projectDir, fullRel);
   const deltaRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`);
   const via = hookDeliveryEligible(target, targetSlot) ? "hook" : "prompt";
   const roadBudget = deliverableBudget(
     via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
-    fullRel,
+    fullReference,
     sourceAdapter.displayName
   );
   const trailingFor = (lost) => {
     const omission = lost ? "What did not fit above is whole there. " : "Nothing above was left out, so it holds the same conversation in its original form. ";
-    return `\n\nFull context checkpoint: ${fullRel}\n${omission}It is kept with this handoff's other checkpoints until they are pruned together.` +
+    return `\n\nFull context checkpoint: ${fullReference}\n${omission}It is kept with this handoff's other checkpoints until they are pruned together.` +
       (targetAdapter.injection === "prompt" ? "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back." : "");
   };
   const summaryBudget = summaryBudgetFor(sections, budgetAfterTrailing(roadBudget, trailingFor).effective);
@@ -229,10 +265,10 @@ export function previewHandoff(projectDir, target, { summary = "", decisions = "
 }
 
 function loadStateForPreview(projectDir) {
-  const s = loadState(projectDir);
+  const s = loadState(projectDir, { readOnly: true });
   if (!s) throw new BridgeError("No bridge state in this project yet. Run 'bridge' once, then retry the dry run.", {
     operation: "prepare handoff preview",
-    path: path.join(projectDir, ".bridge", "state.json"),
+    path: statePath(projectDir),
     nextCommand: "bridge",
   });
   return s;
@@ -393,6 +429,7 @@ export function handoff(
   // returns this same ceiling. A test holds that co-occurrence, because the
   // argument is only as good as the day someone changes one of its halves.
   checkSummaryFits(summary);
+  assertHandoffWorkspace(projectDir);
 
   const s = ensureState(projectDir);
   // A handoff run inside an agent the launcher spawned inherits that launcher's
@@ -404,6 +441,7 @@ export function handoff(
       ? process.env.CONTEXT_BRIDGE_LANE
       : s.activeLane;
   s.activeLane = lane;
+  const originalLane = structuredClone(s.lanes[lane]);
   const lines = [];
   const sourceId = from ?? detectSource(s, target);
   if (sourceId === target) throw new BridgeError(`Already in ${targetAdapter.displayName}; nothing to hand off.`);
@@ -482,7 +520,8 @@ export function handoff(
     let activity;
     try {
       activity = adapter.activitySince(ref, since);
-    } catch {
+    } catch (error) {
+      if (error instanceof AdapterResultError) throw error;
       continue;
     }
     packed[otherId] = adapter.currentMark(ref);
@@ -503,6 +542,7 @@ export function handoff(
 
   const stem = `${ts(now)}-${sourceId}-to-${target}`;
   const fullRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`);
+  const fullReference = checkpointReference(projectDir, fullRel);
   const firstSwitch = !targetSlot.id;
 
   // The road is decided before anything happens to the disk, because it decides
@@ -516,7 +556,7 @@ export function handoff(
   // itself means composing to a limit that is already spent.
   const roadBudget = deliverableBudget(
     via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
-    fullRel,
+    fullReference,
     sourceAdapter.displayName
   );
 
@@ -559,7 +599,7 @@ export function handoff(
     // The path ends its line: following it with a period makes the period look
     // like part of the filename, to a reader and to the agent that has to open it.
     out +=
-      `\n\nFull context checkpoint: ${fullRel}\n` +
+      `\n\nFull context checkpoint: ${fullReference}\n` +
       (firstSwitch
         ? "This is the first switch, so the summary above is your entry point and the whole conversation to date is in that file. "
         : lost
@@ -577,7 +617,7 @@ export function handoff(
     // never enters the delta: the whole argument for it was that evidence should
     // cost nothing until somebody actually wants it.
     if (auditRel) {
-      out += `\n\nAudit of what was actually run is at ${auditRel}, or run: bridge inspect`;
+      out += `\n\nAudit of what was actually run is at ${checkpointReference(projectDir, auditRel)}, or run: bridge inspect`;
     }
     if (targetAdapter.injection === "prompt") {
       out += "\n\nAcknowledge this context in one short sentence and continue from here. Do not repeat it back.";
@@ -601,84 +641,113 @@ export function handoff(
   checkSummaryFits(summary, summaryBudget);
   sections.summaryBudget = summaryBudget;
 
-  // Re-issuing a handoff to the same target replaces the undelivered one instead
-  // of leaving it behind: those orphans were pure waste, and two pending packages
-  // for one agent is a state nobody can reason about.
-  if (s.pendingInjection?.agent === target) {
-    const dropped = supersedePending(projectDir, s.pendingInjection);
+  // Keep the old evidence until the new pending state has committed. A disk or
+  // permission failure while preparing its replacement must not destroy it.
+  const previousInjection = s.pendingInjection?.agent === target ? s.pendingInjection : null;
+  if (previousInjection && safeCheckpointPath(projectDir, previousInjection.deltaFile) ===
+      safeCheckpointPath(projectDir, checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`))) {
+    throw new BridgeError("A handoff with this timestamp is already pending. Retry without changing the existing handoff.");
+  }
+
+  const written = [];
+  const intendedDeltaRel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`);
+  const remember = (rel, content) => {
+    const { dev, ino } = fs.lstatSync(safeCheckpointPath(projectDir, rel));
+    written.push({ rel, content, dev, ino });
+  };
+  const full = composeFullContext(sections);
+  const delta = composeForRoad(sections, roadBudget, trailingFor);
+  recoverPreparations(projectDir, lane);
+  const journal = beginPreparation(projectDir, lane, stem, {
+    ...(manifest && auditRel ? { [CHECKPOINT_KINDS.audit]: JSON.stringify(manifest, null, 2) } : {}),
+    [CHECKPOINT_KINDS.fullContext]: full,
+    [CHECKPOINT_KINDS.delta]: delta,
+  });
+  try {
+    // The manifest is written beside the delta and stays out of it. It costs
+    // nothing in tokens and everything it records is ground truth taken from the
+    // agents' own files, never from what an agent says about itself: a self-report
+    // is an interpretation, and the two turns Antigravity ended without writing a
+    // word would have produced no audit trail at all under that design.
+    if (manifest && auditRel) {
+      auditRel = writeManifest(projectDir, lane, stem, manifest);
+      remember(auditRel, JSON.stringify(manifest, null, 2));
+    }
+    const writtenFullRel = writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
+    remember(writtenFullRel, full);
+
+    // A first switch is composed exactly like a repeat one. It used to dump the
+    // whole conversation inline on the theory that a new agent knows nothing, so
+    // clipping it would be a worse start. Two things made that wrong: the delta now
+    // leads with the departing agent's summary, which is a better entry point than
+    // raw scrollback, and the full context checkpoint survives to hold everything
+    // the bounded delta could not. So the new agent gets the reading weighted
+    // toward what is recent, as much conversation as the road allows, and a pointer
+    // to the rest, instead of a payload too large for its own delivery channel.
+    const deltaRel = writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
+    remember(deltaRel, delta);
+
+    s.pendingInjection = {
+      agent: target,
+      // The road this delta takes, decided here and honoured by exactly one
+      // deliverer. Inferring it later from the agent's injection mode looked
+      // tempting and is fragile: seeding a first session, resuming one, and
+      // resuming one whose hooks are live are three different cases that would
+      // have to be told apart from the same field.
+      via,
+      // null = nothing to resume on that side: the delta seeds the first session
+      // the target opens in this project.
+      id: targetSlot.id ?? null,
+      deltaFile: deltaRel,
+      createdAt: now,
+      // What this delta carries, per source. Committed to knownBy only once the
+      // delta is final, which is after the launcher has added any closing words:
+      // committing here would mark the departing agent's last answer as delivered
+      // before it was even written.
+      sources: packed,
+    };
+    sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
+
+    // Preparation runs outside the state lock. Only apply the computed snapshot
+    // if its lane is still unchanged; hooks and other commands may have written
+    // meanwhile. Changes in another lane must not invalidate this handoff.
+    const handoffLane = s.lanes[lane];
+    const gitNow = { sha: currentGitSha(projectDir), recordedAt: now };
+    const committed = mutateState(projectDir, lane, (st) => {
+      const laneObj = st.lanes[lane];
+      if (!isDeepStrictEqual(laneObj, originalLane)) {
+        throw new BridgeError("The lane changed while preparing this handoff. Retry against the current state; no concurrent changes were overwritten.");
+      }
+      laneObj.agents = handoffLane.agents;
+      laneObj.activeAgent = handoffLane.activeAgent;
+      laneObj.knownBy = handoffLane.knownBy;
+      laneObj.pendingInjection = s.pendingInjection;
+      laneObj.git = gitNow;
+      laneObj.pendingHandoff = { target, ready: true, requestedAt: now };
+    });
+    // mutateState deliberately ignores writers to a lane removed during their
+    // preparation. Such a no-op is not a successful handoff.
+    if (!committed.lanes[lane]) {
+      throw new BridgeError("The lane was removed while preparing this handoff. No pending handoff was created.");
+    }
+  } catch (error) {
+    try {
+      discardPreparation(projectDir, intendedDeltaRel, written);
+      finishPreparation(journal);
+    }
+    catch { error.message += " Preparation cleanup could not be verified; remaining evidence was retained."; }
+    throw error;
+  }
+  // Committed evidence must not be rolled back if bookkeeping cleanup fails.
+  try { finishPreparation(journal); }
+  catch { lines.push(`${WARN} Handoff committed; preparation journal cleanup will be retried after this process exits.`); }
+
+  if (previousInjection) {
+    const dropped = supersedePending(projectDir, previousInjection);
     if (dropped.files) {
       lines.push(`${OK} Replaced the previous undelivered handoff to ${targetAdapter.displayName} (${kb(dropped.bytes)} freed).`);
     }
-    s.pendingInjection = null;
   }
-
-  // The manifest is written beside the delta and stays out of it. It costs
-  // nothing in tokens and everything it records is ground truth taken from the
-  // agents' own files, never from what an agent says about itself: a self-report
-  // is an interpretation, and the two turns Antigravity ended without writing a
-  // word would have produced no audit trail at all under that design.
-  if (manifest && auditRel) {
-    try {
-      auditRel = writeManifest(projectDir, lane, stem, manifest);
-    } catch {
-      auditRel = null;
-    }
-  }
-  const full = composeFullContext(sections);
-  writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.fullContext}`, full);
-
-  // A first switch is composed exactly like a repeat one. It used to dump the
-  // whole conversation inline on the theory that a new agent knows nothing, so
-  // clipping it would be a worse start. Two things made that wrong: the delta now
-  // leads with the departing agent's summary, which is a better entry point than
-  // raw scrollback, and the full context checkpoint survives to hold everything
-  // the bounded delta could not. So the new agent gets the reading weighted
-  // toward what is recent, as much conversation as the road allows, and a pointer
-  // to the rest, instead of a payload too large for its own delivery channel.
-  const delta = composeForRoad(sections, roadBudget, trailingFor);
-  const deltaRel = writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.delta}`, delta);
-
-  s.pendingInjection = {
-    agent: target,
-    // The road this delta takes, decided here and honoured by exactly one
-    // deliverer. Inferring it later from the agent's injection mode looked
-    // tempting and is fragile: seeding a first session, resuming one, and
-    // resuming one whose hooks are live are three different cases that would
-    // have to be told apart from the same field.
-    via,
-    // null = nothing to resume on that side: the delta seeds the first session
-    // the target opens in this project.
-    id: targetSlot.id ?? null,
-    deltaFile: deltaRel,
-    createdAt: now,
-    // What this delta carries, per source. Committed to knownBy only once the
-    // delta is final, which is after the launcher has added any closing words:
-    // committing here would mark the departing agent's last answer as delivered
-    // before it was even written.
-    sources: packed,
-  };
-  sourceSlot.set({ mark: sourceRef ? sourceAdapter.currentMark(sourceRef) : now, idle: false });
-
-  // Persist under the lock. A handoff is one transaction that has already reworked
-  // this lane in memory — it links the source (and imports the target on a first
-  // Claude to Codex switch), sets the injection, the git position and the pending
-  // handoff — so its computed lane is applied whole onto the file as it is now.
-  // Unlike the launcher and the hooks, a handoff does not overlap a writer on its
-  // own lane: it runs mid-session, when no SessionStart or Stop hook is firing, so
-  // applying its whole snapshot cannot lose a concurrent field. That includes the
-  // `knownBy` the official import seeds; only `title`, which a handoff never sets,
-  // is left as the disk has it.
-  const handoffLane = s.lanes[lane];
-  const gitNow = { sha: currentGitSha(projectDir), recordedAt: now };
-  mutateState(projectDir, lane, (st) => {
-    const laneObj = st.lanes[lane];
-    laneObj.agents = handoffLane.agents;
-    laneObj.activeAgent = handoffLane.activeAgent;
-    laneObj.knownBy = handoffLane.knownBy;
-    laneObj.pendingInjection = s.pendingInjection;
-    laneObj.git = gitNow;
-    laneObj.pendingHandoff = { target, ready: true, requestedAt: now };
-  });
 
   const others = streams.filter((st) => st.id !== sourceId).map((st) => st.label);
   lines.push(

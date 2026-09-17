@@ -1,0 +1,7 @@
+ARG NODE_IMAGE=node:24-alpine
+FROM ${NODE_IMAGE}
+
+# Test-only native tools. This image contains neither project code nor accounts.
+RUN apk add --no-cache bash curl git sqlite python3 expect
+WORKDIR /workspace
+CMD ["npm", "test"]

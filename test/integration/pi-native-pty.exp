@@ -1,0 +1,32 @@
+set timeout 20
+log_user 0
+spawn -noecho {*}$argv
+if {[info exists env(PI_NATIVE_ACCEPT_RELOCATION)]} {
+    expect {
+        "continue in current cwd" {
+            after 300
+            if {$env(PI_NATIVE_ACCEPT_RELOCATION) eq "cancel"} {
+                send -- "\033\133B\r"
+            } else {
+                send -- "\r"
+            }
+        }
+        timeout { close; wait; exit 1 }
+        eof { wait; exit 1 }
+    }
+    if {$env(PI_NATIVE_ACCEPT_RELOCATION) eq "cancel"} {
+        expect {
+            eof { set result [wait]; exit [lindex $result 3] }
+            timeout { close; wait; exit 1 }
+        }
+    }
+}
+expect {
+    "PI_NATIVE_RESPONSE_3" { after 500; send -- "\004" }
+    timeout { close; wait; exit 1 }
+    eof { wait; exit 1 }
+}
+expect {
+    eof { set result [wait]; puts "PI_NATIVE_RESPONSE_3"; exit [lindex $result 3] }
+    timeout { close; wait; exit 1 }
+}

@@ -5,7 +5,6 @@ import { handoff } from "./handoff.mjs";
 import {
   loadState,
   ensureState,
-  readableCheckpointsDir,
   mutateProject,
   mutateState,
   createLane,
@@ -21,13 +20,23 @@ import {
 } from "./state.mjs";
 import { pruneCheckpoints, DEFAULT_KEEP_GROUPS, DEFAULT_MAX_AGE_DAYS } from "./clean.mjs";
 import { prepareSeed, writeSeed } from "./seed.mjs";
-import { splitLauncherArgs } from "./agentargs.mjs";
+import { runEvaluation } from "./eval.mjs";
+import { runLiveEvaluation } from "./live-eval.mjs";
+import { releaseChecks } from "./release.mjs";
+import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
+import { searchProject } from "./search.mjs";
+import { projectStatus, switchHistory } from "./status.mjs";
+import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
+import { createWorktreeLane } from "./worktree.mjs";
+import { planLegacyMigration, registeredProjects, adoptProject, cleanupLegacyIgnore } from "./storage.mjs";
+import { splitLauncherArgs, argumentSummary } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 // Read from the manifest rather than repeating it. This was a hardcoded string,
@@ -44,8 +53,17 @@ const VERSION = JSON.parse(
 const LABEL_WIDTH = Math.max(
   ...AGENT_IDS.map((a) => a.length + " [flags]".length),
   "doctor [--fix]".length,
-  "verify [--json]".length,
+  "verify [--all] [--json]".length,
+  "eval --live codex [--json]".length,
+  "release-check [--json]".length,
+  "artifact export <file>".length,
+  "artifact import <file>".length,
+  "artifact cache <file>".length,
+  "search <text>".length,
+  "storage plan [--json]".length,
+  "project adopt <id>".length,
   "status [--json]".length,
+  "lane attach <name> --worktree <path>".length,
   "handoff <agent> [flags]".length,
   "internal-hook <event>".length
 ) + 2;
@@ -61,14 +79,32 @@ ${cmd("")}Start the bridged session loop (resumes where you left off)
 ${AGENT_IDS.map((a) => `${cmd(`${a} [flags]`)}Start the loop with ${adapterFor(a).displayName} ( flags go to it as-is )`).join("\n")}
 ${cmd("doctor [--fix]")}Check agents, auth, plugins and routes ( --fix bootstraps,
 ${cont}--deep asks each agent a real one-line question )
-${cmd("verify [--json]")}Run strict real-agent smoke checks for every installed agent and route
+${cmd("verify [--all] [--json]")}Smoke-test installed agents; --all requires every supported agent
+${cmd("eval [--json]")}Evaluate deterministic context-quality fixtures (no agent calls)
+${cmd("eval --live codex [--json]")}Run opt-in synthetic live recall (provider usage applies)
+${cont}--scenario decision tests final decisions, reasons and omitted context
+${cmd("release-check [--json]")}Check release gates; --ci verifies HEAD on GitHub
+${cmd("artifact export <file>")}Export redacted context; --sign-key <pem> adds an Ed25519 signature
+${cmd("artifact import <file>")}Verify; --verify-key <pem> requires trusted signing, --apply stages it
+${cmd("artifact cache <file>")}Verify and store by content hash outside the project; accepts --verify-key
+${cmd("search <text>")}Search local summaries, checkpoints and audits
+${cmd("storage plan [--json]")}Preview legacy storage migration without changing files
+${cmd("storage cleanup-ignore")}Preview obsolete .gitignore rules (--apply to remove, --json)
+${cmd("project list")}List machine-local project identities ( --json supported )
+${cmd("project adopt <id>")}Reconnect this moved directory to an existing project store
 ${cmd("status [--json]")}Show project bridge status
+${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
+${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
+${cmd("adapters [--json]")}List registered adapters and their declared capabilities
+${cmd("mcp [--allow-content]")}Serve read-only MCP over stdio for this project
+${cmd("watch --policy read-only")}Stream status changes as JSON lines; no automatic actions
 ${cmd("handoff <agent> [flags]")}Prepare a handoff; --dry-run previews without changing state
 ${cmd("inspect")}Show what the last handoff's agents actually ran ( failures first;
 ${cont}--json for the raw manifest; --lane <name> for another lane )
 ${cmd("clean")}Prune old checkpoints (keeps newest ${DEFAULT_KEEP_GROUPS} handoffs and
 ${cont}everything younger than ${DEFAULT_MAX_AGE_DAYS} days; --dry-run, --keep N,
 ${cont}--days N, --all, --lane <name>; a pending injection is never deleted)
+${cont}--staging cleans only abandoned evidence staging files; supports --dry-run
 ${cmd("lane")}List lines of work in this project ( lane new <name> starts a
 ${cont}separate one, --seed <lane> gives it another lane's decisions and git
 ${cont}state to start from, lane switch <name> moves the default, lane rm
@@ -82,7 +118,7 @@ Agent flags:
   every time the bridge reopens it in this launcher run. Nothing is written to
   disk: the next 'bridge' starts from the agent's own defaults again.
 
-  --cb-save-args         Keep the flags typed with this launch in .bridge/config.json
+  --cb-save-args         Keep the flags typed with this launch in the machine-local store
                          and use them every time this agent opens in this project
   --cb-clear-args        Forget them again
   --resume [lane]        Open a specific lane; with no name, pick one from a list
@@ -104,7 +140,7 @@ Docs and write-ups: https://dogrubakar.com/projects/context-bridge
 `;
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
-const COMMANDS = [...AGENT_IDS, "doctor", "verify", "status", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
+const COMMANDS = [...AGENT_IDS, "doctor", "verify", "eval", "release-check", "storage", "project", "status", "adapters", "mcp", "watch", "clean", "inspect", "handoff", "lane", "unlink", "internal-hook", "help", "version"];
 
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
@@ -131,6 +167,28 @@ export async function main(argv) {
   }
 
   switch (cmd) {
+    case "watch": {
+      const parsed = parseArgs({ args: argv.slice(1), strict: true, allowPositionals: false,
+        options: { policy: { type: "string" }, interval: { type: "string" }, project: { type: "string" } } });
+      const { runWatch } = await import("./watch.mjs");
+      await runWatch(parsed.values.project ? path.resolve(projectDir, parsed.values.project) : projectDir,
+        { policy: parsed.values.policy, interval: parsed.values.interval === undefined ? 1000 : Number(parsed.values.interval) });
+      return;
+    }
+    case "mcp": {
+      const parsed = parseArgs({ args: argv.slice(1), strict: true, allowPositionals: false,
+        options: { "allow-content": { type: "boolean", default: false }, project: { type: "string" } } });
+      const { runMcp } = await import("./mcp.mjs");
+      await runMcp(parsed.values.project ? path.resolve(projectDir, parsed.values.project) : projectDir,
+        { allowContent: parsed.values["allow-content"] });
+      return;
+    }
+    case "adapters": {
+      const descriptors = AGENT_IDS.map((id) => adapterDescriptor(adapterFor(id)));
+      if (flags.has("--json")) log(JSON.stringify({ apiVersion: ADAPTER_API_VERSION, adapters: descriptors }, null, 2));
+      else for (const entry of descriptors) log(`${entry.id}: ${entry.displayName} (${entry.injection}, API ${entry.apiVersion})`);
+      return;
+    }
     case undefined:
       // Anything after the agent name is the agent's own flag, forwarded as-is.
       process.exitCode = await launchAgent(projectDir, null, argv);
@@ -145,17 +203,148 @@ export async function main(argv) {
       return;
 
     case "verify":
-      process.exitCode = await runVerify(projectDir, { json: flags.has("--json") });
+      process.exitCode = await runVerify(projectDir, { json: flags.has("--json"), all: flags.has("--all") });
       return;
 
-    case "status": {
-      const s = loadState(projectDir);
-      if (!s) {
-        if (flags.has("--json")) {
-          log(JSON.stringify({ state: "absent" }));
-          return;
+    case "project": {
+      if (args[1] === "list" && args.length === 2) {
+        const projects = registeredProjects();
+        if (flags.has("--json")) log(JSON.stringify(projects, null, 2));
+        else if (!projects.length) log("No registered bridge projects.");
+        else for (const project of projects) log(`${project.id}  ${project.root}`);
+      } else if (args[1] === "adopt" && args.length === 3) {
+        const result = adoptProject(projectDir, args[2]);
+        log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
+      } else throw new Error("Usage: bridge project list [--json] | adopt <id> [--json]");
+      return;
+    }
+
+    case "storage": {
+      if (args[1] === "cleanup-ignore" && args.length === 2) {
+        if ([...flags].some((flag) => !["--apply", "--json"].includes(flag))) throw new Error("Usage: bridge storage cleanup-ignore [--apply] [--json]");
+        const result = cleanupLegacyIgnore(projectDir, { apply: flags.has("--apply") });
+        if (flags.has("--json")) log(JSON.stringify(result, null, 2));
+        else {
+          for (const match of result.matches) log(`Line ${match.line}: ${match.rule}`);
+          if (result.blocked) log(`${BAD} ${result.blocked}`);
+          else log(result.applied ? "Removed the listed legacy ignore rules." : "No files changed. Use --apply to remove listed rules.");
         }
+        process.exitCode = result.blocked ? 1 : 0;
+        return;
+      }
+      if (args[1] !== "plan" || args.length !== 2) throw new Error("Usage: bridge storage plan [--json]");
+      const plan = planLegacyMigration(projectDir);
+      if (flags.has("--json")) log(JSON.stringify(plan, null, 2));
+      else {
+        log(`Source: ${plan.source}`);
+        log(`Target: ${plan.target ?? (plan.createsIdentity ? "assigned under the global store when migration runs" : "no migration needed")}`);
+        log(`Files: ${plan.files.length}, ${plan.bytes} bytes`);
+        if (plan.needed) log(`Backup directory: ${plan.backupRoot}`);
+        if (plan.recovery) log(`Resume verified source cleanup using backup: ${plan.recovery.backup}`);
+        if (plan.removedEntries.length) log(`Files removed after verified backup: ${plan.removedEntries.join(", ")}`);
+        if (plan.retainedEntries.length) log(`Kept in the project: ${plan.retainedEntries.join(", ")}`);
+        for (const candidate of plan.staging.removable) log(`Verified abandoned staging copy: ${candidate}`);
+        for (const candidate of plan.staging.retained) log(`Staging copy retained: ${candidate.path} (${candidate.reason})`);
+        for (const blocker of plan.blockers) log(`${BAD} ${blocker}`);
+        log("Read-only plan; no files were changed.");
+      }
+      process.exitCode = plan.blockers.length ? 1 : 0;
+      return;
+    }
+
+    case "eval": {
+      const { values } = parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+        live: { type: "string" }, scenario: { type: "string" }, json: { type: "boolean" },
+      } });
+      if (values.live !== undefined) {
+        const agent = values.live;
+        if (!agent || agent.startsWith("--")) throw new Error("eval --live requires an agent: codex");
+        const report = await runLiveEvaluation(agent, { scenario: values.scenario ?? "recall" });
+        if (values.json) log(JSON.stringify(report, null, 2));
+        else {
+          log(`${report.passed ? OK : BAD} ${agent}: ${report.recall.satisfied}/${report.recall.total} live ${report.scenario} checks passed.`);
+          log(report.scope);
+        }
+        process.exitCode = report.passed ? 0 : 1;
+        return;
+      }
+      if (values.scenario !== undefined) throw new Error("eval --scenario requires --live codex");
+      const report = runEvaluation();
+      if (flags.has("--json")) log(JSON.stringify(report, null, 2));
+      else {
+        for (const result of report.results) {
+          log(`${result.passed ? OK : BAD} ${result.id} (${result.bytes}/${result.budget} bytes, ${result.kept} kept, ${result.omitted} omitted)`);
+          for (const m of result.metrics) log(`  ${m.passed ? OK : BAD} ${m.name}: ${m.detail}`);
+        }
+        log(`${report.passed ? OK : BAD} ${report.total} deterministic context evaluations ${report.passed ? "passed" : "failed"}.`);
+      }
+      process.exitCode = report.passed ? 0 : 1;
+      return;
+    }
+
+    case "release-check": {
+      const report = releaseChecks(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), { verifyCI: flags.has("--ci") });
+      if (flags.has("--json")) log(JSON.stringify(report, null, 2));
+      else {
+        for (const item of report.checks) log(`${item.passed ? OK : BAD} ${item.name}: ${item.detail}`);
+        log(`${report.passed ? OK : BAD} release checks ${report.passed ? "passed" : "failed"} for ${report.version}.`);
+      }
+      process.exitCode = report.passed ? 0 : 1;
+      return;
+    }
+
+    case "artifact": {
+      const parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, options: {
+        lane: { type: "string" }, apply: { type: "boolean" }, json: { type: "boolean" },
+        "sign-key": { type: "string" }, "verify-key": { type: "string" },
+      } });
+      const [action, file] = parsed.positionals;
+      if (parsed.positionals.length !== 2 || !["export", "import", "cache"].includes(action)) {
+        throw new Error("Usage: bridge artifact export <file> [--sign-key <pem>] | import <file-or-sha256:hash> [--verify-key <pem>] [--apply] | cache <file> [--verify-key <pem>]");
+      }
+      if (action === "export" && (parsed.values.apply || parsed.values["verify-key"]) ||
+          action !== "export" && parsed.values["sign-key"] ||
+          action === "cache" && (parsed.values.apply || parsed.values.lane)) throw new Error("Artifact signing is for export; --apply is for import; cache is independent of lanes.");
+      let result;
+      if (action === "export") result = exportArtifact(projectDir, file, { lane: parsed.values.lane || DEFAULT_LANE, signKey: parsed.values["sign-key"] });
+      else if (action === "import") result = importArtifact(file, { projectDir, lane: parsed.values.lane || DEFAULT_LANE, apply: parsed.values.apply, verifyKey: parsed.values["verify-key"] });
+      else result = cacheArtifact(file, { verifyKey: parsed.values["verify-key"] });
+      log(parsed.values.json ? JSON.stringify(result, null, 2) : `${OK} Artifact ${action} ${result.applied === false ? "verified" : "completed"}${result.reference ? `: ${result.reference}` : result.path ? `: ${result.path}` : "."}`);
+      return;
+    }
+
+    case "search": {
+      const parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, options: {
+        lane: { type: "string" }, agent: { type: "string" }, branch: { type: "string" }, since: { type: "string" }, until: { type: "string" }, json: { type: "boolean" },
+      } });
+      const query = parsed.positionals.join(" ");
+      const results = searchProject(projectDir, query, parsed.values);
+      if (parsed.values.json) log(JSON.stringify(results, null, 2));
+      else if (!results.length) log(`${NONE} No bridge evidence matched ${JSON.stringify(query)}.`);
+      else for (const result of results) {
+        log(`${result.lane} ${result.kind} ${result.file}`);
+        for (const match of result.matches) log(`  ${match.line}: ${match.text}`);
+      }
+      return;
+    }
+
+    case "status": {
+      if (flags.has("--json")) {
+        log(JSON.stringify(projectStatus(projectDir), null, 2));
+        return;
+      }
+      const s = loadState(projectDir, { readOnly: true });
+      if (!s) {
         log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
+        return;
+      }
+      if (s.lanes[s.activeLane]?.worktree) {
+        const report = projectStatus(projectDir);
+        log(`Lane ${s.activeLane}: isolated worktree`);
+        log(`  Workspace: ${s.lanes[s.activeLane].worktree.root}`);
+        log(`  Available: ${report.workspace.available ? "yes" : "no (missing or changed identity)"}`);
+        log(`  Active agent: ${report.activeAgent ?? "none"}`);
+        log(`  Pending: ${report.pending ? JSON.stringify(report.pending) : "none recorded"}`);
         return;
       }
       // What this used to print was true and unreadable. Every agent's progress
@@ -168,26 +357,6 @@ export async function main(argv) {
       // and that was already on disk in the checkpoint filenames, unread.
       const debug = flags.has("--debug");
       const history = switchHistory(projectDir, s?.activeLane);
-      if (flags.has("--json")) {
-        const linked = AGENT_IDS.filter((id) => s.agents?.[id]?.id);
-        const pending = s.pendingHandoff
-          ? { kind: "handoff", target: s.pendingHandoff.target }
-          : s.pendingInjection?.seed
-            ? { kind: "seed" }
-            : s.pendingInjection
-              ? { kind: "injection", agent: s.pendingInjection.agent }
-              : null;
-        log(JSON.stringify({
-          state: "present",
-          project: path.basename(s.project),
-          activeLane: s.activeLane,
-          activeAgent: s.activeAgent,
-          linkedAgents: linked,
-          pending,
-          recentSwitches: history.slice(0, 5).map((h) => ({ at: h.at, source: h.source, target: h.target })),
-        }, null, 2));
-        return;
-      }
       const lastOut = new Map(); // agent -> when it last handed its work onward
       for (const h of history) if (!lastOut.has(h.source)) lastOut.set(h.source, h.at);
 
@@ -276,7 +445,7 @@ export async function main(argv) {
         for (const agentId of armedAgents) {
           const args = savedArgs(config, agentId);
           const loud = args.some(isDangerous);
-          log(`  ${agentId.padEnd(14)} ${args.join(" ")}${loud ? "   (changes what it may do without asking)" : ""}`);
+          log(`  ${agentId.padEnd(14)} ${argumentSummary(args)}${loud ? "   (changes what it may do without asking)" : ""}`);
         }
         log(dim(`  forget them with: bridge <agent> --cb-clear-args`));
       }
@@ -345,7 +514,7 @@ export async function main(argv) {
       let s = null;
       let corrupt = false;
       try {
-        s = loadState(projectDir);
+        s = loadState(projectDir, { readOnly: true });
       } catch {
         corrupt = true;
       }
@@ -355,7 +524,7 @@ export async function main(argv) {
       const wantLane = valueOf(argv, "--lane") || null;
       if (wantLane) {
         if (corrupt) {
-          log(`${BAD} .bridge/state.json could not be read, so a lane cannot be resolved. Run 'bridge doctor'.`);
+          log(`${BAD} Bridge state could not be read, so a lane cannot be resolved. Run 'bridge doctor'.`);
           process.exitCode = 1;
           return;
         }
@@ -417,6 +586,9 @@ export async function main(argv) {
     }
 
     case "clean": {
+      if (flags.has("--staging") && ["--all", "--keep", "--days"].some((flag) => flags.has(flag))) {
+        throw new Error("Use clean --staging [--dry-run] [--lane NAME] separately from checkpoint retention options.");
+      }
       // --lane scopes the prune to one lane; without it, every lane is pruned.
       // Read state through a guard: corrupt or unreadable state must NOT crash here,
       // it must fall through to pruneCheckpoints, whose fail-closed path reports it
@@ -426,7 +598,7 @@ export async function main(argv) {
       if (laneFlag) {
         let known = null;
         try {
-          known = loadState(projectDir);
+          known = loadState(projectDir, { readOnly: true });
         } catch {
           known = null; // corrupt: let pruneCheckpoints fail-close below
         }
@@ -437,6 +609,7 @@ export async function main(argv) {
         }
       }
       const res = pruneCheckpoints(projectDir, {
+        staging: flags.has("--staging"),
         keep: intFlag(argv, "--keep"),
         days: intFlag(argv, "--days"),
         all: flags.has("--all"),
@@ -448,17 +621,20 @@ export async function main(argv) {
         res.skippedNoState ||
         res.skippedEscapingBridge ||
         res.skippedMalformedPending ||
+        res.skippedInvalidPreparation ||
         res.skippedInvalidLane
       ) {
         const why = res.skippedCorruptState
-          ? ".bridge/state.json could not be read"
+          ? "bridge state could not be read"
           : res.skippedEscapingBridge
             ? ".bridge resolves outside the project (symlink escape)"
+            : res.skippedInvalidPreparation
+              ? "a handoff preparation journal could not be identified safely"
             : res.skippedInvalidLane
               ? "state names a lane whose name could not be a real lane directory"
               : res.skippedMalformedPending
                 ? "pendingInjection.deltaFile is malformed or points outside the checkpoint namespace"
-                : "there are checkpoints but no .bridge/state.json";
+                : "there are checkpoints but no bridge state";
         log(
           `${WARN} ${why}, so nothing was pruned. Without readable state a pending delta cannot be told from an orphan, ` +
             `and deleting could take a handoff. Run 'bridge doctor' to sort out the state, then clean.`
@@ -468,6 +644,10 @@ export async function main(argv) {
       }
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
       const scope = laneFlag ? ` in lane ${bold(laneFlag)}` : "";
+      if (flags.has("--staging")) {
+        log(`${OK} ${verb} ${res.deletedStagingFiles ?? 0} abandoned staging files${scope}; ${res.retainedStagingFiles ?? 0} retained (live, uncertain, changed or protected). Checkpoint groups were not pruned.`);
+        return;
+      }
       // There is one schedule now. This used to report two, because the full
       // context files were pruned on their own clock and counting groups alone
       // said "nothing to prune" while dozens of files were going.
@@ -480,6 +660,20 @@ export async function main(argv) {
     }
 
     case "lane": {
+      if (argv.some((arg) => arg === "--worktree" || arg.startsWith("--worktree="))) {
+        const parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true,
+          options: { worktree: { type: "string" }, branch: { type: "string" }, base: { type: "string" }, json: { type: "boolean" } } });
+        const [action, name, ...extra] = parsed.positionals;
+        if (!["new", "attach"].includes(action) || !name || extra.length ||
+            (action === "attach" && (parsed.values.branch || parsed.values.base))) {
+          throw new Error("Usage: bridge lane new <name> --worktree <path> [--branch <branch>] [--base <ref>] | lane attach <name> --worktree <path>");
+        }
+        const result = createWorktreeLane(projectDir, name, parsed.values.worktree, {
+          attach: action === "attach", branch: parsed.values.branch, base: parsed.values.base,
+        });
+        log(parsed.values.json ? JSON.stringify(result, null, 2) : `${OK} Lane ${result.lane}: ${result.path}`);
+        return;
+      }
       process.exitCode = runLane(projectDir, args.slice(1), flags, valueOf(argv, "--seed"));
       return;
     }
@@ -503,11 +697,11 @@ export async function main(argv) {
       // makes 'opus' look like a command. Say so instead of just "unknown".
       if (flags.size) {
         log(
-          `Unknown command '${cmd}'. If it was a value for an agent flag, name the agent first:\n` +
-            `  bridge claude ${argv.join(" ")}\n\n${HELP}`
+          `Unknown command (value hidden). If it was a value for an agent flag, name the agent first:\n` +
+            `  bridge claude <agent arguments>\n\n${HELP}`
         );
       } else {
-        log(`Unknown command '${cmd}'.\n\n${HELP}`);
+        log(`Unknown command (value hidden).\n\n${HELP}`);
       }
       process.exitCode = 1;
   }
@@ -541,31 +735,6 @@ function intFlag(argv, name) {
  * question people actually ask — what happened, in what order — sat unread in a
  * directory listing.
  */
-function switchHistory(projectDir, lane) {
-  // Read through the containment gate: a symlinked lane checkpoints directory must
-  // not let status enumerate an external directory and present its names as this
-  // project's own switch history.
-  const dir = readableCheckpointsDir(projectDir, lane);
-  if (!dir) return [];
-  let names;
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
-  const seen = new Map();
-  for (const name of names) {
-    const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-([a-z]+)-to-([a-z]+)/);
-    if (!m) continue;
-    const [, day, hh, mm, ss, ms, source, target] = m;
-    const at = new Date(`${day}T${hh}:${mm}:${ss}.${ms}Z`);
-    if (Number.isNaN(at.getTime())) continue;
-    // A handoff writes several files under one stem; count the switch once.
-    seen.set(`${at.toISOString()}-${source}-${target}`, { at, source, target });
-  }
-  return [...seen.values()].sort((a, b) => b.at - a.at);
-}
-
 /** "2m ago", "20h ago", "3d ago" — a duration people read without doing arithmetic. */
 function ago(date, now = Date.now()) {
   const s = Math.max(0, Math.round((now - date.getTime()) / 1000));
@@ -615,7 +784,7 @@ function runLane(projectDir, args, flags, seedSource) {
   const name = args[1];
 
   if (sub === undefined) {
-    const s = loadState(projectDir);
+    const s = loadState(projectDir, { readOnly: true });
     if (!s) {
       log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
       return 0;
@@ -632,6 +801,7 @@ function runLane(projectDir, args, flags, seedSource) {
         : "no agents linked";
       const title = l.title ? dim(` (${l.title})`) : "";
       log(`  ${marker}${l.name.padEnd(width)}${title}  ${dim(when)}  ${dim(who)}`);
+      if (s.lanes[l.name]?.worktree) log(`      Worktree: ${s.lanes[l.name].worktree.root}`);
     }
     if (summaries.length === 1) {
       log("");
@@ -666,6 +836,10 @@ function runLane(projectDir, args, flags, seedSource) {
       const s = loadState(projectDir);
       if (!s?.lanes?.[seedSource]) {
         log(`${BAD} No lane named '${seedSource}' to seed from. 'bridge lane' lists them.`);
+        return 1;
+      }
+      if (s.lanes[seedSource].worktree) {
+        log(`${BAD} Seed from an isolated lane inside its worktree directory, where its context is stored.`);
         return 1;
       }
       try {
@@ -731,7 +905,7 @@ function runLane(projectDir, args, flags, seedSource) {
       log("Usage: bridge lane rm <name> [--dry-run] [--yes]");
       return 1;
     }
-    const s = loadState(projectDir);
+    const s = loadState(projectDir, { readOnly: true });
     if (!s) {
       log(`${NONE} No bridge state in this project yet.`);
       return 1;
@@ -776,7 +950,7 @@ function runLane(projectDir, args, flags, seedSource) {
     }
     // Delete the lane's own directory, but only when it truly resolves inside this
     // project's .bridge — never follow a symlink out on the way to an rm -rf.
-    if (isInsideDir(bridgeDir(projectDir), projectDir) && isInsideDir(laneDir, bridgeDir(projectDir))) {
+    if (isInsideDir(laneDir, bridgeDir(projectDir))) {
       try {
         fs.rmSync(laneDir, { recursive: true, force: true });
       } catch {
@@ -993,7 +1167,7 @@ function rollbackLane(projectDir, name, fallback) {
     // Already consistent, or the lane was never recorded; the directory sweep runs regardless.
   }
   const laneDir = path.join(bridgeDir(projectDir), "lanes", name);
-  if (isInsideDir(bridgeDir(projectDir), projectDir) && isInsideDir(laneDir, bridgeDir(projectDir))) {
+  if (isInsideDir(laneDir, bridgeDir(projectDir))) {
     try {
       fs.rmSync(laneDir, { recursive: true, force: true });
     } catch {}

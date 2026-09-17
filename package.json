@@ -3,6 +3,11 @@
   "version": "0.12.4",
   "description": "Seamless bidirectional context bridge between coding agents. Switch agents. Not context.",
   "type": "module",
+  "exports": {
+    "./adapter-sdk": "./src/adapter-sdk.mjs",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "bridge": "bin/bridge.mjs"
   },
@@ -18,9 +23,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
+    "test:package": "node test/integration/package-install.mjs",
     "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;",
-    "prepublishOnly": "npm test && npm run check"
+    "eval": "node bin/bridge.mjs eval --json",
+    "prepublishOnly": "npm test && npm run check && npm run eval && node bin/bridge.mjs release-check --ci --json && node bin/bridge.mjs verify --all --json && node bin/bridge.mjs eval --live codex --json"
   },
   "engines": {
     "node": ">=18.18"
@@ -50,5 +57,14 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.17",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "koffi": "3.3.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "yaml": "2.9.1"
   }
 }

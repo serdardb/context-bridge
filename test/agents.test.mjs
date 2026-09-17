@@ -346,6 +346,15 @@ test("doctor reports every agent and every directed route from the registry", as
   }
 });
 
+test("Codex smoke supports non-Git projects without granting write or approval bypass", () => {
+  const command = adapterFor("codex").smokeCommand();
+  assert.equal(command.cmd, "codex");
+  assert.equal(command.args[0], "exec");
+  assert.ok(command.args.includes("--skip-git-repo-check"));
+  assert.equal(command.args[command.args.indexOf("--sandbox") + 1], "read-only");
+  assert.ok(!command.args.some((arg) => /dangerously|approve-for-me/.test(arg)));
+});
+
 test("verify requires a real smoke result and every installed route", async () => {
   const { verifyReport } = await import("../src/doctor.mjs");
   const installed = ["claude", "codex"];

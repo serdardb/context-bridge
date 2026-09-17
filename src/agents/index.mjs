@@ -32,6 +32,9 @@
 //   conflictFlags                 -> flags that break the bridge's session link
 //   health()                      -> {version, auth, extras, ready, installHint}
 //   smokeCommand()                -> {cmd, args}   (harmless headless probe)
+//   evaluationCommand(prompt, responseFile) -> {cmd, args} (optional; isolated
+//                  fresh-session recall, final response written to responseFile)
+//   evaluationUsage(stdout)       -> vendor whole-turn token totals | null
 //   detectHost(env)               -> id | null   (see the warning below)
 //   capabilities                  -> what this agent's own record can ever yield
 //
@@ -106,8 +109,12 @@ import * as codex from "./codex.mjs";
 import * as grok from "./grok.mjs";
 import * as antigravity from "./antigravity.mjs";
 import * as opencode from "./opencode.mjs";
+import { createAdapterRegistry } from "../adapter-contract.mjs";
+import { loadAdapterPlugins } from "../adapter-sdk.mjs";
 
-export const ADAPTERS = { claude, codex, grok, antigravity, opencode };
+const builtins = [claude, codex, grok, antigravity, opencode];
+const plugins = await loadAdapterPlugins(process.env.CONTEXT_BRIDGE_ADAPTERS, builtins.map((adapter) => adapter.id));
+export const ADAPTERS = createAdapterRegistry([...builtins, ...plugins]);
 
 export function adapterFor(id) {
   return ADAPTERS[id] ?? null;

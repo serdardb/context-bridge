@@ -1,8 +1,7 @@
 // `bridge internal-hook <event>` — invoked by the Claude Code plugin hooks.
 // Reads the hook input JSON from stdin. Silently no-ops for projects that
-// have no .bridge/ state (the plugin may be installed user-wide).
+// have no bridge state (the plugin may be installed user-wide).
 import fs from "node:fs";
-import path from "node:path";
 import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeCheckpointPath, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { fileExists, nowIso } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
@@ -130,11 +129,9 @@ export async function runHook(event, agent = "claude") {
     // re-adopt of that id sets the slot deliberately, which clears the tombstone.
     const slotNow = st.agents?.[agent];
     if (sessionId && (slotNow?.rejectedSessions?.includes(sessionId) || slotNow?.unlinked === sessionId)) return;
-    // Codex hooks record their own agent. Delta delivery still travels by prompt
-    // for it: the hook can inject context (proven), but hooks do not run until the
-    // user trusts them once and that trust cannot be read back, so binding
-    // delivery to something unverifiable would risk losing context silently.
-    // Recording that the hook ran is exactly what makes the switch provable later.
+    // Codex hooks record their own agent and stamp actual execution. Handoffs
+    // may choose the hook road after observing that stamp; delivery below also
+    // checks the route and the recipient session before consuming anything.
     if (agent === "codex") code = codexHook(projectDir, st, event, input);
     else if (event === "session-start") code = hookSessionStart(projectDir, st, input);
     else if (event === "stop") code = hookStop(projectDir, st, input);
@@ -239,7 +236,7 @@ function hookSessionStart(projectDir, s, input) {
           hookEventName: "SessionStart",
           additionalContext:
             "[Bridge] A Codex→Claude context delta was pending but its file could not be read. " +
-            `Context may be incomplete — ask the user what happened in Codex, or check ${path.relative(projectDir, checkpointsDir(projectDir, s.activeLane)) || ".bridge/checkpoints"}/.`,
+            `Context may be incomplete — ask the user what happened in Codex, or inspect the checkpoints at:\n${checkpointsDir(projectDir, s.activeLane)}`,
         },
       })
     );
@@ -345,7 +342,10 @@ function codexHook(projectDir, s, event, input) {
   // and taking it here as well would hand the agent the same text twice.
   let delivered = null;
   const inj = s.pendingInjection;
-  if (event === "session-start" && inj?.agent === "codex" && inj.via === "hook") {
+  // Hooks can also fire in unrelated Codex sessions in the same directory.
+  // A route names an agent; the pending id and linked slot name its recipient.
+  const addressedHere = id && slot.id === id && (inj?.id == null || inj.id === id);
+  if (event === "session-start" && inj?.agent === "codex" && inj.via === "hook" && addressedHere) {
     delivered = consumeForHook(projectDir, s, inj);
     if (delivered) dirty = true;
   }

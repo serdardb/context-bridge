@@ -387,7 +387,7 @@ test("no source file spells a checkpoint suffix out by hand", async () => {
   const suffixes = [...Object.values(CHECKPOINT_KINDS), CONSUMED_SUFFIX];
   const offences = [];
   for (const file of files) {
-    if (path.basename(file) === "state.mjs") continue; // the registry itself
+    if (path.basename(file) === "checkpoint-kinds.mjs") continue; // the registry itself
     const lines = fs.readFileSync(file, "utf8").split("\n");
     lines.forEach((line, i) => {
       // Comments explain these suffixes on purpose; only code may not repeat them.

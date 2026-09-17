@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { splitLauncherArgs, filterAgentArgs } from "../src/agentargs.mjs";
 import { buildCommand } from "../src/launcher.mjs";
-import { defaultState, saveState, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, checkpointsDir } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -128,7 +128,7 @@ test("buildCommand shields the codex delta behind -- so variadic flags cannot sw
 test("--help and --version reach the agent once an agent is named", () => {
   for (const flag of ["--help", "--version"]) {
     const res = runBridge(["claude", flag]);
-    assert.match(res.stdout, new RegExp(`Forwarding to claude: ${flag}`), `${flag} must not be intercepted`);
+    assert.deepEqual(res.agentArgs, [flag], `${flag} must not be intercepted`);
     assert.doesNotMatch(res.stdout, /Switch agents\. Not context\.\n\nUsage:/, "bridge help must not appear");
   }
 });
@@ -140,7 +140,8 @@ test("--help and --version still belong to the bridge with no agent named", () =
 
 test("a valueless flag typed before the agent name is still forwarded", () => {
   const res = runBridge(["--dangerously-skip-permissions", "claude"]);
-  assert.match(res.stdout, /Forwarding to claude: --dangerously-skip-permissions/);
+  assert.deepEqual(res.agentArgs, ["--dangerously-skip-permissions"]);
+  assert.match(res.stdout, /change approval or sandbox permissions/);
 });
 
 test("a value-taking flag before the agent name errors instead of losing the value", () => {
@@ -155,16 +156,32 @@ test("a stray flag value without an agent name explains itself", () => {
   const res = runBridge(["--model", "opus"]);
   assert.notEqual(res.status, 0);
   assert.match(res.stdout, /name the agent first/);
-  assert.match(res.stdout, /bridge claude --model opus/);
+  assert.match(res.stdout, /bridge claude <agent arguments>/);
+  assert.doesNotMatch(res.stdout + res.stderr, /opus/);
 });
 
-function runBridge(args) {
-  const project = makeProject();
-  return spawnSync(process.execPath, [path.join(ROOT, "bin", "bridge.mjs"), ...args], {
+function runBridge(args, project = makeProject()) {
+  if (args[0] === "codex" && !loadState(project)) {
+    const state = defaultState(project);
+    state.agents.codex.id = "fixture-thread";
+    saveState(project, state);
+  }
+  const bin = path.join(project, "fixture-bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const capture = path.join(project, "argv.json");
+  fs.rmSync(capture, { force: true });
+  for (const agent of ["claude", "codex"]) {
+    fs.writeFileSync(path.join(bin, agent), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+  }
+  const res = spawnSync(process.execPath, [path.join(ROOT, "bin", "bridge.mjs"), ...args], {
     cwd: project,
     encoding: "utf8",
-    env: { ...process.env, PATH: "/nonexistent" }, // agents unreachable: we only assert on bridge's own output
+    timeout: 15000,
+    env: { ...process.env, PATH: bin },
   });
+  assert.ifError(res.error);
+  res.agentArgs = fs.existsSync(capture) ? JSON.parse(fs.readFileSync(capture, "utf8")) : null;
+  return res;
 }
 
 function makeProject() {
@@ -176,17 +193,28 @@ function makeProject() {
 // so the very launch that saved it passed the flag twice.
 test("the launch that saves a flag does not also pass it twice", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-dup-"));
-  const res = spawnSync(
-    process.execPath,
-    [path.join(ROOT, "bin", "bridge.mjs"), "codex", "--dangerously-bypass-approvals-and-sandbox", "--cb-save-args"],
-    // PATH is emptied so the agent itself never starts; the launcher still prints
-    // what it would have forwarded, which is the whole point of the check.
-    { cwd: project, encoding: "utf8", env: { ...process.env, PATH: "/nonexistent" } }
-  );
-  const forwarding = res.stdout.split("\n").find((line) => line.includes("Forwarding to codex"));
-  assert.ok(forwarding, `expected a forwarding line, got:\n${res.stdout}${res.stderr}`);
-  const count = forwarding.split("--dangerously-bypass-approvals-and-sandbox").length - 1;
-  assert.equal(count, 1, `the flag must appear once, got: ${forwarding}`);
+  const res = runBridge(["codex", "--dangerously-bypass-approvals-and-sandbox", "--cb-save-args"], project);
+  assert.deepEqual(res.agentArgs, ["resume", "fixture-thread", "--dangerously-bypass-approvals-and-sandbox"], res.stdout + res.stderr);
+});
+
+test("bridge output hides arbitrary argument values while the child receives them unchanged", () => {
+  const project = makeProject();
+  const secrets = ["PRIVATE_SEPARATE", "PRIVATE_INLINE", "PRIVATE_URL", "PRIVATE_POSITIONAL", "PRIVATE_PERMISSION"];
+  const args = ["--api-key", secrets[0], `--custom=${secrets[1]}`, `https://user:${secrets[2]}@example.invalid/`, secrets[3], `--sandbox=${secrets[4]}`];
+  const launch = runBridge(["codex", ...args, "--cb-save-args"], project);
+  assert.deepEqual(launch.agentArgs, ["resume", "fixture-thread", ...args], launch.stdout + launch.stderr);
+  for (const secret of secrets) assert.ok(!(launch.stdout + launch.stderr).includes(secret), "private argument leaked into bridge output");
+  const status = runBridge(["status"], project);
+  assert.match(status.stdout, /6 arguments \(values hidden\)/);
+  const clear = runBridge(["codex", "--cb-clear-args"], project);
+  assert.deepEqual(clear.agentArgs, ["resume", "fixture-thread"]);
+  for (const result of [launch, status, clear]) {
+    for (const secret of secrets) assert.ok(!(result.stdout + result.stderr).includes(secret));
+  }
+  for (const tail of [["--cd=PRIVATE_CONFLICT"], ["--cd=PRIVATE_CONFLICT", "--cb-save-args"], ["--cb-PRIVATE_CONFLICT"]]) {
+    const result = runBridge(["codex", ...tail]);
+    assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE_CONFLICT/);
+  }
 });
 
 // Enforcement reads each adapter's own conflictFlags, not a second table that can

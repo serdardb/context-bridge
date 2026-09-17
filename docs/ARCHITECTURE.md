@@ -37,8 +37,8 @@ shell
         ~/.gemini/antigravity-cli/brain/…   ~/.local/share/opencode/opencode.db
               native conversation              native session, in a database
 
-        .bridge/state.json   ← what links them, references only
-        .bridge/config.json  ← per-agent launch flags for this project
+        machine-local state   ← what links them, references only
+        machine-local config  ← per-agent launch flags for this project
 ```
 
 | Component | Role |
@@ -48,7 +48,9 @@ shell
 | Claude plugin (`plugin/`) | `/bridge` skill and the `SessionStart` / `Stop` / `UserPromptSubmit` hooks |
 | Codex hooks (`~/.codex/hooks.json`) | the same three events, installed by `doctor --fix`, merged into whatever is already there |
 | Shared skill (`codex/SKILL.md`) | `$bridge <agent>` for Codex, Grok, Antigravity and OpenCode |
-| `.bridge/state.json` | project-local links, watermarks, pending markers. References, never content |
+| `machine-local state.json` | links, watermarks and pending markers. References, never content; Git is optional |
+| `machine-local checkpoints` | Deltas, full context and audit manifests retained by handoff group |
+| `.cbctx` artifact | Explicit redacted context package with schema and integrity hash; never native session state |
 
 ## The adapter contract
 
@@ -214,9 +216,43 @@ with a delta.
 
 ## Project state
 
-`.bridge/state.json`, versioned and written atomically, migrated forward with a
+The machine-local `state.json`, versioned and written atomically, is migrated with a
 `.v<n>.backup` kept and a refusal to read anything newer than this build
-understands. References only:
+understands. Schema-changing loads and direct state writes require a complete
+exclusive backup before replacing old state. An existing backup must be a
+regular non-symlink file matching the original bytes; a conflict or I/O failure
+aborts the write. Migration write failures are reported, not silently treated
+as success. Explicit read-only loads can still inspect the upgraded view in
+memory without creating a backup or writing state.
+Schema-changing loads acquire the same writer lock as lane/project mutations
+and re-read the file after acquiring it. A current-schema or explicitly
+read-only load does not acquire that write lock.
+The shared JSON writer creates an exclusive, randomly named private
+temporary file, writes and fsyncs its content, closes it, then renames it over
+the destination. POSIX builds then fsync the containing directory. Exclusive
+evidence publication similarly syncs its directory after linking the complete
+file. A write/content-flush failure leaves the previous destination intact
+and cleans only the temporary file owned by that invocation. A subsequent
+directory-sync failure reports `BRIDGE_PUBLICATION_UNCERTAIN` with
+`published: true`; it does not remove the visible destination. This is not a
+complete power-loss durability guarantee: newly created ancestor directories,
+multi-file transaction ordering and cleanup require additional guarantees.
+Windows retains content flush plus atomic publication without the POSIX directory
+sync guarantee. Artifact import handles a post-publication exception by re-reading
+the state receipt under the project lock. A visible commit keeps its seed and
+checkpoint evidence; only uncommitted files matching the preparation journal
+can be removed. Failed verification retains evidence rather than guessing a
+rollback. The original error is still reported, and retry can recognize the
+existing receipt without applying the artifact again.
+
+Saved launch arguments in `config.json` use the same atomic writer and project
+lock as state. Per-agent save/clear operations reload config inside the lock so
+concurrent changes to different agents are preserved. Only a missing file means
+empty settings; unreadable or malformed config fails instead of silently
+discarding saved arguments. The exported whole-config save operation replaces
+the supplied snapshot, while per-agent operations merge against current data.
+
+State contains references only:
 
 ```json
 {
@@ -256,10 +292,30 @@ recreating the lane empty). `mutateProject` writes the whole file, for the
 lane create / switch / remove commands that are about the set of lanes rather
 than the work inside one.
 
+State, registry and migration writers first acquire a kernel guard through
+`locking.mjs`. Its regular, non-symlink guard file is permanent: deleting it
+would let different processes lock different inodes under the same pathname.
+The kernel releases ownership on process exit, including forced termination.
+The existing PID marker protocol runs entirely inside this guard to serialize
+stale-owner recovery among updated processes. Do not run old writers during
+upgrade: old binaries do not participate in the new kernel protocol.
+
+Koffi provides the native binding, loaded only when a mutation needs a lock.
+POSIX uses `flock`; Windows uses `CreateFileW` and `LockFileEx` (the Windows
+branch still requires native platform acceptance before release). A missing
+platform binary refuses mutation rather than falling back to unsafe PID-only
+recovery. Local-filesystem verification does not establish network-filesystem
+locking guarantees. Installations must retain the platform optional dependency.
+
 Transcripts are deliberately not duplicated here. The native files already are
 the transcripts; copying them would double the on-disk footprint of sensitive
 conversation, and references plus watermarks are enough to compute every delta.
-`.bridge/` is added to the project's `.gitignore` automatically.
+Runtime state is stored outside the project tree, so no `.gitignore` change is needed and Git is not a prerequisite.
+Optional Git identity and audit metadata probes have a two-second per-command
+timeout and are terminated if stuck. Failure yields absent Git metadata, not
+failure to create a local project UUID. This is a responsiveness policy, not a
+guarantee that every command using multiple probes finishes within two seconds.
+Bridge identity creation never writes a marker into Git configuration.
 
 `launchers` records each live launcher by pid and the lane it opened. It exists
 because a launcher started before an upgrade cannot read a newer state file — it
@@ -377,7 +433,7 @@ An unreadable session takes its routes off green and the exit code with it.
 Arming an agent is a moment, not a preference: you work with approvals on, and
 then decide, now, that this agent should stop asking. So flags are typed on the
 launcher command line and apply to that launch, `--cb-save-args` promotes them
-into `.bridge/config.json`, and `--cb-clear-args` takes it back. Nobody edits
+into the machine-local project store, and `--cb-clear-args` takes it back. Nobody edits
 the file by hand.
 
 Saved defaults come first and typed flags come last, which relies on a CLI
@@ -427,7 +483,7 @@ is not readable and claiming otherwise would be a green tick over an unknown.
 - Verified on macOS. The suite runs on Linux in CI, but the vendor directory
   layouts there are unverified. Windows is unsupported.
 - One linked session per agent per lane. `bridge unlink <agent>` forgets just that
-  one; deleting `.bridge/` still relinks everything at once and takes the saved
+  one; deleting the machine-local project store still relinks everything at once and takes the saved
   launch flags with it, but is no longer needed to relink a single agent.
 - Grok cannot receive a delta through a hook, and that is a limit in Grok.
 - Codex stores sessions by date rather than by project, so its discovery check

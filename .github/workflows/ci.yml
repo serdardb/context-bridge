@@ -13,19 +13,34 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: [18, 20, 22]
+        node: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-      # Keep the lockfile and package metadata exercised even though runtime
-      # dependencies are currently empty.
       - name: Install from lockfile
-        run: npm ci --ignore-scripts
+        run: npm ci --ignore-scripts --engine-strict
       - name: Syntax check
         run: npm run check
       - name: Tests
         run: npm test
       - name: Package hygiene (tarball allow-list)
         run: npm pack --dry-run
+
+  installed-package:
+    name: installed package node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["18.18.0", "24"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      # Intentionally no npm ci: acceptance must not borrow checkout dependencies.
+      - name: Clean tarball installation and runtime acceptance
+        run: npm run test:package

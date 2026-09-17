@@ -4,7 +4,25 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureState, loadState, STATE_VERSION, safeCheckpointPath } from "../src/state.mjs";
-import { writeJsonAtomic } from "../src/util.mjs";
+import { writeJsonAtomic, writeFileExclusive, processAlive } from "../src/util.mjs";
+
+test("process ownership requires ESRCH before treating a valid owner as dead", () => {
+  const kill = process.kill;
+  try {
+    process.kill = () => { throw new Error("invalid pids must not reach the OS"); };
+    for (const pid of [0, -1, 1.5, NaN, undefined, "123"]) assert.equal(processAlive(pid), false);
+    for (const code of ["EPERM", "EACCES", "EIO", "EINVAL", undefined, "ESRCH"]) {
+      process.kill = (pid, signal) => {
+        assert.equal(pid, 123);
+        assert.equal(signal, 0);
+        throw Object.assign(new Error("probe failed"), { code });
+      };
+      assert.equal(processAlive(123), code !== "ESRCH");
+    }
+    process.kill = kill;
+    assert.equal(processAlive(process.pid), true);
+  } finally { process.kill = kill; }
+});
 
 test("ensureState creates bridge layout and appends .bridge/ to gitignore once", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-state-"));
@@ -37,6 +55,71 @@ test("an atomic write removes its temporary file when the destination cannot be 
   );
 
   fs.rmSync(project, { recursive: true });
+});
+
+for (const failure of ["none", "file", ...(process.platform === "win32" ? [] : ["directory"])]) test(`atomic JSON publication orders flushes (failure: ${failure})`, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-json-flush-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "state.json"), original = '{"previous":true}\n';
+  fs.writeFileSync(file, original);
+  const originalSync = fs.fsyncSync, originalRename = fs.renameSync;
+  let flushed = false, renamed = false, directorySynced = false;
+  const descriptors = new Set();
+  t.mock.method(fs, "fsyncSync", (fd) => {
+    descriptors.add(fd);
+    if (fs.fstatSync(fd).isDirectory()) {
+      assert.equal(renamed, true, "sync directory after publication");
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { next: true });
+      directorySynced = true;
+      if (failure === "directory") throw Object.assign(new Error("injected directory failure"), { code: "EIO" });
+      return originalSync(fd);
+    }
+    assert.equal(fs.readFileSync(file, "utf8"), original, "old state survives until flush succeeds");
+    const temporary = fs.readdirSync(dir).find((name) => name.startsWith("state.json.tmp-"));
+    assert.ok(temporary);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, temporary), "utf8")), { next: true });
+    if (process.platform !== "win32") assert.equal(fs.fstatSync(fd).mode & 0o777, 0o600);
+    if (failure === "file") throw Object.assign(new Error("injected flush failure"), { code: "EIO" });
+    originalSync(fd);
+    flushed = true;
+  });
+  t.mock.method(fs, "renameSync", (from, to) => {
+    assert.equal(flushed, true, "a JSON file must be flushed before publication");
+    renamed = true;
+    return originalRename(from, to);
+  });
+  if (failure === "file") {
+    assert.throws(() => writeJsonAtomic(file, { next: true }), /injected flush failure/);
+    assert.equal(fs.readFileSync(file, "utf8"), original);
+    assert.equal(renamed, false);
+  } else {
+    if (failure === "directory") {
+      assert.throws(() => writeJsonAtomic(file, { next: true }), { code: "BRIDGE_PUBLICATION_UNCERTAIN", published: true });
+    } else writeJsonAtomic(file, { next: true });
+    assert.equal(renamed, true);
+    assert.equal(directorySynced, process.platform !== "win32");
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { next: true });
+  }
+  for (const fd of descriptors) assert.throws(() => fs.fstatSync(fd), { code: "EBADF" }, "flush errors must close descriptors too");
+  assert.deepEqual(fs.readdirSync(dir), ["state.json"]);
+});
+
+test("exclusive publication retains linked bytes if directory sync fails", { skip: process.platform === "win32" }, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-link-flush-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "evidence.md"), originalSync = fs.fsyncSync;
+  t.mock.method(fs, "fsyncSync", (fd) => {
+    if (fs.fstatSync(fd).isDirectory()) {
+      assert.equal(fs.readFileSync(file, "utf8"), "complete evidence");
+      throw Object.assign(new Error("injected directory failure"), { code: "EIO" });
+    }
+    return originalSync(fd);
+  });
+  assert.throws(() => writeFileExclusive(file, "complete evidence"), { code: "BRIDGE_PUBLICATION_UNCERTAIN", published: true });
+  assert.equal(fs.readFileSync(file, "utf8"), "complete evidence");
+  assert.deepEqual(fs.readdirSync(dir), ["evidence.md"]);
+  assert.throws(() => writeFileExclusive(file, "replacement"), { code: "EEXIST" });
+  assert.equal(fs.readFileSync(file, "utf8"), "complete evidence");
 });
 
 // Lanes. The migration that folds a single-line project into its first lane is
@@ -186,16 +269,18 @@ test("a migration write failure preserves the old state for every legacy version
     });
     fs.writeFileSync(stateFile, original);
 
-    assert.doesNotThrow(
+    assert.throws(
       () => loadState(project, { write: () => { throw new Error("simulated migration disk failure"); } }),
-      `a failed migration write must not make v${version} unreadable in memory`
+      /simulated migration disk failure/,
+      `a failed migration write must not report v${version} upgraded successfully`
     );
+    assert.equal(loadState(project, { readOnly: true }).version, STATE_VERSION, "read-only diagnosis remains available");
     assert.equal(fs.readFileSync(stateFile, "utf8"), original, `v${version} source must remain intact after a failed write`);
     assert.ok(fs.existsSync(`${stateFile}.v${version}.backup`), `v${version} backup must exist before the attempted write`);
     assert.deepEqual(
       fs.readdirSync(bridge).sort(),
-      ["state.json", `state.json.v${version}.backup`].sort(),
-      `v${version} migration failure must leave no partial state artifact`
+      ["state.json", "state.json.lock.guard", `state.json.v${version}.backup`].sort(),
+      `v${version} migration failure must retain only state, backup and the stable guard`
     );
   }
 });

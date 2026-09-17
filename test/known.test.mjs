@@ -3,15 +3,324 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { handoff } from "../src/handoff.mjs";
 import { appendFinalWords } from "../src/launcher.mjs";
-import { defaultState, saveState, loadState, knownMark, commitKnown } from "../src/state.mjs";
+import { recoverPreparations } from "../src/preparation.mjs";
+import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject } from "../src/state.mjs";
 
 const BRIDGE_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
 const GROK_ID = "019f8000-aaaa-7bbb-8ccc-ddddeeee0001";
+
+test("real clean --all cannot delete a handoff paused before its state commit", async () => {
+  const { project } = fixture();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-during-handoff-"));
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+  process.env.CONTEXT_BRIDGE_HOME = home;
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  let child, done;
+  try {
+    ensureState(project);
+    const before = fs.readFileSync(statePath(project));
+    const release = path.join(home, "resume-writer");
+    child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import { handoff } from ${JSON.stringify(new URL("../src/handoff.mjs", import.meta.url).href)};
+      const link = fs.linkSync;
+      fs.linkSync = (temp, file) => {
+        link(temp, file);
+        if (file.endsWith('-full.md')) {
+          process.send('prepared');
+          const deadline = Date.now() + 30000;
+          while (!fs.existsSync(${JSON.stringify(release)})) {
+            if (Date.now() > deadline) throw new Error('test writer release timed out');
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+          }
+        }
+      };
+      handoff(${JSON.stringify(project)}, 'codex', {from: 'grok', summary: 'Complete live preparation', checkTarget: () => {}});
+      process.disconnect();
+    `], { env: { ...process.env, CONTEXT_BRIDGE_STORAGE: "" }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    let stderr = "";
+    child.stderr.on("data", (data) => { stderr += data; });
+    done = new Promise((resolve) => child.once("close", (code) => resolve(code)));
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("writer did not reach preparation")), 15000);
+      child.once("message", () => { clearTimeout(timer); resolve(); });
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("exit", () => { clearTimeout(timer); reject(new Error(stderr || "writer exited before preparation")); });
+    });
+    const dir = path.join(bridgeDir(project), "checkpoints");
+    const prepared = new Map(fs.readdirSync(dir).map((name) => [name, fs.readFileSync(path.join(dir, name))]));
+    const clean = spawnSync(process.execPath, [BRIDGE_BIN, "clean", "--all"], {
+      cwd: project, encoding: "utf8", env: { ...process.env, CONTEXT_BRIDGE_STORAGE: "", PATH: "" },
+    });
+    assert.equal(clean.status, 0, clean.stderr);
+    assert.deepEqual(fs.readFileSync(statePath(project)), before);
+    for (const [name, content] of prepared) assert.deepEqual(fs.readFileSync(path.join(dir, name)), content);
+    fs.writeFileSync(release, "continue");
+    assert.equal(await done, 0, stderr);
+    const files = fs.readdirSync(dir);
+    assert.equal(files.length, 3);
+    assert.match(fs.readFileSync(path.join(dir, files.find((n) => n.endsWith("-full.md"))), "utf8"), /Complete live preparation/);
+    assert.equal(loadState(project).pendingInjection.agent, "codex");
+  } finally {
+    if (child && child.exitCode === null) child.kill("SIGKILL");
+    if (done) await done;
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("real handoff process exits recover unchanged evidence and preserve committed or modified groups", () => {
+  for (const stage of ["audit", "full", "delta", "state", "modified", "retry"]) {
+    const { project } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-handoff-exit-"));
+    const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    delete process.env.CONTEXT_BRIDGE_STORAGE;
+    try {
+      ensureState(project);
+      handoff(project, "codex", { from: "grok", summary: "Previously waiting handoff", checkTarget: () => {} });
+      const stateFile = statePath(project);
+      const before = fs.readFileSync(stateFile);
+      const dir = path.join(bridgeDir(project), "checkpoints");
+      const previous = new Map(fs.readdirSync(dir).map((name) => [name, fs.readFileSync(path.join(dir, name))]));
+      const suffix = stage === "audit" ? "-audit.json" : ["full", "modified", "retry"].includes(stage) ? "-full.md" : "-grok-to-codex.md";
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import fs from 'node:fs';
+        import { handoff } from ${JSON.stringify(new URL("../src/handoff.mjs", import.meta.url).href)};
+        const link = fs.linkSync, rename = fs.renameSync;
+        fs.linkSync = (temp, file) => {
+          link(temp, file);
+          if (${JSON.stringify(stage)} !== 'state' && file.endsWith(${JSON.stringify(suffix)})) {
+            fs.unlinkSync(temp); process.exit(79);
+          }
+        };
+        fs.renameSync = (from, to) => {
+          rename(from, to);
+          if (${JSON.stringify(stage)} === 'state' && to === ${JSON.stringify(stateFile)}) process.exit(79);
+        };
+        handoff(${JSON.stringify(project)}, 'codex', {from: 'grok', summary: 'Interrupted replacement', checkTarget: () => {}});
+      `], { encoding: "utf8", env: { ...process.env, CONTEXT_BRIDGE_STORAGE: "" } });
+      assert.equal(child.status, 79, child.stderr);
+      const journals = fs.readdirSync(dir).filter((name) => name.startsWith(".handoff-"));
+      assert.equal(journals.length, 1);
+      const afterExit = fs.readFileSync(stateFile);
+      if (stage !== "state") assert.deepEqual(afterExit, before);
+      if (stage === "retry") {
+        handoff(project, "codex", { from: "grok", summary: "Successful retry", checkTarget: () => {} });
+        const remaining = fs.readdirSync(dir);
+        assert.equal(remaining.length, 3, "real handoff must recover the abandoned preparation before replacing pending work");
+        assert.equal(remaining.some((name) => name.startsWith(".handoff-")), false);
+        const delta = path.join(dir, path.basename(loadState(project).pendingInjection.deltaFile));
+        assert.match(fs.readFileSync(delta, "utf8"), /Successful retry/);
+        continue;
+      }
+      if (stage === "modified") {
+        const file = fs.readdirSync(dir).find((name) => name.endsWith("-full.md") && !previous.has(name));
+        fs.appendFileSync(path.join(dir, file), "\nuser modification");
+        assert.throws(() => recoverPreparations(project, "main"), /evidence changed/);
+        assert.equal(fs.existsSync(path.join(dir, journals[0])), true);
+        assert.match(fs.readFileSync(path.join(dir, file), "utf8"), /user modification$/);
+      } else {
+        recoverPreparations(project, "main");
+        assert.equal(fs.existsSync(path.join(dir, journals[0])), false);
+        assert.equal(fs.readdirSync(dir).length, stage === "state" ? 6 : 3);
+        if (stage === "state") {
+          const pending = loadState(project).pendingInjection;
+          assert.ok(fs.existsSync(path.join(dir, path.basename(pending.deltaFile))));
+        }
+      }
+      assert.deepEqual(fs.readFileSync(stateFile), afterExit, "recovery must not rewrite native session state");
+      for (const [name, bytes] of previous) assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes);
+    } finally {
+      if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+      if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("handoff refuses a stale lane snapshot without overwriting a concurrent writer", () => {
+  for (const change of ["update", "remove", "other-lane"]) {
+    const { project } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-handoff-race-"));
+    const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    delete process.env.CONTEXT_BRIDGE_STORAGE;
+    try {
+      ensureState(project);
+      let concurrentState;
+      const run = () => handoff(project, "codex", {
+        from: "grok", summary: "Do not overwrite a newer state", checkTarget: () => {
+          if (change === "update") {
+            mutateState(project, "main", (s) => { s.agents.grok.idle = true; });
+          } else {
+            mutateProject(project, (s) => {
+              s.lanes.other = structuredClone(s.lanes.main);
+              s.lanes.other.title = "Independent work";
+              if (change === "remove") { delete s.lanes.main; s.activeLane = "other"; }
+            });
+          }
+          concurrentState = fs.readFileSync(statePath(project));
+        },
+      });
+      if (change === "other-lane") {
+        run();
+        const after = loadState(project);
+        assert.equal(after.lanes.other.title, "Independent work");
+        assert.equal(after.lanes.main.pendingInjection.agent, "codex");
+      } else {
+        assert.throws(run, /lane changed while preparing|lane was removed while preparing/);
+        assert.deepEqual(fs.readFileSync(statePath(project)), concurrentState);
+      }
+    } finally {
+      if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+      if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a replacement with the same timestamp preserves the pending handoff byte for byte", () => {
+  const { project } = fixture();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-replace-collision-"));
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+  const RealDate = globalThis.Date;
+  process.env.CONTEXT_BRIDGE_HOME = home;
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  try {
+    ensureState(project);
+    const instant = RealDate.now();
+    globalThis.Date = class extends RealDate {
+      constructor(...args) { super(...(args.length ? args : [instant])); }
+      static now() { return instant; }
+    };
+    handoff(project, "codex", { from: "grok", summary: "Original content", checkTarget: () => {} });
+    const stateFile = statePath(project);
+    const beforeState = fs.readFileSync(stateFile);
+    const dir = path.join(bridgeDir(project), "checkpoints");
+    const snapshot = () => fs.readdirSync(dir).sort().map((name) => [name, fs.readFileSync(path.join(dir, name))]);
+    const beforeFiles = snapshot();
+    assert.equal(beforeFiles.length, 3);
+    assert.throws(() => handoff(project, "codex", {
+      from: "grok", summary: "Different content must not overwrite the original", checkTarget: () => {},
+    }), /timestamp is already pending/);
+    assert.deepEqual(fs.readFileSync(stateFile), beforeState);
+    assert.deepEqual(snapshot(), beforeFiles);
+  } finally {
+    globalThis.Date = RealDate;
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("failed replacement writes never delete the previous pending handoff", () => {
+  for (const stage of ["full", "delta", "state"]) {
+    const { project } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-replace-fault-"));
+    const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+    const link = fs.linkSync, rename = fs.renameSync;
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    delete process.env.CONTEXT_BRIDGE_STORAGE;
+    try {
+      ensureState(project);
+      handoff(project, "codex", { from: "grok", summary: "Original waiting handoff", checkTarget: () => {} });
+      const store = bridgeDir(project);
+      const stateFile = statePath(project);
+      const originalState = fs.readFileSync(stateFile);
+      const dir = path.join(store, "checkpoints");
+      const originalFiles = new Map(fs.readdirSync(dir).map((name) => [name, fs.readFileSync(path.join(dir, name))]));
+      assert.equal(originalFiles.size, 3);
+      let injected = false;
+      const fail = () => { injected = true; throw Object.assign(new Error(`injected ${stage} write failure`), { code: "ENOSPC" }); };
+      fs.linkSync = (from, file) => {
+        if (typeof file === "string" && path.dirname(file) === dir &&
+          (stage === "full" && file.endsWith("-full.md") || stage === "delta" && file.endsWith(".md") && !file.endsWith("-full.md"))) fail();
+        return link(from, file);
+      };
+      fs.renameSync = (from, to) => {
+        if (stage === "state" && to === stateFile) fail();
+        return rename(from, to);
+      };
+      assert.throws(() => handoff(project, "codex", { from: "grok", summary: "Replacement must not destroy pending work", checkTarget: () => {} }), /injected/);
+      assert.equal(injected, true);
+      assert.deepEqual(fs.readFileSync(stateFile), originalState);
+      assert.deepEqual(fs.readdirSync(dir).sort(), [...originalFiles.keys()].sort(),
+        `${stage} failure left evidence from the rejected replacement`);
+      for (const [name, bytes] of originalFiles) {
+        assert.equal(fs.existsSync(path.join(dir, name)), true, `${stage} failure deleted ${name}`);
+        assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes);
+      }
+    } finally {
+      fs.linkSync = link;
+      fs.renameSync = rename;
+      if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+      if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
+
+test("preparation cleanup preserves changed evidence and an already committed handoff", () => {
+  for (const stage of ["changed", "committed"]) {
+    const { project } = fixture();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-cleanup-guard-"));
+    const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+    const rename = fs.renameSync;
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    delete process.env.CONTEXT_BRIDGE_STORAGE;
+    try {
+      ensureState(project);
+      const file = statePath(project);
+      const dir = path.join(bridgeDir(project), "checkpoints");
+      let injected = false;
+      fs.renameSync = (from, to) => {
+        if (to !== file) return rename(from, to);
+        injected = true;
+        if (stage === "committed") rename(from, to);
+        else {
+          const full = fs.readdirSync(dir).find((name) => name.endsWith("-full.md"));
+          fs.appendFileSync(path.join(dir, full), "\nexternal update");
+        }
+        throw new Error("injected completion failure");
+      };
+      assert.throws(() => handoff(project, "codex", {
+        from: "grok", summary: "Preserve evidence that may belong to another writer", checkTarget: () => {},
+      }), (error) => {
+        assert.match(error.message, /injected completion failure/);
+        if (stage === "changed") assert.match(error.message, /cleanup could not be verified/);
+        return true;
+      });
+      assert.equal(injected, true);
+      assert.equal(fs.readdirSync(dir).length, stage === "changed" ? 4 : 3,
+        "unsafe cleanup retains evidence and its recovery journal");
+      const after = loadState(project);
+      if (stage === "committed") assert.equal(after.pendingInjection.agent, "codex");
+      else {
+        assert.equal(after.pendingInjection, null);
+        const full = fs.readdirSync(dir).find((name) => name.endsWith("-full.md"));
+        assert.match(fs.readFileSync(path.join(dir, full), "utf8"), /external update$/);
+      }
+    } finally {
+      fs.renameSync = rename;
+      if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+      if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+      fs.rmSync(project, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  }
+});
 
 test("a chain carries what the target missed from EVERY agent, labelled by source", async () => {
   // Claude talks to Grok, Grok works, then Grok hands to Codex. Codex has seen
@@ -60,6 +369,60 @@ test("the CLI dry-run flag reaches the read-only handoff path", () => {
   assert.match(res.stdout, /Dry run: would prepare Grok→Codex/);
   assert.doesNotMatch(res.stdout, /Handoff is ready/);
   assert.equal(loadState(project).pendingInjection, null);
+});
+
+test("CLI dry-run upgrades legacy state only in memory and leaves storage unregistered", () => {
+  const { project } = fixture();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-preview-home-"));
+  try {
+    const state = loadState(project);
+    const file = path.join(project, ".bridge", "state.json");
+    const legacy = { ...state.lanes.main, version: 4, project, updatedAt: state.updatedAt };
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    const before = fs.readFileSync(file);
+    const entries = fs.readdirSync(path.dirname(file)).sort();
+    const res = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "codex", "--from", "grok", "--dry-run"], {
+      cwd: project, encoding: "utf8",
+      env: { ...process.env, CONTEXT_BRIDGE_STORAGE: "", CONTEXT_BRIDGE_HOME: home, PATH: "" },
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Dry run: would prepare/);
+    assert.deepEqual(fs.readFileSync(file), before, "preview must not persist a schema migration");
+    assert.deepEqual(fs.readdirSync(path.dirname(file)).sort(), entries, "preview must not create a migration backup");
+    assert.deepEqual(fs.readdirSync(home), [], "preview must not register or migrate legacy storage");
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("read-only CLI commands do not persist old-schema upgrades or initialize global storage", () => {
+  const { project } = fixture();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-readonly-home-"));
+  const output = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-readonly-export-"));
+  try {
+    const state = loadState(project);
+    const file = path.join(project, ".bridge", "state.json");
+    fs.writeFileSync(file, JSON.stringify({ ...state.lanes.main, version: 4, project, updatedAt: state.updatedAt }));
+    const snapshot = (dir) => fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => [entry.name, entry.isDirectory() ? snapshot(path.join(dir, entry.name)) : fs.readFileSync(path.join(dir, entry.name), "base64")]);
+    const before = snapshot(project);
+    for (const args of [["status", "--json"], ["inspect", "--lane", "main"], ["lane"],
+      ["clean", "--dry-run", "--lane", "main"], ["search", "architecture", "--json"],
+      ["artifact", "export", path.join(output, "context.cbctx")], ["doctor", "--json"]]) {
+      const res = spawnSync(process.execPath, [BRIDGE_BIN, ...args], {
+        cwd: project, encoding: "utf8", timeout: 30000,
+        env: { ...process.env, CONTEXT_BRIDGE_STORAGE: "", CONTEXT_BRIDGE_HOME: home, PATH: "" },
+      });
+      assert.equal(res.error, undefined, `${args.join(" ")}: ${res.error}`);
+      if (args[0] !== "doctor") assert.equal(res.status, 0, res.stderr + res.stdout);
+      else assert.ok(JSON.parse(res.stdout).bridge, "doctor must finish diagnostics even without installed binaries");
+      assert.deepEqual(snapshot(project), before, `${args.join(" ")} must leave project files untouched`);
+      assert.deepEqual(fs.readdirSync(home), [], `${args.join(" ")} must not initialize the registry`);
+    }
+  } finally {
+    for (const dir of [project, home, output]) fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("what a target already received is not sent to it twice", async () => {

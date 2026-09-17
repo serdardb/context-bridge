@@ -15,7 +15,7 @@
 // and says so plainly when it was not.
 import fs from "node:fs";
 import path from "node:path";
-import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, safeCheckpointPath } from "./state.mjs";
+import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, safeCheckpointPath, checkpointReference } from "./state.mjs";
 import { adapterFor } from "./agents/index.mjs";
 
 /**
@@ -81,6 +81,36 @@ export function hookBody(delta, fullContextRel) {
 /** The same rule for the other road, against a limit the operating system sets. */
 export function promptBody(delta, fullContextRel) {
   return fit(delta, fullContextRel, PROMPT_DELTA_BYTES, "[trimmed to fit a command-line prompt]");
+}
+
+/** Read-only diagnostics: report evidence without exposing paths or transcript text. */
+export function pendingDeliveryStatus(projectDir, injection) {
+  if (!injection) return null;
+  const via = ["hook", "prompt"].includes(injection.via) ? injection.via : null;
+  const budgetBytes = via === "hook" ? HOOK_DELTA_BYTES : via === "prompt" ? PROMPT_DELTA_BYTES : null;
+  const result = { via, budgetBytes, deltaStatus: "missing", deltaBytes: null,
+    deliveredBytes: null, wouldTrim: null, fullContextAvailable: false };
+  if (!injection.deltaFile) return result;
+  const file = safeCheckpointPath(projectDir, injection.deltaFile);
+  if (!file) return { ...result, deltaStatus: "unsafe" };
+  try {
+    if (fs.existsSync(`${file}${CONSUMED_SUFFIX}`)) {
+      return { ...result, deltaStatus: fs.lstatSync(`${file}${CONSUMED_SUFFIX}`).isFile() ? "consumed" : "unsafe" };
+    }
+    if (!fs.lstatSync(file).isFile()) return { ...result, deltaStatus: "unsafe" };
+    const delta = fs.readFileSync(file, "utf8");
+    const full = fullContextFor(projectDir, injection.deltaFile);
+    result.fullContextAvailable = Boolean(full);
+    result.deltaStatus = "pending";
+    result.deltaBytes = Buffer.byteLength(delta);
+    if (via) {
+      result.deliveredBytes = Buffer.byteLength(via === "hook" ? hookBody(delta, full) : promptBody(delta, full));
+      result.wouldTrim = result.deltaBytes + Buffer.byteLength(untrimmedPointer(full)) > budgetBytes;
+    }
+    return result;
+  } catch (error) {
+    return { ...result, deltaStatus: error.code === "ENOENT" ? "missing" : "unreadable" };
+  }
 }
 
 /**
@@ -157,7 +187,12 @@ export function fullContextFor(projectDir, deltaRel) {
   if (!deltaRel) return null;
   const fullContextRel = deltaRel.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
   const abs = safeCheckpointPath(projectDir, fullContextRel);
-  return abs && fs.existsSync(abs) ? fullContextRel : null;
+  if (!abs) return null;
+  try {
+    return fs.lstatSync(abs).isFile() ? checkpointReference(projectDir, fullContextRel) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

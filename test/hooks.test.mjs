@@ -5,10 +5,95 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState } from "../src/state.mjs";
+import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir } from "../src/state.mjs";
+import { hookBody, fullContextFor } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
+
+test("production hooks link, deliver and finish turns without Git or project-local runtime files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-global-hooks-"));
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+  process.env.CONTEXT_BRIDGE_HOME = path.join(root, "runtime with spaces");
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  try {
+    for (const agent of ["claude", "codex"]) {
+      const project = path.join(root, agent);
+      fs.mkdirSync(project);
+      const transcript = path.join(root, `${agent}.jsonl`);
+      fs.writeFileSync(transcript, "");
+      const id = `${agent}-global-hook-session`;
+      const hook = (event, sessionId = id) => {
+        const result = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", event, "--agent", agent], {
+          cwd: project, encoding: "utf8", env: { ...cleanEnv(), PATH: "" },
+          input: JSON.stringify({ cwd: project, source: "resume", session_id: sessionId, transcript_path: transcript }),
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(fs.readdirSync(project), [], "hooks must not create runtime state or ignore files in the project");
+        return result.stdout;
+      };
+      assert.equal(hook("session-start"), "", "an unused project is not initialized by a global hook");
+      const s = defaultState(project);
+      s.activeAgent = agent;
+      saveState(project, s);
+      assert.equal(hook("session-start"), "");
+      const linked = loadState(project);
+      assert.equal(linked.agents[agent].id, id);
+      assert.equal(linked.agents[agent].transcriptPath, transcript);
+      if (agent === "codex") assert.ok(linked.agents.codex.hookSeen);
+      const stem = "2026-09-16T00-00-00-000Z-claude-to-codex";
+      const content = "[Bridge Context Update]\nPortable global hook evidence.\n";
+      const deltaRel = writeCheckpoint(project, "main", `${stem}.md`, content);
+      writeCheckpoint(project, "main", `${stem}-full.md`, content);
+      linked.pendingInjection = { agent, id, via: "hook", deltaFile: deltaRel };
+      saveState(project, linked);
+      for (const other of ["unrelated-session", null]) {
+        assert.equal(hook("session-start", other), "", "an unaddressed hook must not receive another session's context");
+        assert.deepEqual(loadState(project).pendingInjection, linked.pendingInjection);
+        assert.equal(loadState(project).agents[agent].id, id);
+        assert.equal(fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8"), content);
+        assert.equal(fs.existsSync(`${safeCheckpointPath(project, deltaRel)}.consumed`), false);
+      }
+      if (agent === "codex") {
+        linked.pendingInjection.id = "different-addressed-recipient";
+        saveState(project, linked);
+        assert.equal(hook("session-start"), "", "being linked does not override an explicit different recipient");
+        assert.deepEqual(loadState(project).pendingInjection, linked.pendingInjection);
+        linked.pendingInjection.id = null;
+        saveState(project, linked);
+        assert.equal(hook("session-start", "unrelated-session"), "", "an unaddressed delta still belongs to the linked slot");
+        assert.equal(hook("session-start", null), "");
+      }
+      const expected = agent === "codex" ? hookBody(content, fullContextFor(project, deltaRel)) : content;
+      const delivered = JSON.parse(hook("session-start")).hookSpecificOutput;
+      assert.equal(delivered.hookEventName, "SessionStart");
+      assert.equal(delivered.additionalContext, expected);
+      assert.equal(loadState(project).pendingInjection, null);
+      assert.equal(fs.readFileSync(`${safeCheckpointPath(project, deltaRel)}.consumed`, "utf8"), content);
+      assert.equal(hook("session-start"), "", "the same checkpoint must not be delivered twice");
+      const ready = loadState(project);
+      ready.pendingHandoff = { ready: true, target: agent === "codex" ? "claude" : "codex" };
+      saveState(project, ready);
+      hook("stop");
+      assert.equal(loadState(project).agents[agent].idle, true);
+      hook("user-prompt-submit");
+      assert.equal(loadState(project).agents[agent].idle, false);
+      if (agent === "claude") {
+        const missing = loadState(project);
+        missing.pendingInjection = { agent, id, via: "hook", deltaFile: ".bridge/checkpoints/missing.md" };
+        saveState(project, missing);
+        const notice = JSON.parse(hook("session-start")).hookSpecificOutput.additionalContext;
+        assert.match(notice, /could not be read/);
+        assert.ok(notice.endsWith(checkpointsDir(project)), "recovery must name the real global directory");
+        assert.doesNotMatch(notice, /\.bridge\/checkpoints/);
+      }
+    }
+  } finally {
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Claude SessionStart hook injects pending delta exactly once", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hook-"));

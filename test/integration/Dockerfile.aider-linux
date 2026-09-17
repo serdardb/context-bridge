@@ -1,0 +1,15 @@
+ARG NODE_IMAGE=node:24-bookworm-slim
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm
+FROM ${NODE_IMAGE} AS node
+FROM ${PYTHON_IMAGE}
+
+# Native acceptance only; no accounts or project data are baked into this image.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends expect libgomp1 libportaudio2 \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/aider \
+    && /opt/aider/bin/python -m pip install --no-cache-dir aider-chat==0.86.2 \
+    && /opt/aider/bin/python -m pip check
+WORKDIR /workspace
+CMD ["node", "test/integration/aider-native.mjs", "/opt/aider/bin/python", "--interactive"]

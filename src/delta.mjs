@@ -1,6 +1,7 @@
 // Deterministic context-delta extraction. No LLM summarization calls in v0.1:
 // conversation truth comes from native session files, work truth from git.
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { tryExec, BridgeError } from "./util.mjs";
 
 // There is no message cap and no per-message length here, deliberately, and this
@@ -445,32 +446,67 @@ export function composeFullContext({ fromAgent, conversation, sources, decisions
       return streams.length > 1 ? `## From ${st.label}\n\n${body}` : body;
     });
   const who = streams.map((st) => st.label).join(", ");
-  return [
-    `# Bridge full context — from ${who}`,
-    "",
-    "The same handoff with no budget over it. Nothing here is left out.",
-    "",
-    "## Summary",
-    "",
+  const values = [
     summaryText || "_No agent-written summary was available for this handoff._",
-    "",
-    "## Conversation",
-    "",
     blocks.length ? blocks.join("\n\n") : "_No conversation activity since last sync._",
-    "",
-    "## Decisions",
-    "",
     list(decisions, "No explicit decisions were recorded."),
-    "",
-    "## Work",
-    "",
     list(work, "No file or git changes detected."),
-    "",
-    "## Next",
-    "",
     list(next, "Nothing was flagged as unresolved."),
-    "",
-  ].join("\n");
+  ];
+  return indexedContext(`# Bridge full context — from ${who}`, values);
+}
+
+function indexedContext(title, values) {
+  const body = CONTEXT_SECTIONS.map((name, i) => `## ${name}\n\n${values[i]}\n\n`).join("");
+  // Lengths are recorded before rendering: Markdown inside a message is data,
+  // never a delimiter. The digest detects stale indexes, not authenticity.
+  const index = { version: 1, units: "utf16", lengths: values.map((value) => value.length),
+    sha256: createHash("sha256").update(body).digest("hex") };
+  return `${title}\n${CONTEXT_INDEX}${JSON.stringify(index)} -->\n${body}`;
+}
+
+const CONTEXT_SECTIONS = ["Summary", "Conversation", "Decisions", "Work", "Next"];
+const CONTEXT_INDEX = "<!-- bridge-section-index ";
+
+/** Legacy checkpoints remain opaque; their free-form headings are ambiguous. */
+export function readFullContextSections(text) {
+  const firstEnd = text.indexOf("\n");
+  const indexEnd = text.indexOf("\n", firstEnd + 1);
+  const line = text.slice(firstEnd + 1, indexEnd < 0 ? undefined : indexEnd);
+  if (!line.startsWith(CONTEXT_INDEX)) return null;
+  const invalid = () => new Error("Invalid full context section index; refusing partial extraction.");
+  if (indexEnd < 0 || !line.endsWith(" -->")) throw invalid();
+  let index;
+  try { index = JSON.parse(line.slice(CONTEXT_INDEX.length, -4)); } catch { throw invalid(); }
+  if (index?.version !== 1 || index.units !== "utf16" || !Array.isArray(index.lengths) ||
+      index.lengths.length !== CONTEXT_SECTIONS.length ||
+      !index.lengths.every((n) => Number.isSafeInteger(n) && n >= 0 && n <= text.length) ||
+      typeof index.sha256 !== "string") throw invalid();
+  let offset = indexEnd + 1;
+  const start = offset;
+  const sections = {};
+  for (const [i, name] of CONTEXT_SECTIONS.entries()) {
+    const heading = `## ${name}\n\n`;
+    if (!text.startsWith(heading, offset)) throw invalid();
+    offset += heading.length;
+    sections[name.toLowerCase()] = text.slice(offset, offset + index.lengths[i]);
+    offset += index.lengths[i];
+    if (!text.startsWith("\n\n", offset)) throw invalid();
+    offset += 2;
+  }
+  if (createHash("sha256").update(text.slice(start, offset)).digest("hex") !== index.sha256) throw invalid();
+  return sections;
+}
+
+/** Redaction changes lengths: rebuild the index rather than exporting a stale one. */
+export function transformFullContext(text, transform) {
+  const sections = readFullContextSections(text);
+  if (!sections) return transform(text);
+  const firstEnd = text.indexOf("\n");
+  const bodyStart = text.indexOf("\n", firstEnd + 1) + 1;
+  const values = CONTEXT_SECTIONS.map((name) => sections[name.toLowerCase()]);
+  const bodyLength = CONTEXT_SECTIONS.reduce((n, name, i) => n + `## ${name}\n\n${values[i]}\n\n`.length, 0);
+  return indexedContext(transform(text.slice(0, firstEnd)), values.map(transform)) + transform(text.slice(bodyStart + bodyLength));
 }
 
 function cap(s) {

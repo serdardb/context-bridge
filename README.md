@@ -121,19 +121,51 @@ shell
     └── one agent child at a time
         claude ⇄ codex ⇄ grok ⇄ antigravity ⇄ opencode  ← real sessions, any direction
 
-.bridge/state.json             ← per-project: native session references, the
-                                 knownBy matrix, git checkpoint, pending markers
-                                 (never transcripts; auto-gitignored)
+global project store            ← machine-local state outside the repository:
+                                 native session references, knownBy matrix,
+                                 checkpoints and pending markers
+                                 (never transcripts; Git is optional)
 ```
+
+The physical store is `~/Library/Application Support/context-bridge` on macOS,
+`$XDG_STATE_HOME/context-bridge` on Linux and other Unix systems (falling back
+to `~/.local/state/context-bridge`), or `CONTEXT_BRIDGE_HOME` when explicitly
+configured for a managed/test environment. Checkpoint text keeps the historical
+logical `.bridge/...` name in handoff messages, but no `.bridge/` directory is
+created in a project by default.
 
 - `/bridge <agent>` (a Claude plugin skill) and `$bridge <agent>` (a shared skill for Codex, Grok, Antigravity and OpenCode) are the same command with a target argument. The departing agent writes a reading of the work plus decisions and open questions, the bridge computes what the target is missing from every agent's native session files plus git, and delivers a bounded delta with Summary, Conversation, Decisions, Work and Next. Summary is the interpretation; Decisions and Next remain deliberately compact scan/fallback fields, so they are not removed as redundant when a summary exists.
 - **Delivery uses whatever each agent supports.** Claude and Codex take the delta through their own `SessionStart` hook, so it lands inside the conversation; Codex falls back to an auto-submitted resume prompt until you have trusted its hooks once with `/hooks`, and Grok always uses the prompt, because its hooks fire but ignore what they print. OpenCode has neither road (no hook, and a resume that cannot be handed a prompt), so the delta is written straight into its session database and is there when its TUI opens. Every road delivers exactly once, and only ever one of them per handoff.
-- Later deltas also carry a **full-context checkpoint** in `.bridge/checkpoints/`, referenced from the delta itself. The bounded summary keeps handoffs fast; exact wording remains available after delivery for recovery and audit until the checkpoint group is pruned. Canonical memory is each agent's native transcript plus the `knownBy` matrix.
-- **Agent flags pass straight through.** `bridge claude --dangerously-skip-permissions --model claude-fable-5` forwards everything after the agent name to that agent verbatim, so any flag it supports (now or later) just works. The set applies to that launch. `--cb-save-args` writes it to `.bridge/config.json` as this project's default, `--cb-clear-args` takes it back, and `bridge status` lists what is armed, because a saved permission bypass nobody can find is one nobody can undo. Flags that change what an agent may do without asking are announced on a plain line at every launch. The only args the bridge holds back are the ones that would break its own session link (`-c`, `--resume`, `--fork-session`, `--no-session-persistence` on Claude; `--last`, `--cd`, `--remote` on Codex), each dropped with a printed reason. `--cb-*` is reserved for the bridge itself.
+- Later deltas also carry a **full-context checkpoint** in the machine-local project store. Delivered text names its directly readable filesystem path; internal state retains logical `.bridge/checkpoints/...` identifiers. The bounded summary keeps handoffs fast; exact wording remains available after delivery for recovery and audit until the checkpoint group is pruned. Canonical memory is each agent's native transcript plus the `knownBy` matrix.
+- **Agent flags pass straight through.** `bridge claude --dangerously-skip-permissions --model claude-fable-5` forwards everything after the agent name to that agent verbatim, so any flag it supports (now or later) just works. The set applies to that launch. `--cb-save-args` writes it to this project's machine-local store, `--cb-clear-args` takes it back, and `bridge status` lists what is armed, because a saved permission bypass nobody can find is one nobody can undo. Flags that change what an agent may do without asking are announced on a plain line at every launch. The only args the bridge holds back are the ones that would break its own session link (`-c`, `--resume`, `--fork-session`, `--no-session-persistence` on Claude; `--last`, `--cd`, `--remote` on Codex), each dropped with a printed reason. `--cb-*` is reserved for the bridge itself.
 - **A handoff carries what the target missed, from everyone.** The bridge remembers, per pair, how far into each agent's own stream it has packed material for each other agent. So Claude → Grok → Codex works: Codex receives Grok's work *and* the Claude context Grok was given, each block labelled with who said it, instead of losing a hop's worth of history at every switch. Nothing is sent to an agent twice.
 - **Checkpoints are retained evidence.** A handoff to an agent that already has an undelivered one replaces it. The full-context checkpoint remains beside its delta and audit manifest, then is pruned with that checkpoint group under the same retention policy. Bounded deltas are kept longer for auditing (7 days and the newest 20), and a pending injection is never deleted. `bridge clean` (with `--dry-run`, `--keep N`, `--days N`, `--all`) does the same on demand. Canonical memory is each agent's native transcript plus the `knownBy` matrix, never these files.
-- **Evidence is local and sensitive.** Full-context checkpoints can contain the exact conversation; audit manifests can contain command arguments, file names and project paths. They are excluded from git and npm packages, follow the same handoff-group retention policy, and should be inspected before sharing. The opt-in debug logger redacts content, tokens and personal paths, but checkpoints are intentionally preserved evidence rather than a redaction boundary.
+- **Evidence is local and sensitive.** Full-context checkpoints can contain the exact conversation; audit manifests can contain command arguments, file names and project paths. They live in the machine-local store, are not added to the repository or npm package, follow the same handoff-group retention policy, and should be inspected before sharing. The opt-in debug logger redacts content, tokens and personal paths, but checkpoints are intentionally preserved evidence rather than a redaction boundary.
+- **Interrupted evidence writes stay separate.** A checkpoint, audit or preparation journal is published only after its staging file is fully written. `bridge clean --staging --dry-run` previews abandoned staging files; omit `--dry-run` to remove them, optionally scoped by `--lane NAME`. This mode does not prune checkpoint groups. Live or uncertain process owners, symlinks, unknown filenames and pending/preparing groups are preserved. A published preparation journal must be resolved by handoff recovery before its leftover staging file can be removed.
+- **Interrupted handoff preparation has a recovery record.** The next handoff checks dead writers' preparation journals before creating new evidence. Unreferenced files are removed only if their complete contents match the recorded hashes; pending or consumed handoffs keep their evidence. Changed files stop recovery for investigation. A prepared audit that cannot be written now fails the handoff instead of silently dropping its evidence. This is process-exit recovery, not a guarantee against power loss or external vendor-session side effects.
 - **Handoffs can be previewed safely.** `bridge handoff <agent> --dry-run` reads the current state, sessions and git delta, then reports the selected delivery road and estimated payload without creating a checkpoint, changing pending state, pruning, or importing a vendor session.
+- **Portable context is explicit.** `bridge artifact export report.cbctx` writes a versioned, SHA-256 verified, redacted context artifact. `bridge artifact import report.cbctx` verifies it without changing the project; add `--apply` to stage it as an idempotent seed. Native vendor sessions are never claimed to be portable.
+- **Optional sender verification.** Export with `--sign-key private.pem` to sign the redacted artifact using an Ed25519 private key. Import with `--verify-key trusted-public.pem` (and optionally `--apply`) to require a signature matching that explicitly trusted key. Signed artifacts without a trusted key, unsigned artifacts when a key is required, wrong keys and altered payloads are rejected before target initialization. No embedded key is automatically trusted. Exchange the public key through an independent trusted channel; never share the private key. Ordinary unsigned import checks integrity only, not sender identity. Signatures do not encrypt the artifact, revoke keys or prevent a trusted signer from making incorrect claims.
+- **Content-addressed local cache.** `bridge artifact cache report.cbctx --json` validates and stores the exact file bytes under the central storage home's `artifacts/sha256/` directory, returning a `sha256:<hash>` reference. Use that reference in place of a filename with `bridge artifact import sha256:<hash> --apply`. Repeated identical files share one entry; changed bytes, even whitespace, have a different address. Every reference read verifies the address and artifact integrity; existing mismatched entries and symlinks are rejected, never overwritten. Signed cache operations and imports still require `--verify-key`. Cache references are local to this machine, not download links: transfer the `.cbctx` file to another machine and cache it there. Cache entries are explicitly retained, not removed by checkpoint pruning.
+- Export includes only the audit paired with the selected full-context checkpoint. A missing paired audit stays absent; another handoff's audit is never substituted. A malformed or symlinked paired audit stops export without replacing an existing output artifact.
+- New full-context checkpoints record section lengths and a digest in a Markdown comment. Artifact export uses that index, not headings inside messages, and rebuilds it after redaction. Invalid indexes stop export. Legacy checkpoints remain intact as opaque context with empty structured fields (`source.sectionFormat: "opaque"`), rather than guessing their boundaries. Indexed structured fields describe the composition-time sections; closing words appended later remain in the full context. The index detects inconsistency, not sender authenticity.
+- Artifact provenance records the producer package version separately from the local state schema version. Export refuses symlinked full-context checkpoints; it does not follow them into external files. Integrity hashes detect content changes but are not signatures or proof of a trusted author.
+- Applied artifact hashes are recorded in the target lane's state atomically with the pending seed. Consuming the seed does not erase that receipt, so retrying an import after a process exit cannot enqueue it again. A pre-write import journal lets a retry remove verified, unreferenced checkpoint files left before state commit. Modified files or files referenced by a pending handoff stop recovery rather than being deleted. This covers process exits at the tested write boundaries, not arbitrary power-loss durability.
+- **Context evaluation.** `bridge eval --json` runs deterministic fixtures and reports summary, selected transcript and full-context checkpoint checks separately. Required summary facts cannot be satisfied by their presence only in the transcript; every source message must remain whole in the checkpoint. These are explicit text-preservation checks, not a claim of semantic understanding or live-agent recall. Live delivery and token-efficiency verification remain separate.
+- `bridge eval --live codex --json` explicitly calls the configured Codex provider with synthetic, randomized context in a temporary directory. Provider usage applies. It scores five exact final-answer fields, including declining to invent an absent owner, and rejects prompt echoes, malformed answers, process failures and timeouts. No project transcript is sent. Codex uses an ephemeral read-only session; temporary evaluation files are removed afterward. This is fresh-session prompt recall, not proof of native session continuity, hook delivery or general semantic quality. Other adapters currently reject live evaluation rather than silently running a different check.
+- `bridge eval --live codex --scenario decision --json` adds a constrained-choice assessment: distinguish the final decision from an earlier proposal, select its rationale and next check, identify the rejected alternative, and report an unassigned owner and omitted transcript. It randomizes answer codes, choice order and two opposing authorization policies; the correct codes are not supplied in the source context. Six exact fields are scored, not free-text similarity or a model judge. This is synthetic decision interpretation, not general reasoning quality or actual hook delivery; it calls the configured provider and usage applies. The default remains `--scenario recall`.
+- Live evaluation reports Codex's `turn.completed` token usage when valid, never a bytes-to-tokens estimate. These are **whole-turn** totals, including context outside the bridge delta; cached input is a subset of input, not an additional charge. Efficiency reports context bytes and whole-turn input tokens per correctly recalled field, not pricing or a universal quality score. Missing, invalid or oversized telemetry leaves token usage unknown and cannot satisfy token verification. Raw event text is not included in the report.
+- **Release CI evidence.** `bridge release-check --ci --json` uses the authenticated GitHub CLI to check the latest `ci.yml` run for the exact local HEAD and its selected attempt. The run and every reported job must be completed successfully; absent, skipped, failed or unreadable results do not pass. Without `--ci`, CI remains explicitly unverified. A successful HEAD run does not cover uncommitted edits: the separate clean-tree check still applies. This developer release command is not a Git or GitHub requirement for normal bridge use.
+- The npm publication lifecycle requires tests, syntax checks, deterministic eval, exact-HEAD release checks, `verify --all`, and Codex live recall, in that order. `verify --all` fails if any supported agent is missing; ordinary `verify` still checks only installed agents. Smoke answers and configured routes do not prove native handoff delivery, which remains a separate release requirement. Normal installation and runtime use do not require GitHub CLI or every vendor installed.
+- **Stored evidence is searchable.** `bridge search "migration"` searches local delta, delivered delta, full-context and audit files. `--lane` selects a lane; `--agent` matches either end of a handoff. `--since YYYY-MM-DD` and `--until YYYY-MM-DD` filter checkpoint timestamps by inclusive UTC dates, and `--json` returns structured matches. Result filenames are relative to their checkpoint directory.
+- `bridge search "migration" --branch feature/example` matches the branch recorded in that handoff's paired audit, not the current checkout. Records without branch metadata do not match a branch filter but remain searchable without it. Git is optional when producing audits and is not needed to search already recorded branch metadata.
+- **Preview storage migration.** `bridge storage plan` (or `--json`) reads legacy `.bridge` contents without changing either store. It reports file hashes and sizes, conflicting global data, files removed after backup and unrecognized files left in place, including inside checkpoint and lane directories. Only state/config files, versioned state backups and timestamp-and-direction checkpoint filenames are eligible for removal. For an unregistered project, the destination UUID is assigned only when migration runs. The preview is a snapshot; migration rechecks the data when executed.
+- **Interrupted migration cleanup is recoverable.** A journal records the verified backup before removing source files. A later migration can finish that cleanup after a process exit, including when the source directory is already gone. `storage plan` reports the pending recovery without performing it. Changed source files or a destination that differs from the backup stop cleanup instead of being overwritten; retain the journal and backup for investigation. This is not a guarantee against power loss or simultaneous writes by older bridge versions.
+- Stop legacy launchers before migration. A live launcher recorded in the old state blocks migration before project registration or copying; restart it with the updated bridge after migration. This check cannot detect unrecorded older writers, so do not run old and new bridge versions against the same project during the move.
+- A legacy state lock with a live or unknown owner also blocks migration without changing either store. A provably dead owner's lock is backed up with the old state and removed from the project; subsequent global writes recover that stale lock normally. Do not manually remove a lock while its writer is running.
+- Abandoned migration staging copies are removed after successful migration only when their owner is no longer alive and their files exactly match the verified backup. Changed or unknown contents, symlinks and live-owner copies are retained; `storage plan` lists them with reasons even after migration has completed.
+- `bridge storage cleanup-ignore` previews exact obsolete `.bridge` rules in the project's `.gitignore`; add `--apply` to remove them or `--json` for a structured report. It does not run Git, create a registry or edit any other ignore patterns. It refuses cleanup while a local `.bridge` entry remains, including retained user files, and refuses symlinked or non-UTF-8 ignore files. Migration itself never edits `.gitignore`.
+- **Reconnect a moved project.** If a move changes the directory's filesystem identity, run `bridge project list --json` to find its existing UUID, then run `bridge project adopt <id>` from the new directory before starting a new bridge session there. Adoption refuses a still-existing old directory, an already registered target or legacy runtime data in the target. Git is not required. This reconnects the machine-local bridge store; it does not move vendor-owned native sessions or guarantee that their stored working directories remain valid.
 - The launcher watches the state file. When a handoff is ready **and the agent's turn has finished**, it terminates its own child process (SIGTERM, never by name, never SIGKILL) and starts the other agent. Terminal state stays healthy; Ctrl+C inside an agent behaves normally. It also records which state version it understands, so a launcher left running across an upgrade is told to restart rather than silently failing to switch.
 - **Started without the bridge?** Sessions can be adopted mid-flight. `$bridge claude` inside a Codex session that was never linked adopts it automatically (Codex exposes the running thread via `CODEX_THREAD_ID`); if that variable is unavailable, the newest Codex session working in the project directory is offered as a candidate and linked only after you confirm (`--adopt`). Codex-first projects work too: with no Claude session to resume, the delta — plus a pointer to the full Codex transcript — seeds the first Claude session that starts in the project. The rule everywhere: **automatic when identity is deterministic, confirmed when heuristic.**
 - **Recovering from a dead or externally started agent:** run `bridge handoff <target> --from <source>` from a healthy terminal. This rebuilds the handoff from the source agent's readable session on disk and keeps heuristic adoption separate from normal in-session switching. The command does not switch the terminal automatically; launch the target with `bridge <target>` afterward.
@@ -292,14 +324,15 @@ A new lane starts empty on purpose: a different line of work inherits nothing, w
 | Piece | What it is |
 |---|---|
 | `bridge` CLI | Zero-dependency Node CLI: launcher loop, state, deltas, doctor |
-| `.bridge/state.json` | Versioned per-project state: session references, sync watermarks, git checkpoint, pending markers. Migrated forward automatically, keeping the original as `state.json.v<n>.backup` and saying so once. Never transcripts. Auto-gitignored. |
+| `global project store/state.json` | Versioned machine-local state: session references, sync watermarks, optional Git metadata, pending markers. Migrated forward automatically, keeping the original as `state.json.v<n>.backup` and saying so once. Never transcripts. |
 | `src/agents/` | One adapter per agent: discovery, resume command, activity parsing, idle signal, conflicting flags, health. Adding an agent is one file. |
 | `knownBy` matrix | Per pair, how far into each agent's own stream has been packed for each other agent. This is what makes chains keep their history. |
 | Claude plugin | `/bridge` skill + `SessionStart` / `Stop` / `UserPromptSubmit` hooks (session recording, delta injection, idle marking) |
 | Codex hooks | The same three events in `~/.codex/hooks.json`, installed by `doctor --fix` and merged into whatever is already there. Each hook names the agent it belongs to, so one firing inside a different CLI refuses instead of writing the wrong session into state. |
 | Shared agent skill | `$bridge <agent>` for Codex, Grok, Antigravity and OpenCode → runs `bridge handoff <agent>` |
 | Official import | The first Claude→Codex switch uses OpenAI's `codex-plugin-cc` transfer (`externalAgentConfig/import` under the hood) |
-| `.bridge/config.json` | Per-agent launch flags for this project. Written by `--cb-save-args`, never by hand, listed in `bridge status`, and cleared with `--cb-clear-args`. |
+| `global project store/config.json` | Per-agent launch flags for this project. Written by `--cb-save-args`, summarized in `bridge status`, and cleared with `--cb-clear-args`. |
+| `.cbctx` artifact | Explicit portable context only: redacted selected context, structured fields, audit and integrity hash. Never a native session export. |
 
 Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributing: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -307,7 +340,7 @@ Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributin
 
 - Everything is local. No SaaS, no accounts, no telemetry, no database server.
 - No API keys are read, requested, or stored. Auth detection checks *existence* only (e.g. Keychain entry name, `codex login status`) and never touches secret values.
-- `.bridge/` holds references, timestamps and bounded delta files — not full transcripts — and is added to your `.gitignore` automatically.
+- Runtime state holds references, timestamps and bounded delta files outside the project tree. No `.gitignore` entry is needed, and Git is not required.
 - Context deltas travel only between the agent CLIs on your machine, inside their normal subscription-authenticated calls.
 
 ## Compatibility
@@ -346,7 +379,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Known limitations
 
 - Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
-- One linked session per agent per lane. `bridge unlink <agent>` forgets just that agent, and every watermark that named it, so the next switch links it fresh — no more deleting `.bridge/` to relink one agent. It is for a session you are done with, and refuses while a bridge launcher is running, so a live session's next hook cannot re-link the agent you just forgot.
+- One linked session per agent per lane. `bridge unlink <agent>` forgets just that agent, and every watermark that named it, so the next switch links it fresh — no more deleting the machine-local bridge store to relink everything at once. It is for a session you are done with, and refuses while a bridge launcher is running, so a live session's next hook cannot re-link the agent you just forgot.
 - Lanes isolate context, not the working tree: every lane shares one checkout, so they are parallel conversations, not parallel code. Editing the same files from two lanes collides as two plain agents would.
 - `bridge lane rm` refuses while any bridge launcher is running on the lane. Launcher records carry their lane, so unrelated lanes can remain active while the selected lane is removed.
 - Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
@@ -364,9 +397,122 @@ than leaving an empty column to be misread as nothing happened.
 ## Roadmap
 
 - Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- Worktree-backed lanes, so two lanes can hold different working trees, not just different sessions
 - Linux verification, Windows support
 - Optional MCP quick-question mode (ask the other agent without switching)
+
+### Isolated worktree lanes
+
+Normal lanes need no Git. For explicit code isolation in a Git repository:
+
+```sh
+bridge lane new experiment --worktree ../project-experiment
+bridge claude --resume experiment
+```
+
+The worktree starts from committed `HEAD`; uncommitted source edits are not
+copied. `--base <ref>` and `--branch <new-branch>` are optional. The destination
+must not exist and must be outside the source project; its parent must exist.
+Git is required for creation/attachment, not ordinary lanes or later launches.
+
+Each worktree has its own central project identity, native sessions and state.
+The source lane is an explicit launch link, not a second owner of those sessions.
+`status --json` follows that link for pending/delivery diagnostics without changing
+lanes. Run handoff and context-management commands from the worktree itself.
+Seeding from a linked worktree lane is likewise done inside that worktree.
+
+If creation succeeds but later state setup fails, the bridge preserves the code
+and branch. Reconnect with `bridge lane attach experiment --worktree ../project-experiment`;
+attachment validates Git ownership and does not choose or overwrite an unrelated
+existing lane. Missing/replaced directories fail closed on launch. To relocate a
+link, remove the source lane link first and attach the moved worktree explicitly.
+`bridge lane rm` removes the source link and its local checkpoints only; it never
+deletes the worktree's code, branch or independent bridge state. Remove an unwanted
+working tree separately with Git after checking its changes. No automatic merge,
+branch deletion, cross-process crash transaction or sandbox is implied.
+
+### Adapter extensions
+
+Trusted local adapters can use `@serdardb/context-bridge/adapter-sdk` and
+default-export `defineAdapter(implementation)`. Enable them explicitly with
+`CONTEXT_BRIDGE_ADAPTERS=/absolute/path/to/plugins.json`; the manifest contains
+`{"apiVersion":1,"modules":["/absolute/path/to/adapter.mjs"]}`.
+`bridge adapters --json` lists built-in and configured adapters without probing
+vendors. Plugin code runs with your account's privileges, not in a sandbox;
+review it first. No project-local or remote code is discovered automatically.
+See [Adapter Contract](docs/ADAPTERS.md) for API requirements, delivery limits,
+compatibility rules and real-agent acceptance checks.
+
+### Pending delivery diagnostics
+
+`bridge status --json` includes a `delivery` object for a pending injection, or
+`null` when none is recorded. It reports the selected route, its byte budget,
+checkpoint state (`pending`, `consumed`, `missing`, `unsafe`, or `unreadable`),
+and whether a regular full-context file is available. `deltaBytes` measures the
+stored text; `deliveredBytes` predicts the current delivery formatter's output,
+including its file pointer. `wouldTrim` reports whether that formatter would
+trim it. Unknown routes leave delivery size and budget unset.
+
+These are read-only local diagnostics, not proof that an agent read or understood
+the context. The output does not include conversation text or checkpoint paths.
+The `lanes` array contains the same diagnostics, linked agent names, pending work
+and up to five retained switch records for every lane, in name order. Top-level
+fields still describe the active lane. Inspection does not switch lanes or run
+agent probes. Local integrations can use `projectStatus(projectDir)` from
+`src/status.mjs`, the same read-only function used by the CLI; this internal API
+is not yet a versioned adapter SDK.
+
+### Status event stream
+
+`bridge watch --policy read-only` emits newline-delimited JSON status events.
+It requires this explicit policy and never starts agents, repairs state or
+acknowledges delivery. `--project /absolute/path` pins a different project at
+startup; `--interval 1000` controls polling in milliseconds (100 to 60000).
+No Git installation is required. SIGINT/SIGTERM stop the foreground process.
+
+The first event is `snapshot`; changed observations emit `change`. Read failures
+emit `unavailable` once, followed by `recovered` when the original directory can
+be read again. A replacement directory is not silently adopted. Events carry
+metadata only, using the same privacy boundary as `status --json`.
+
+Polling avoids relying on platform filesystem notifications and tolerates
+atomic file replacement. It can miss intermediate transitions between polls:
+this is not a durable journal, delivery receipt, or exactly-once subscription.
+Slow consumers apply backpressure rather than building an unbounded event queue.
+Restarting produces a fresh snapshot; there is no background daemon or cursor.
+
+### Read-only MCP
+
+Run `bridge mcp --project /absolute/project/path` from an MCP host using stdio.
+The project is fixed at startup; tools cannot choose another directory. By
+default only `bridge_status` and `bridge_adapters` are exposed. Neither starts
+agents, acknowledges delivery, nor initializes a missing project. No network
+listener is opened and Git is not required.
+
+Add `--allow-content` explicitly to expose `bridge_search`. This lets the host
+and its model read potentially private checkpoint snippets. It returns at most
+100 matching records (20 by default), with omitted-result counts; snippets are
+not complete transcripts. The limit bounds output, not the underlying local
+scan. Search stays within the selected project's store; status can report
+explicitly linked worktree lanes. There is no general file-reading tool.
+
+Example host configuration (adjust executable and project paths):
+
+```json
+{
+  "mcpServers": {
+    "context-bridge": {
+      "command": "/absolute/path/to/bridge",
+      "args": ["mcp", "--project", "/absolute/path/to/project"]
+    }
+  }
+}
+```
+
+Local evidence is untrusted data, not instructions. Read-only tool annotations
+do not sandbox installed adapter plugins: `CONTEXT_BRIDGE_ADAPTERS`, when set,
+still loads trusted executable code at startup. Unset it for built-ins only.
+The server uses the official MCP SDK, adding runtime dependencies; this is not
+a claim of native-agent acceptance or a concurrent filesystem snapshot.
 
 ## Development status
 
@@ -381,12 +527,12 @@ Since the first release:
 - **Per-agent launch flags** — typed when you want them, saved with `--cb-save-args` when you want them to stick, announced loudly when they change what an agent may do without asking
 - **Sessions the bridge starts are linked** — Codex and Grok used to be unreachable until they handed off once, so `bridge grok` refused to resume the session it had just created
 - **Doctor tells the truth** — `READY` became `CONFIGURED`, and two canaries check that this version of the bridge can still read what each agent writes and still find what each agent stores
-- **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks, gated on ubuntu+macos × Node 18/20/22
+- **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks. The workflow targets ubuntu+macos × Node 18/20/22/24, plus separate clean installed-package acceptance on Node 18.18.0 and 24. Configuration alone is not proof of a successful run for the current commit.
 - **Checkpoint retention** — full-context files, deltas and audit manifests are pruned together by their checkpoint group policy
 - **A fourth agent, and what reaching it exposed** — Antigravity joined behind the same adapter contract, and getting a delta to it uncovered a first switch too large for a command line, a delta recorded as delivered before anything carried it, and an agent's identity read from a variable that outlives its session
 - **A fifth agent that keeps its sessions in a database** — OpenCode joined the same way, and reaching it added an authless write into its own session store (it exposes no hook and no promptable resume), a conflict-flag table folded back onto each adapter so every supported agent's unenforced flags finally bite, and a session-discovery path that no longer leaks a background server on every call
 - **Lanes** — a project can hold more than one line of work, each with its own agent links, history and checkpoints; `bridge lane new/switch/rm/list` manage them and two run in two terminals at once, `bridge <agent> --resume` opens one, `lane new --seed` starts one from another's decisions and git state, `clean`/`inspect` take `--lane`, and launchers are tracked per lane so `lane rm`/`unlink` guard precisely. The whole checkpoint-path boundary and every seed/unlink lifecycle edge were hardened behind containment guards and tombstones over a long review
-- **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting `.bridge/` to relink one
+- **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting the whole machine-local store to relink one
 
 What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 

@@ -9,7 +9,7 @@ import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, recordLauncher, liveLaunchers, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
-import { filterAgentArgs } from "./agentargs.mjs";
+import { filterAgentArgs, argumentSummary } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
 import {
   deltaWasConsumed,
@@ -24,6 +24,7 @@ import {
 import { bindSeed, unbindSeed } from "./seed.mjs";
 import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
+import { laneWorkspace } from "./worktree.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -53,7 +54,9 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
   // `--resume <lane>` resolves to a lane this launcher pins for its whole life,
   // overriding the on-disk default. It has already been validated to exist and made
   // the active lane by the CLI, so here it is only the pin.
-  const wantLane = Array.isArray(forward) ? null : (forward?.lane ?? null);
+  const workspace = laneWorkspace(projectDir, Array.isArray(forward) ? null : (forward?.lane ?? null));
+  projectDir = workspace.projectDir;
+  const wantLane = workspace.lane;
   let s = ensureState(projectDir);
   launcherLane = wantLane ?? s.activeLane ?? DEFAULT_LANE;
   s.activeLane = launcherLane;
@@ -61,13 +64,13 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
 
   if (bridgeFlags.clearArgs) {
     const gone = clearArgs(projectDir, agent);
-    log(gone.length ? `${OK} Forgot the saved flags for ${agent}: ${gone.join(" ")}` : `${OK} ${agent} had no saved flags.`);
+    log(gone.length ? `${OK} Forgot the saved flags for ${agent}: ${argumentSummary(gone)}` : `${OK} ${agent} had no saved flags.`);
   }
   let justSaved = false;
   if (bridgeFlags.saveArgs) {
     const saved = saveArgs(projectDir, agent, forwardArgs);
     justSaved = true; // they are in the config now, so do not also count them as typed
-    log(`${OK} Saved for ${agent}, and used on every launch from now on: ${saved.join(" ")}`);
+    log(`${OK} Saved for ${agent}, and used on every launch from now on: ${argumentSummary(saved)}`);
     log(dim(`  Undo with: bridge ${agent} --cb-clear-args`));
   }
 
@@ -85,7 +88,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     agentArgs[id] = kept;
     for (const d of dropped) {
       if (d.isValue) continue;
-      log(`${WARN} Ignoring ${d.arg}: ${d.why}.`);
+      log(`${WARN} Ignoring a conflicting argument (value hidden): ${d.why}.`);
     }
   }
 
@@ -123,9 +126,9 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       // do without asking. A permission bypass nobody notices is the failure this
       // whole project keeps finding in other places.
       if (armed.length) {
-        log(`${WARN} ${adapterFor(agent)?.displayName ?? agent} is being launched with ${armed.join(" ")}`);
+        log(`${WARN} ${adapterFor(agent)?.displayName ?? agent} is being launched with arguments that change approval or sandbox permissions (values hidden).`);
       }
-      log(dim(`→ Forwarding to ${agent}: ${agentArgs[agent].join(" ")}`));
+      log(dim(`→ Forwarding to ${agent}: ${argumentSummary(agentArgs[agent])}`));
     }
     if (!cmd) {
       log(`${BAD} ${note}`);
@@ -192,6 +195,17 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     // its SessionStart hook; every other agent needs the launcher to do it.
     const startedAt = nowIso();
     const needsLink = !agentSlot(s, agent).id;
+    let deliveryBaseline = null;
+    if (carries && !preResume) {
+      const slot = agentSlot(s, agent);
+      const adapter = adapterFor(agent);
+      try {
+        const ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
+        if (!slot.id || ref) deliveryBaseline = { id: slot.id ?? null, mark: ref ? adapter.currentMark(ref) : null };
+      } catch {
+        // Without a pre-spawn baseline, old transcript text cannot prove receipt.
+      }
+    }
     const child = spawn(cmd, args, { stdio: "inherit", cwd: projectDir, env: childEnv(launcherLane) });
     // **A spawn is not a delivery.** This committed here, on the reasoning that a
     // process which started is a process carrying the delta — and a started process
@@ -208,7 +222,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     // delivered never, which is neither.
     // preResume agents committed above, at injection time; watching them for
     // after-start activity would never fire and would leave the delta pending.
-    const delivery = carries && !preResume ? watchForDelivery(projectDir, agent, carries, startedAt) : null;
+    const delivery = carries && !preResume ? watchForDelivery(projectDir, agent, carries, deliveryBaseline) : null;
     const linker = needsLink ? watchForNewSession(projectDir, agent, startedAt, child.pid) : null;
 
     const termHandler = () => {
@@ -223,17 +237,15 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     const exit = await waitForExit(child);
     watcher.stop();
     linker?.stop();
+    // A short first session can finish before the linking poll. Delivery needs
+    // its identity to read evidence, so settle linking before delivery, not after.
+    if (needsLink) linkStartedSession(projectDir, agent, startedAt, child.pid);
     // One last look before giving up on it. A short session — an agent that answered
     // and exited quickly — can finish between polls, and an uncommitted delta there
     // would be re-delivered on the next launch for no reason. If it still shows no
     // activity the delta stays pending on purpose: retryable beats lost.
     delivery?.settle();
     delivery?.stop();
-    // Linking runs while the child is alive so status, doctor and the next
-    // handoff tell the truth DURING the session, and once more after it exits
-    // because a killed terminal, a sleeping machine or a SIGKILL would
-    // otherwise leave the session stranded exactly as before.
-    if (needsLink) linkStartedSession(projectDir, agent, startedAt, child.pid);
     process.removeListener("SIGTERM", termHandler);
 
     if (exit.error) {
@@ -382,9 +394,9 @@ function watchForNewSession(projectDir, agent, startedAt, childPid) {
  * cannot answer returns nothing, and then nothing is committed — which leaves the
  * delta pending and retryable, the safe direction.
  */
-function watchForDelivery(projectDir, agent, carries, startedAt) {
+function watchForDelivery(projectDir, agent, carries, baseline) {
   const adapter = adapterFor(agent);
-  if (!adapter || typeof adapter.activitySince !== "function") {
+  if (!adapter || typeof adapter.activitySince !== "function" || !baseline) {
     // No way to observe. Committing blind would restore the bug this replaces, so
     // the delta simply stays pending until something can confirm it landed. Both
     // handles are present so the caller's `delivery?.settle()` never throws on an
@@ -397,15 +409,19 @@ function watchForDelivery(projectDir, agent, carries, startedAt) {
     if (!s) return;
     const slot = agentSlot(s, agent);
     if (!slot.id) return;
+    if (baseline.id && baseline.id !== slot.id) return;
     const ref = adapter.hydrate(projectDir, slot) ?? { id: slot.id, transcriptPath: slot.transcriptPath };
-    let seen = 0;
+    let delivered = false;
     try {
-      seen = adapter.activitySince(ref, startedAt)?.messages?.length ?? 0;
+      const activity = adapter.activitySince(ref, baseline.mark);
+      // Some native histories retain failed/partial turns. Their adapters can
+      // distinguish evidence worth preserving from a completed delivery.
+      delivered = activity?.deliveryObserved ?? (activity?.messages?.length > 0);
     } catch {
       // A transcript we cannot read is not evidence of delivery.
       return;
     }
-    if (seen > 0) {
+    if (delivered) {
       commitDelivery(projectDir, carries);
       stop();
     }
@@ -578,7 +594,7 @@ function readDelta(projectDir, inj) {
   if (!inj?.deltaFile) return null;
   const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
   if (!deltaPath) {
-    log(`${WARN} Pending delta path is not inside .bridge (${inj.deltaFile}); the agent starts without it.`);
+    log(`${WARN} Pending delta path is not inside bridge storage (${inj.deltaFile}); the agent starts without it.`);
     return null;
   }
   let delta;
@@ -699,7 +715,7 @@ export function appendFinalWords(projectDir, s, agent) {
 }
 
 /**
- * Watch .bridge/state.json for a ready handoff away from the running agent,
+ * Watch machine-local bridge state for a ready handoff away from the running agent,
  * then terminate the child — idle-safely.
  */
 function watchForHandoff(projectDir, agent, child) {
@@ -721,7 +737,7 @@ function watchForHandoff(projectDir, agent, child) {
       if (!warnedUnreadable) {
         warnedUnreadable = true;
         process.stderr.write(
-          `\n${WARN} bridge: cannot read .bridge/state.json — ${e.message}\n` +
+          `\n${WARN} bridge: cannot read bridge state — ${e.message}\n` +
             `   This launcher is running older code than the state file. Exit ${agent} and run 'bridge' again;\n` +
             "   the pending handoff is saved and will be applied by the new launcher.\n"
         );

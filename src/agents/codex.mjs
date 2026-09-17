@@ -253,7 +253,31 @@ export function health() {
 }
 
 export function smokeCommand() {
-  return { cmd: "codex", args: ["exec", "Reply with exactly: bridge-ok"] };
+  return { cmd: "codex", args: ["exec", "--skip-git-repo-check", "--sandbox", "read-only", "Reply with exactly: bridge-ok"] };
+}
+
+export function evaluationCommand(prompt, responseFile) {
+  return { cmd: "codex", args: ["exec", "--skip-git-repo-check", "--sandbox", "read-only",
+    "--ephemeral", "--json", "--output-last-message", responseFile, prompt] };
+}
+
+/** Vendor-reported whole-turn usage, not an estimate of the delta's tokens. */
+export function evaluationUsage(output) {
+  const totals = { input: 0, cachedInput: 0, output: 0, turns: 0 };
+  for (const line of output.split("\n").filter((line) => line.trim())) {
+    let event;
+    try { event = JSON.parse(line); } catch { return null; }
+    if (event?.type !== "turn.completed") continue;
+    const usage = event.usage;
+    if (!usage || !["input_tokens", "cached_input_tokens", "output_tokens"].every((key) =>
+      Number.isSafeInteger(usage[key]) && usage[key] >= 0) || usage.cached_input_tokens > usage.input_tokens) return null;
+    totals.input += usage.input_tokens;
+    totals.cachedInput += usage.cached_input_tokens;
+    totals.output += usage.output_tokens;
+    totals.turns++;
+    if (!Object.values(totals).every(Number.isSafeInteger)) return null;
+  }
+  return totals.turns ? { source: "codex-turn.completed", scope: "whole-agent-turns", ...totals } : null;
 }
 
 /** Says which of the three states the installed skill is in, never just "ok". */

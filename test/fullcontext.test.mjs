@@ -6,12 +6,51 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { composeFullContext } from "../src/delta.mjs";
-import { loadState, saveState } from "../src/state.mjs";
+import { loadState, saveState, safeCheckpointPath } from "../src/state.mjs";
+import { fullContextFor, promptBody, PROMPT_DELTA_BYTES } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
 const THREAD_ID = "0198aaaa-bbbb-7ccc-8ddd-eeeeffff0002";
 const LONG_MESSAGE = "Draft A for the announcement tweet. " + "All wording must survive verbatim. ".repeat(30);
+
+test("production handoff delivers directly readable checkpoint paths and budgets their full length", () => {
+  const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-global-handoff-")));
+  const runtimeHome = path.join(project, "..", `${path.basename(project)} runtime store with spaces`);
+  const vendorHome = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-vendor-fixture-"));
+  const sessions = path.join(vendorHome, "sessions", "2026", "07", "20");
+  fs.mkdirSync(sessions, { recursive: true });
+  const rows = [{ timestamp: "2026-07-20T10:00:00.000Z", type: "session_meta", payload: { id: THREAD_ID, cwd: project } }];
+  for (let i = 0; i < 200; i++) rows.push({ timestamp: `2026-07-20T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`, type: "event_msg", payload: { type: "agent_message", message: `evidence ${i}: ${LONG_MESSAGE}` } });
+  fs.writeFileSync(path.join(sessions, `rollout-2026-07-20T10-00-00-${THREAD_ID}.jsonl`), rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const result = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "claude", "--summary", "Verify the evidence."], {
+    cwd: project, encoding: "utf8",
+    env: { ...process.env, CONTEXT_BRIDGE_HOME: runtimeHome, CONTEXT_BRIDGE_STORAGE: "", CODEX_HOME: vendorHome, CODEX_THREAD_ID: THREAD_ID },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME;
+  const oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
+  process.env.CONTEXT_BRIDGE_HOME = runtimeHome;
+  delete process.env.CONTEXT_BRIDGE_STORAGE;
+  try {
+    const state = loadState(project);
+    const delta = fs.readFileSync(safeCheckpointPath(project, state.pendingInjection.deltaFile), "utf8");
+    const reference = delta.match(/^Full context checkpoint: (.+)$/m)?.[1];
+    assert.ok(path.isAbsolute(reference), "the agent must be able to open the printed path directly");
+    assert.match(fs.readFileSync(reference, "utf8"), /evidence 0:/);
+    assert.equal(fullContextFor(project, state.pendingInjection.deltaFile), reference);
+    const body = promptBody(delta, fullContextFor(project, state.pendingInjection.deltaFile));
+    assert.ok(Buffer.byteLength(body) <= PROMPT_DELTA_BYTES);
+    assert.doesNotMatch(body, /trimmed to fit a command-line prompt/);
+    assert.ok(body.includes(reference));
+    assert.equal(fs.existsSync(path.join(project, ".bridge")), false);
+  } finally {
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME;
+    else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE;
+    else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
+  }
+});
 
 test("composeFullContext keeps every message verbatim with no caps", () => {
   const manyMessages = Array.from({ length: 40 }, (_, i) => ({

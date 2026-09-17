@@ -3,7 +3,100 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, saveArgs, clearArgs, savedArgs, resolveArgs, isDangerous } from "../src/config.mjs";
+
+test("concurrent config clear and save preserve the other agent in Git-less global storage", { timeout: 20000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-config-race-"));
+  const project = path.join(root, "project"); fs.mkdirSync(project);
+  const env = { ...process.env, CONTEXT_BRIDGE_HOME: path.join(root, "runtime"), CONTEXT_BRIDGE_STORAGE: "", PATH: "" };
+  const configModule = new URL("../src/config.mjs", import.meta.url).href;
+  const stateModule = new URL("../src/state.mjs", import.meta.url).href;
+  const setup = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import {saveArgs} from ${JSON.stringify(configModule)};
+    import {bridgeDir} from ${JSON.stringify(stateModule)};
+    saveArgs(process.cwd(),'claude',['--model','original']); console.log(bridgeDir(process.cwd()));
+  `], { cwd: project, env, encoding: "utf8" });
+  assert.equal(setup.status, 0, setup.stderr);
+  const file = path.join(setup.stdout.trim(), "config.json");
+  const ready = path.join(root, "ready"), release = path.join(root, "release");
+  const blocked = path.join(root, "blocked"), done = path.join(root, "done");
+  const children = [];
+  t.after(async () => {
+    for (const { child, close } of children) {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await close;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const start = (body) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs'; import {saveArgs,clearArgs} from ${JSON.stringify(configModule)};
+      ${body}
+    `], { cwd: project, env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = ""; child.stderr.on("data", (data) => { stderr += data; });
+    const close = new Promise((resolve) => child.once("close", (code) => resolve({ code, stderr })));
+    children.push({ child, close }); return close;
+  };
+  const until = async (predicate) => {
+    const deadline = Date.now() + 7000;
+    while (!predicate()) { assert.ok(Date.now() < deadline, "fixture barrier timed out"); await delay(10); }
+  };
+  const a = start(`
+    const read=fs.readFileSync; let reads=0;
+    fs.readFileSync=function(name,...args){const result=read.call(fs,name,...args);
+      if(name===${JSON.stringify(file)} && ++reads===2){
+        fs.writeFileSync(${JSON.stringify(ready)},'ready');
+        const end=Date.now()+7000;
+        while(!fs.existsSync(${JSON.stringify(release)})){ if(Date.now()>end)throw new Error('release timed out'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); }
+      } return result;};
+    clearArgs(process.cwd(),'claude');
+  `);
+  await until(() => fs.existsSync(ready));
+  const b = start(`
+    import {observeKernelContention} from ${JSON.stringify(new URL("./helpers/observe-kernel-contention.mjs", import.meta.url).href)};
+    observeKernelContention(() => fs.writeFileSync(${JSON.stringify(blocked)}, 'kernel waiting'));
+    const open=fs.openSync;
+    fs.openSync=function(name,...args){try{return open.call(fs,name,...args);}catch(error){
+      if(String(name).endsWith('state.json.lock') && error.code==='EEXIST')fs.writeFileSync(${JSON.stringify(blocked)},'waiting'); throw error;}};
+    saveArgs(process.cwd(),'codex',['--model','new']); fs.writeFileSync(${JSON.stringify(done)},'done');
+  `);
+  await until(() => fs.existsSync(blocked) || fs.existsSync(done));
+  fs.writeFileSync(release, "go");
+  for (const result of [await a, await b]) assert.equal(result.code, 0, result.stderr);
+  const config = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(config.agents.claude, undefined);
+  assert.deepEqual(config.agents.codex.args, ["--model", "new"]);
+  assert.deepEqual(fs.readdirSync(project), []);
+});
+
+test("unreadable config is not silently interpreted as empty", (t) => {
+  const read = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (String(file).endsWith("config.json")) throw Object.assign(new Error("private details"), { code: "EACCES" });
+    return read.call(fs, file, ...args);
+  });
+  const project = fresh();
+  assert.throws(() => loadConfig(project), /could not be read; saved arguments were not reset/);
+});
+
+test("a failed config flush preserves saved arguments and releases the writer lock", (t) => {
+  const project = fresh();
+  t.after(() => fs.rmSync(project, { recursive: true, force: true }));
+  saveArgs(project, "claude", ["--model", "previous"]);
+  const file = path.join(project, ".bridge", "config.json");
+  const before = fs.readFileSync(file);
+  const mock = t.mock.method(fs, "fsyncSync", () => { throw Object.assign(new Error("config flush failed"), { code: "EIO" }); });
+  assert.throws(() => saveArgs(project, "codex", ["--model", "new"]), /config flush failed/);
+  assert.deepEqual(fs.readFileSync(file), before);
+  assert.equal(fs.existsSync(path.join(project, ".bridge", "state.json.lock")), false);
+  assert.equal(fs.readdirSync(path.dirname(file)).some((name) => name.includes(".tmp-")), false);
+  mock.mock.restore();
+  saveArgs(project, "codex", ["--model", "new"]);
+  assert.deepEqual(savedArgs(loadConfig(project), "claude"), ["--model", "previous"]);
+  assert.deepEqual(savedArgs(loadConfig(project), "codex"), ["--model", "new"]);
+});
 
 test("expected bridge errors carry diagnostic context without changing their message", async () => {
   const { BridgeError } = await import("../src/util.mjs");

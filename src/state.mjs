@@ -1,10 +1,15 @@
-// Project-local bridge state: .bridge/state.json
+// Machine-local bridge state. The public logical namespace remains .bridge/...,
+// but production storage is resolved by storage.mjs outside the project tree.
 // Stores only native session/thread REFERENCES, timestamps, checkpoints and
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, readJson, nowIso, fileExists, log, dim, OK, processAlive } from "./util.mjs";
+import { writeJsonAtomic, writeFileExclusive, nowIso, fileExists, log, dim, OK, processAlive } from "./util.mjs";
+import { withKernelLockSync } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
+import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
+export { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
+import { ensureProjectStore, ensureRuntimeStore, migrateLegacyStorage, runtimeStorageBase, runtimeStoreDir } from "./storage.mjs";
 
 export const STATE_VERSION = 5;
 
@@ -83,7 +88,7 @@ export function isInsideDir(child, parent) {
 }
 
 export function bridgeDir(projectDir) {
-  return path.join(projectDir, ".bridge");
+  return runtimeStoreDir(projectDir);
 }
 
 /**
@@ -121,11 +126,13 @@ export function isLexicallyInside(child, parent) {
 export function safeCheckpointPath(projectDir, rel) {
   if (typeof rel !== "string" || rel === "") return null;
   const bridge = bridgeDir(projectDir);
-  const abs = path.resolve(projectDir, rel);
+  const virtualRoot = path.resolve(projectDir, ".bridge");
+  const supplied = path.resolve(projectDir, rel);
+  if (!isLexicallyInside(supplied, virtualRoot)) return null;
+  const abs = path.resolve(bridge, path.relative(virtualRoot, supplied));
   if (
-    !isLexicallyInside(abs, bridge) ||
     path.basename(path.dirname(abs)) !== "checkpoints" ||
-    !isInsideDir(bridge, projectDir) ||
+    !isInsideDir(bridge, runtimeStorageBase(projectDir)) ||
     !isInsideDir(path.dirname(abs), bridge)
   ) {
     return null;
@@ -135,6 +142,13 @@ export function safeCheckpointPath(projectDir, rel) {
 
 export function statePath(projectDir) {
   return path.join(bridgeDir(projectDir), "state.json");
+}
+
+/** A directly readable reference for text delivered to agents or people. */
+export function checkpointReference(projectDir, rel) {
+  const absolute = safeCheckpointPath(projectDir, rel);
+  if (!absolute) throw new Error("Cannot reference a checkpoint outside this project's storage.");
+  return absolute === path.resolve(projectDir, rel) ? rel : absolute;
 }
 
 /**
@@ -159,7 +173,7 @@ export function checkpointsDir(projectDir, lane = DEFAULT_LANE) {
 
 /** A checkpoint's path relative to the project, for storing in state and text. */
 export function checkpointRel(projectDir, lane, name) {
-  return path.relative(projectDir, path.join(checkpointsDir(projectDir, lane), name));
+  return path.join(".bridge", path.relative(bridgeDir(projectDir), path.join(checkpointsDir(projectDir, lane), name)));
 }
 
 export function logsDir(projectDir) {
@@ -555,7 +569,7 @@ export function removeLaneFromState(disk, name) {
 }
 
 /**
- * Load state; returns null when no .bridge/state.json exists.
+ * Load state; returns null when no bridge state exists.
  * Older files are migrated in place, keeping a one-time backup of the original.
  * A file from a NEWER bridge is refused rather than guessed at.
  */
@@ -563,8 +577,8 @@ export function removeLaneFromState(disk, name) {
  * Read and parse `state.json`: null when it does not exist, throw when it exists
  * but will not parse.
  *
- * Missing and malformed both read back as null from `readJson`, but they must not
- * be treated alike. A missing file is a fresh project to create; a present-but
+ * Only ENOENT means a fresh project. Read failures and malformed content must
+ * not be treated alike with absence. A missing file is safe to create; a present-but
  * unparseable one is state that recreating would erase. Writes are atomic (temp +
  * rename), so a reader never catches a half-written file, which means an
  * unparseable one is real corruption. Both the load path and every lane-scoped
@@ -573,7 +587,15 @@ export function removeLaneFromState(disk, name) {
  */
 function readStateFile(projectDir) {
   const p = statePath(projectDir);
-  const s = readJson(p);
+  let text;
+  try { text = fs.readFileSync(p, "utf8"); } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw new Error("Bridge state could not be read. Refusing to overwrite existing state.", { cause: error });
+  }
+  let s;
+  try { s = JSON.parse(text); } catch {
+    throw new Error("Bridge state exists but could not be parsed. Refusing to overwrite it so no lane is lost; repair or remove it.");
+  }
   if (s) {
     // Parseable is not the same as valid. `{}` is legal JSON with no version, and
     // treating it as state would skip migration (undefined < 5 is false) and write
@@ -581,27 +603,55 @@ function readStateFile(projectDir) {
     // numeric version is refused for the same reason a corrupt one is.
     if (typeof s.version !== "number") {
       throw new Error(
-        ".bridge/state.json is present but has no version and is not valid bridge state. Refusing to overwrite it so no lane is lost; fix or remove the file."
+        "Bridge state is present but has no version and is not valid bridge state. Refusing to overwrite it so no lane is lost; repair or remove it."
       );
     }
     return s;
   }
-  if (fileExists(p)) {
-    throw new Error(
-      ".bridge/state.json exists but could not be parsed. Refusing to overwrite it so no lane is lost; fix or remove the file."
-    );
-  }
-  return null;
+  throw new Error(
+    "Bridge state exists but could not be parsed. Refusing to overwrite it so no lane is lost; repair or remove it."
+  );
 }
 
-export function loadState(projectDir, { write = writeJsonAtomic } = {}) {
+function preserveSchemaBackup(projectDir, version) {
+  if (version > STATE_VERSION) throw new Error(`Bridge state is version ${version}, newer than this bridge understands (${STATE_VERSION}). Update context-bridge.`);
+  if (version === STATE_VERSION) return null;
+  const file = statePath(projectDir);
+  const backup = `${file}.v${version}.backup`;
+  const original = fs.readFileSync(file);
+  if (JSON.parse(original).version !== version) {
+    throw new Error("Bridge state changed before schema backup; retry the operation.");
+  }
+  try {
+    writeFileExclusive(backup, original);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const stat = fs.lstatSync(backup);
+    if (!stat.isFile() || stat.isSymbolicLink() || !fs.readFileSync(backup).equals(original)) {
+      throw new Error("Existing schema backup does not match the source state. Refusing to overwrite either file.");
+    }
+  }
+  return backup;
+}
+
+export function loadState(projectDir, options = {}) {
+  if (options.readOnly) return readAndUpgradeState(projectDir, options);
+  const current = readStateFile(projectDir);
+  if (!current) return null;
+  if (current.version === STATE_VERSION) return withActiveLaneView(current);
+  if (current.version > STATE_VERSION) return readAndUpgradeState(projectDir, options);
+  // Migration is a write: re-read under the same lock as lane/project writers.
+  return withStateLock(projectDir, () => readAndUpgradeState(projectDir, options));
+}
+
+function readAndUpgradeState(projectDir, { write = writeJsonAtomic, readOnly = false } = {}) {
   const p = statePath(projectDir);
   let s = readStateFile(projectDir);
   if (!s) return null;
   if (s.version === STATE_VERSION) return withActiveLaneView(s);
   if (s.version > STATE_VERSION) {
     throw new Error(
-      `.bridge/state.json is version ${s.version}, newer than this bridge understands (${STATE_VERSION}). Update context-bridge.`
+      `Bridge state is version ${s.version}, newer than this bridge understands (${STATE_VERSION}). Update context-bridge.`
     );
   }
 
@@ -609,42 +659,26 @@ export function loadState(projectDir, { write = writeJsonAtomic } = {}) {
   while (s.version < STATE_VERSION) {
     const migrate = MIGRATIONS[s.version];
     if (!migrate) {
-      throw new Error(`.bridge/state.json version ${s.version} cannot be upgraded by this bridge.`);
+      throw new Error(`Bridge state version ${s.version} cannot be upgraded by this bridge.`);
     }
     s = migrate(s);
   }
-  let backup = null;
-  try {
-    try {
-      // COPYFILE_EXCL: the first backup is the real original, so never overwrite
-      // it — a later restore-and-remigrate must not clobber the good copy.
-      fs.copyFileSync(p, `${p}.v${from}.backup`, fs.constants.COPYFILE_EXCL);
-      backup = `${p}.v${from}.backup`;
-    } catch {
-      // Backup already exists: keep it.
-    }
-    write(p, s);
-    // Said once, here, because this is the only moment it is true and the only
-    // moment the user can act on it. A migration is one-way: an older bridge
-    // refuses a newer file outright rather than guessing at it, so somebody who
-    // downgrades after this needs to know the original is still on disk. The
-    // backup has always been written and nothing has ever mentioned it, which
-    // made rolling back look impossible when it is a copy away.
-    if (backup) {
-      log(
-        `${OK} Upgraded .bridge/state.json from v${from} to v${STATE_VERSION}. ` +
-          `The original is kept at ${path.basename(backup)}.`
-      );
-      log(dim("  Older versions of context-bridge cannot read the new file; restore that copy to go back."));
-    }
-  } catch {
-    // Read-only project or a race: the migrated state is still correct in memory.
+  if (readOnly) return withActiveLaneView(s);
+  const backup = preserveSchemaBackup(projectDir, from);
+  write(p, s);
+  if (backup) {
+    log(
+      `${OK} Upgraded ${p} from v${from} to v${STATE_VERSION}. ` +
+        `The original is kept at ${backup}.`
+    );
+    log(dim("  Older versions of context-bridge cannot read the new file; restore that copy to go back."));
   }
   return withActiveLaneView(s);
 }
 
-/** Load or create state (creates .bridge/ layout on first use). */
+/** Load or create state (creates the machine-local runtime layout on first use). */
 export function ensureState(projectDir) {
+  if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") migrateLegacyStorage(projectDir);
   let s = loadState(projectDir);
   if (!s) {
     // Refuse to initialise a project through a symlinked `.bridge`. Everything
@@ -652,6 +686,7 @@ export function ensureState(projectDir) {
     // under `.bridge`, so if the root is a symlink pointing away, the very first
     // `bridge` run would write this project's state and checkpoints outside it.
     // lstat, not exists, so a symlink to a not-yet-existing target is caught too.
+    if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureProjectStore(projectDir);
     const bridge = bridgeDir(projectDir);
     let linkStat = null;
     try {
@@ -666,15 +701,21 @@ export function ensureState(projectDir) {
     saveState(projectDir, s);
     fs.mkdirSync(safeCheckpointsDir(projectDir, DEFAULT_LANE), { recursive: true });
     fs.mkdirSync(logsDir(projectDir), { recursive: true });
-    ensureGitignore(projectDir);
+    // Global runtime storage has no project-tree footprint, so it must not
+    // modify the user's Git configuration as a side effect of first use.
+    if (process.env.CONTEXT_BRIDGE_STORAGE === "project") ensureGitignore(projectDir);
   }
   return s;
 }
 
 export function saveState(projectDir, s) {
-  s.updatedAt = nowIso();
-  writeJsonAtomic(statePath(projectDir), s);
-  return s;
+  return withStateLock(projectDir, () => {
+    const existing = readStateFile(projectDir);
+    if (existing) preserveSchemaBackup(projectDir, existing.version);
+    s.updatedAt = nowIso();
+    writeJsonAtomic(statePath(projectDir), s);
+    return s;
+  });
 }
 
 /** A synchronous pause with no busy spin, so lock retries do not peg a core. */
@@ -704,13 +745,20 @@ function sleepSync(ms) {
  * with no readable pid that is older than `staleMs`. A living owner is never
  * stolen, at any age: a review found that stealing a slow-but-live holder let its
  * own `finally` delete the new owner's fresh lock, so a stuck live process is
- * waited on rather than raced. Stealing renames the lock to a private name first,
- * so the delete only ever removes a file this process exclusively holds; two
- * stealers racing the same lock cannot both delete it, one wins the rename and the
- * other retries the acquire.
+ * waited on rather than raced. The stable kernel guard serializes the entire
+ * PID-lock acquire/recovery/callback/release sequence among updated writers.
+ * Old binaries do not take that guard: stop them before upgrading. The PID
+ * marker remains for compatibility, not as a standalone race-safe protocol.
  */
 function withStateLock(projectDir, fn, { staleMs = 15000 } = {}) {
+  // Resolve/migrate before choosing the lock path. Otherwise a direct hook or
+  // project mutation can lock the legacy store and then write a different one.
+  ensureRuntimeStore(projectDir);
   const lock = statePath(projectDir) + ".lock";
+  return withKernelLockSync(lock + ".guard", () => withStatePidLock(lock, fn, staleMs));
+}
+
+function withStatePidLock(lock, fn, staleMs) {
   fs.mkdirSync(path.dirname(lock), { recursive: true });
   let held = false;
   for (;;) {
@@ -763,7 +811,7 @@ function stealableLock(lock, staleMs) {
   return Date.now() - mtimeMs > staleMs; // no readable pid: fall back to age
 }
 
-/** Take a stealable lock by renaming it away first, so the delete is race-safe. */
+/** Rename the observed stale path; this does not protect against replacement races. */
 function stealLock(lock) {
   const mine = `${lock}.steal.${process.pid}.${Date.now()}`;
   try {
@@ -795,6 +843,7 @@ function stealLock(lock) {
 export function mutateState(projectDir, laneName, fn) {
   return withStateLock(projectDir, () => {
     const existing = readStateFile(projectDir);
+    if (existing) preserveSchemaBackup(projectDir, existing.version);
     let disk = existing ?? {
       version: STATE_VERSION,
       project: projectDir,
@@ -805,7 +854,7 @@ export function mutateState(projectDir, laneName, fn) {
     };
     while (disk.version < STATE_VERSION) {
       const migrate = MIGRATIONS[disk.version];
-      if (!migrate) throw new Error(`.bridge/state.json version ${disk.version} cannot be upgraded by this bridge.`);
+      if (!migrate) throw new Error(`Bridge state version ${disk.version} cannot be upgraded by this bridge.`);
       disk = migrate(disk);
     }
     if (!disk.lanes) disk.lanes = {};
@@ -832,6 +881,11 @@ export function mutateState(projectDir, laneName, fn) {
   });
 }
 
+/** Inspect current state under the writer lock without replacing it. */
+export function withProjectStateReadLock(projectDir, fn) {
+  return withStateLock(projectDir, () => fn(readStateFile(projectDir)));
+}
+
 /** Read-modify-write the active lane, under the lock. A thin alias for
  * `mutateState` on the active lane, kept for callers that read as "update". */
 export function updateState(projectDir, fn) {
@@ -850,10 +904,11 @@ export function updateState(projectDir, fn) {
 export function mutateProject(projectDir, fn) {
   return withStateLock(projectDir, () => {
     let disk = readStateFile(projectDir);
-    if (!disk) throw new Error("No .bridge/state.json in this project yet. Run 'bridge' first.");
+    if (!disk) throw new Error("No bridge state in this project yet. Run 'bridge' first.");
+    preserveSchemaBackup(projectDir, disk.version);
     while (disk.version < STATE_VERSION) {
       const migrate = MIGRATIONS[disk.version];
-      if (!migrate) throw new Error(`.bridge/state.json version ${disk.version} cannot be upgraded by this bridge.`);
+      if (!migrate) throw new Error(`Bridge state version ${disk.version} cannot be upgraded by this bridge.`);
       disk = migrate(disk);
     }
     if (!disk.lanes) disk.lanes = {};
@@ -895,29 +950,11 @@ export function ensureGitignore(projectDir) {
  * real handoff produces and fails when one of them is a kind retention does not
  * know, which is the only version of this rule that has ever held.
  */
-export const CHECKPOINT_KINDS = {
-  /** The bounded delta the next agent actually reads. */
-  delta: ".md",
-  /**
-   * The same handoff with no budget over it.
-   *
-   * It was called the companion while it was a delivery aid: written for the
-   * receiving session, read at most once, deleted the moment that agent handed
-   * off. It is not that any more. Once the delta carries whole messages the two
-   * are nearly the same size, and this is the file the delivery layer points at
-   * when it has to trim, which can happen after the handoff has already ended.
-   * So it outlives its reader and is pruned with its own group like everything
-   * else here. The suffix does not change: renaming it on disk would drop every
-   * file already written out of the pattern that collects it, which is the bug
-   * this registry exists to prevent.
-   */
-  fullContext: "-full.md",
-  /** What the departing agents actually ran; what `bridge inspect` renders. */
-  audit: "-audit.json",
-};
-
-/** A delivered delta is renamed rather than deleted, so the rename is the record. */
-export const CONSUMED_SUFFIX = ".consumed";
+/*
+ * The registry lives in checkpoint-kinds.mjs so migration can use the same
+ * suffixes without importing state. Full context is retained with its handoff
+ * group; consumed deltas retain their contents under the consumed suffix.
+ */
 
 /**
  * Assert a lane's checkpoints directory can be written to without escaping the
@@ -931,8 +968,8 @@ export const CONSUMED_SUFFIX = ".consumed";
  */
 export function safeCheckpointsDir(projectDir, lane) {
   const bridge = bridgeDir(projectDir);
-  if (!isInsideDir(bridge, projectDir)) {
-    throw new Error(".bridge does not resolve inside the project; refusing to write checkpoints.");
+  if (!isInsideDir(bridge, runtimeStorageBase(projectDir))) {
+    throw new Error("bridge storage does not resolve inside its runtime root; refusing to write checkpoints.");
   }
   const dir = checkpointsDir(projectDir, lane); // also validates the lane name
   let cur = bridge;
@@ -953,26 +990,28 @@ export function safeCheckpointsDir(projectDir, lane) {
 
 /**
  * A lane's checkpoints directory, but only if it can be READ without escaping the
- * project — null otherwise. The read counterpart to `safeCheckpointsDir` (which is
- * for writes and throws): `status` and `inspect` list this directory, and a
- * symlinked lane checkpoints dir would let them enumerate or read files outside the
- * project and present them as this project's own. Returns null rather than throwing,
+ * runtime storage root — null otherwise. The read counterpart to
+ * `safeCheckpointsDir` (which is for writes and throws): `status` and `inspect` list
+ * this directory, and a symlinked lane checkpoints dir would let them enumerate or
+ * read files outside this project's own store. Returns null rather than throwing,
  * because a read for display must degrade quietly, not crash.
  */
 export function readableCheckpointsDir(projectDir, lane) {
   const bridge = bridgeDir(projectDir);
   const dir = checkpointsDir(projectDir, lane);
-  if (!isInsideDir(bridge, projectDir) || !isInsideDir(dir, bridge)) return null;
+  if (!isInsideDir(bridge, runtimeStorageBase(projectDir)) || !isInsideDir(dir, bridge)) return null;
   return dir;
 }
 
-/** Write a delta checkpoint file; returns path relative to project. */
+/** Create a checkpoint without replacing evidence; returns its logical path. */
 export function writeCheckpoint(projectDir, lane, name, content) {
+  assertCheckpointName(name);
+  if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
   const dir = safeCheckpointsDir(projectDir, lane);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, name);
-  fs.writeFileSync(file, content);
-  return path.relative(projectDir, file);
+  writeFileExclusive(file, content);
+  return checkpointRel(projectDir, lane, name);
 }
 
 /** How far SOURCE's stream has been packed for TARGET, or null if never. */

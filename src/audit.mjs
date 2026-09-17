@@ -17,7 +17,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { adapterFor } from "./agents/index.mjs";
-import { checkpointRel, safeCheckpointsDir, readableCheckpointsDir, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
+import { checkpointRel, safeCheckpointsDir, safeCheckpointPath, readableCheckpointsDir, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
+import { ensureRuntimeStore, gitMetadata } from "./storage.mjs";
+import { assertCheckpointName } from "./checkpoint-kinds.mjs";
+import { writeFileExclusive } from "./util.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -33,6 +36,7 @@ const SHOWN_READS = 10;
  */
 export function buildManifest(projectDir, { source, target, via = null, sources = {} }, marks = {}) {
   const agents = {};
+  const readerErrors = [];
   for (const [id, ref] of Object.entries(sources)) {
     const adapter = adapterFor(id);
     if (!adapter?.auditSince || !ref) continue;
@@ -42,6 +46,7 @@ export function buildManifest(projectDir, { source, target, via = null, sources 
     } catch {
       // A reader that throws must not take the handoff down with it. The delta
       // is the product; the manifest is a convenience beside it.
+      readerErrors.push({ agent: id, reason: "audit reader failed" });
       continue;
     }
     if (!audit) continue;
@@ -60,7 +65,8 @@ export function buildManifest(projectDir, { source, target, via = null, sources 
       capabilities: adapter.capabilities ?? null,
     };
   }
-  return { manifestVersion: MANIFEST_VERSION, source, target, ...(via ? { via } : {}), agents };
+  return { manifestVersion: MANIFEST_VERSION, source, target, ...(via ? { via } : {}), git: gitMetadata(projectDir), agents,
+    ...(readerErrors.length ? { readerErrors } : {}) };
 }
 
 /**
@@ -84,19 +90,23 @@ function withinProject(projectDir, paths) {
 
 /** Write it beside its delta, sharing the stem so the pair is obvious on disk. */
 export function writeManifest(projectDir, lane, stem, manifest) {
+  assertCheckpointName(stem);
   // Same write boundary as writeCheckpoint: refuse to create a manifest through a
   // symlinked lane directory that would land it outside the project.
+  if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
   const dir = safeCheckpointsDir(projectDir, lane);
   const rel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
+  const file = safeCheckpointPath(projectDir, rel);
+  if (!file) throw new Error(`Refusing to write audit manifest outside bridge storage: ${rel}`);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(projectDir, rel), JSON.stringify(manifest, null, 2));
+  writeFileExclusive(file, JSON.stringify(manifest, null, 2));
   return rel;
 }
 
 /** The newest manifest in one lane, which is what `bridge inspect` defaults to. */
 export function latestManifest(projectDir, lane = DEFAULT_LANE) {
   // Refuse to read through a symlinked lane checkpoints directory that resolves
-  // outside the project — the read twin of the write guard above.
+  // outside the runtime root — the read twin of the write guard above.
   const dir = readableCheckpointsDir(projectDir, lane);
   if (!dir) return null;
   let names;
@@ -108,8 +118,9 @@ export function latestManifest(projectDir, lane = DEFAULT_LANE) {
   if (!names.length) return null;
   const newest = names.sort().at(-1);
   const rel = checkpointRel(projectDir, lane, newest);
+  const file = safeCheckpointPath(projectDir, rel);
   try {
-    return { rel, manifest: JSON.parse(fs.readFileSync(path.join(projectDir, rel), "utf8")) };
+    return file ? { rel, manifest: JSON.parse(fs.readFileSync(file, "utf8")) } : null;
   } catch {
     return null;
   }
@@ -126,6 +137,7 @@ export function latestManifest(projectDir, lane = DEFAULT_LANE) {
 export function renderManifest(manifest) {
   const lines = [];
   lines.push(`audit  ${manifest.source} → ${manifest.target}`);
+  for (const error of manifest.readerErrors ?? []) lines.push(`  INCOMPLETE  ${error.agent}: ${error.reason}`);
   for (const [id, a] of Object.entries(manifest.agents ?? {})) {
     const failed = a.commands.filter((c) => c.ok === false);
     const unknown = a.commands.filter((c) => c.ok === null);
