@@ -627,6 +627,12 @@ snapshot; `incomplete: false` means no skip was observed, not that deleted histo
 or concurrently arriving evidence was searched.
 
 `watch.mjs` polls authoritative status under an explicit `read-only` policy.
+Switch history treats an absent checkpoint directory as empty, but refuses an
+unsafe directory or a failed enumeration. CLI status then exits nonzero rather
+than claiming no switches occurred; MCP reports an error and watch reports
+unavailability. No repair is attempted and private filesystem errors are not
+included in the public message. Worktree status separately marks unavailable
+child workspaces rather than claiming their state was read.
 It emits snapshot/change/unavailable/recovered JSON events and pins the
 selected directory's device and inode. It performs no repair, switch or
 acknowledgement. Polling can miss intermediate transitions; this stream is

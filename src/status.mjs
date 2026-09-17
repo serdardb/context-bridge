@@ -4,12 +4,19 @@ import { loadState, readableCheckpointsDir } from "./state.mjs";
 import { pendingDeliveryStatus } from "./delivery.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { laneWorkspace } from "./worktree.mjs";
+import { BridgeError } from "./util.mjs";
 
 export function switchHistory(projectDir, lane) {
+  const unreadable = (cause) => new BridgeError("Switch history could not be read safely. Check stored evidence and permissions before retrying; no empty history was assumed.", {
+    code: "BRIDGE_HISTORY_UNREADABLE", cause, operation: "read switch history",
+  });
   const dir = readableCheckpointsDir(projectDir, lane);
-  if (!dir) return [];
+  if (!dir) throw unreadable();
   let names;
-  try { names = fs.readdirSync(dir); } catch { return []; }
+  try { names = fs.readdirSync(dir); } catch (cause) {
+    if (cause.code === "ENOENT") return [];
+    throw unreadable(cause);
+  }
   const seen = new Map();
   for (const name of names) {
     const m = name.match(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-([a-z]+)-to-([a-z]+)/);

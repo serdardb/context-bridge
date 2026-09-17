@@ -85,6 +85,17 @@ test("production status diagnoses delivered size and missing evidence without ex
   assert.equal(report().deltaStatus, "missing", "absence does not prove delivery");
   fs.symlinkSync(path.join(root, "outside"), deltaPath);
   assert.equal(report().deltaStatus, "unsafe");
+  const readdir = fs.readdirSync;
+  try {
+    fs.readdirSync = (dir, ...args) => {
+      if (dir === checkpointsDir(project)) throw Object.assign(new Error("private filesystem detail"), { code: "EACCES" });
+      return readdir(dir, ...args);
+    };
+    assert.throws(() => projectStatus(project), (error) =>
+      error.code === "BRIDGE_HISTORY_UNREADABLE" && error.cause.code === "EACCES" &&
+      !error.message.includes("private filesystem detail"));
+  } finally { fs.readdirSync = readdir; }
+  assert.deepEqual(fs.readFileSync(statePath(project)), stateBefore);
 });
 
 // What this output used to be: every agent's progress printed as its raw
@@ -352,9 +363,13 @@ test("status will not read switch history through a symlinked lane checkpoints d
     )
   );
 
-  const out = status(project);
-  assert.doesNotMatch(out, /Recent switches/, "a symlinked lane dir must not surface external names as switch history");
-  assert.doesNotMatch(out, /→\s*Codex/, "no external switch is shown");
+  for (const flags of [[], ["--json"]]) {
+    const result = spawnSync(process.execPath, [BRIDGE, "status", ...flags], { cwd: project, encoding: "utf8" });
+    assert.equal(result.status, 1, "unsafe history is not an empty successful report");
+    assert.match(result.stderr, /Switch history could not be read safely/);
+    assert.doesNotMatch(result.stdout + result.stderr, /2026-07-22|→\s*Codex/);
+    assert.ok(!result.stderr.includes(outside));
+  }
 
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
