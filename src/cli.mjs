@@ -28,6 +28,7 @@ import { prepareReleaseEvidence, verifyReleaseEvidence } from "./release-evidenc
 import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
+import { inspectRegisteredProject } from "./project-inspect.mjs";
 import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
 import { createWorktreeLane } from "./worktree.mjs";
 import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore } from "./storage.mjs";
@@ -98,6 +99,7 @@ ${cmd("storage migrate")}Migrate legacy storage; --retirement-dir selects an ext
 ${cmd("storage cleanup-ignore")}Preview obsolete .gitignore rules (--apply to remove, --json)
 ${cmd("project list")}List machine-local project identities ( --json supported )
 ${cmd("project adopt <id>")}Reconnect this moved directory to an existing project store
+${cmd("project inspect <id>")}Inspect retained state by UUID, including missing projects (--json)
 ${cmd("status [--json]")}Show project bridge status
 ${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
 ${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
@@ -217,10 +219,21 @@ export async function main(argv) {
         if (flags.has("--json")) log(JSON.stringify(projects, null, 2));
         else if (!projects.length) log("No registered bridge projects.");
         else for (const project of projects) log(`${project.id}  [${project.availability}${project.errorCode ? `: ${project.errorCode}` : ""}]  ${project.root}`);
+      } else if (args[1] === "inspect" && args.length === 3) {
+        const report = inspectRegisteredProject(args[2]);
+        if (flags.has("--json")) log(JSON.stringify(report, null, 2));
+        else {
+          log(`${report.id}  [${report.availability}]  ${report.root}`);
+          log(`Store: ${report.store}; state: ${report.state}; ${report.files} files, ${report.bytes} bytes.`);
+          log(`Pending: ${report.pending.length}; live launchers: ${report.launchers.length}; preparations: ${report.preparations.length}.`);
+          for (const issue of report.issues) log(`${WARN} ${issue.file}: ${issue.reason}`);
+          log("Read-only observation, not authorization to remove this project store.");
+        }
+        if (!report.complete) process.exitCode = 1;
       } else if (args[1] === "adopt" && args.length === 3) {
         const result = adoptProject(projectDir, args[2]);
         log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
-      } else throw new Error("Usage: bridge project list [--json] | adopt <id> [--json]");
+      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | adopt <id> [--json]");
       return;
     }
 

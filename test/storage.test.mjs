@@ -1528,6 +1528,34 @@ test("explicit adoption reconnects a different-inode directory without Git or ch
     });
     assert.equal(listed.status, 0, listed.stderr);
     assert.equal(JSON.parse(listed.stdout)[0].availability, "missing");
+    const inspect = () => spawnSync(process.execPath, [path.join(process.cwd(), "bin", "bridge.mjs"), "project", "inspect", identity.id, "--json"], {
+      cwd: moved, encoding: "utf8", env: { ...process.env, PATH: "" },
+    });
+    const retained = JSON.parse(originalState);
+    retained.lanes.main.pendingHandoff = { target: "codex" };
+    retained.launchers = { [process.pid]: { pid: process.pid, lane: "main" } };
+    fs.writeFileSync(path.join(store, "state.json"), JSON.stringify(retained));
+    const preparation = path.join(store, "checkpoints", ".handoff-retained.json");
+    fs.writeFileSync(preparation, "{}");
+    let inspection = inspect();
+    assert.equal(inspection.status, 0, inspection.stderr);
+    let report = JSON.parse(inspection.stdout);
+    assert.equal(report.availability, "missing");
+    assert.equal(report.state, "present");
+    assert.deepEqual(report.pending, [{ lane: "main", kind: "handoff" }]);
+    assert.equal(report.launchers[0].pid, process.pid);
+    assert.deepEqual(report.preparations, ["checkpoints/.handoff-retained.json"]);
+    assert.ok(report.files >= 3 && report.bytes > 0);
+    fs.symlinkSync(path.join(store, "state.json"), path.join(store, "linked-evidence"));
+    inspection = inspect();
+    assert.equal(inspection.status, 1);
+    report = JSON.parse(inspection.stdout);
+    assert.equal(report.complete, false);
+    assert.ok(report.issues.some(issue => issue.reason === "linked-entry"));
+    assert.equal(fs.readFileSync(path.join(store, "state.json"), "utf8"), JSON.stringify(retained));
+    fs.unlinkSync(path.join(store, "linked-evidence"));
+    fs.unlinkSync(preparation);
+    fs.writeFileSync(path.join(store, "state.json"), originalState);
     fs.mkdirSync(source);
     assert.equal(registeredProjects()[0].availability, "replaced");
     fs.rmdirSync(source);
