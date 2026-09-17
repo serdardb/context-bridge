@@ -10,6 +10,55 @@ import { defaultState } from "../src/state.mjs";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 
+test("short writes preserve complete registry, migration, state and import owner stamps", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-short-stamps-"));
+  try {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { migrateLegacyStorage } from './src/storage.mjs';
+      import { defaultState, mutateState, writeCheckpoint } from './src/state.mjs';
+      import { composeFullContext } from './src/delta.mjs';
+      import { exportArtifact, importArtifact } from './src/artifact.mjs';
+      const root = ${JSON.stringify(root)}, project = path.join(root, 'project');
+      fs.mkdirSync(path.join(project, '.bridge'), { recursive: true });
+      fs.writeFileSync(path.join(project, '.bridge/state.json'), JSON.stringify(defaultState(project)));
+      const open = fs.openSync, write = fs.writeSync, close = fs.closeSync;
+      const descriptors = new Map(), stamps = [], shortened = new Set();
+      fs.openSync = (file, ...args) => {
+        const fd = open(file, ...args);
+        if (typeof file === 'string' && file.endsWith('.lock') && args[0] === 'wx') descriptors.set(fd, file);
+        return fd;
+      };
+      fs.writeSync = (fd, data, ...args) => {
+        if (!descriptors.has(fd)) return write(fd, data, ...args);
+        shortened.add(descriptors.get(fd));
+        if (typeof data === 'string') return write(fd, Buffer.from(data), 0, 1);
+        return write(fd, data, args[0], Math.min(1, args[1]), args[2]);
+      };
+      fs.closeSync = fd => {
+        const file = descriptors.get(fd);
+        if (file) { stamps.push({ file, text: fs.readFileSync(file, 'utf8') }); descriptors.delete(fd); }
+        return close(fd);
+      };
+      migrateLegacyStorage(project);
+      mutateState(project, () => {});
+      writeCheckpoint(project, 'main', '2026-09-18T00-00-00-000Z-claude-to-codex-full.md',
+        composeFullContext({ fromAgent: 'claude', summary: 'Preserve complete owner metadata', sources: [], decisions: [], work: [], next: [] }));
+      const artifact = path.join(root, 'context.cbctx');
+      exportArtifact(project, artifact);
+      importArtifact(artifact, { projectDir: project, apply: true });
+      for (const name of ['projects.json.lock', 'migrations', 'state.json.lock', 'imports'])
+        assert.ok(stamps.some(({ file }) => shortened.has(file) && file.split(path.sep).includes(name)), 'missing short-write injection: ' + name);
+      for (const { text } of stamps)
+        assert.equal(text.trim().split(/\\s+/)[0], String(process.pid), 'a successful short write must not truncate the owner');
+    `], { cwd: repo, env: { ...process.env, CONTEXT_BRIDGE_HOME: path.join(root, "home"), CONTEXT_BRIDGE_STORAGE: "" },
+      encoding: "utf8", timeout: 15000 });
+    assert.equal(child.status, 0, child.stderr || child.error?.message);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("native health probes actual acquisition and release without a project", () => {
   const report = kernelLockHealth();
   assert.equal(report.ok, true, JSON.stringify(report));

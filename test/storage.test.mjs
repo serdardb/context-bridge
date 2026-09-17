@@ -743,9 +743,15 @@ test("real staging cleanup previews, scopes lanes and preserves live or uncertai
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import fs from 'node:fs';
         import { writeCheckpoint } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
-        const write = fs.writeFileSync;
+        const write = fs.writeFileSync, open = fs.openSync;
+        const descriptors = new Set();
+        fs.openSync = (file, ...args) => {
+          const fd = open(file, ...args); descriptors.delete(fd);
+          if (typeof file === 'string' && file.startsWith(${JSON.stringify(checkpointsDir(project, lane) + path.sep)}) && file.includes('.tmp-')) descriptors.add(fd);
+          return fd;
+        };
         fs.writeFileSync = (file, ...args) => {
-          if (typeof file !== 'number') return write(file, ...args);
+          if (!descriptors.has(file)) return write(file, ...args);
           write(file, 'partial'); process.exit(79);
         };
         writeCheckpoint(${JSON.stringify(project)}, ${JSON.stringify(lane)}, ${JSON.stringify(LEGACY_CHECKPOINT)}, 'complete context');
@@ -800,15 +806,21 @@ test("partial evidence writes are never published, including abrupt process exit
   const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
   process.env.CONTEXT_BRIDGE_HOME = path.join(root, "home");
   delete process.env.CONTEXT_BRIDGE_STORAGE;
-  const write = fs.writeFileSync;
+  const write = fs.writeFileSync, open = fs.openSync;
   try {
     ensureState(project);
     const dir = checkpointsDir(project, "main");
+    const descriptors = new Set();
+    fs.openSync = (file, ...args) => {
+      const fd = open(file, ...args); descriptors.delete(fd);
+      if (typeof file === "string" && path.dirname(file) === dir && file.includes(".tmp-")) descriptors.add(fd);
+      return fd;
+    };
     for (const kind of ["checkpoint", "audit"]) {
       const stem = "2026-09-16T00-00-00-000Z-claude-to-codex";
       let injected = false;
       fs.writeFileSync = (file, ...args) => {
-        if (typeof file !== "number") return write(file, ...args);
+        if (!descriptors.has(file)) return write(file, ...args);
         injected = true;
         write(file, "partial");
         throw Object.assign(new Error("injected partial write"), { code: "ENOSPC" });
@@ -824,9 +836,15 @@ test("partial evidence writes are never published, including abrupt process exit
         import fs from 'node:fs';
         import { writeCheckpoint } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
         import { writeManifest } from ${JSON.stringify(new URL("../src/audit.mjs", import.meta.url).href)};
-        const write = fs.writeFileSync;
+        const write = fs.writeFileSync, open = fs.openSync;
+        const descriptors = new Set();
+        fs.openSync = (file, ...args) => {
+          const fd = open(file, ...args); descriptors.delete(fd);
+          if (typeof file === 'string' && file.startsWith(${JSON.stringify(dir + path.sep)}) && file.includes('.tmp-')) descriptors.add(fd);
+          return fd;
+        };
         fs.writeFileSync = (file, ...args) => {
-          if (typeof file !== 'number') return write(file, ...args);
+          if (!descriptors.has(file)) return write(file, ...args);
           write(file, 'partial'); process.exit(79);
         };
         if (${JSON.stringify(kind)} === 'checkpoint')
@@ -844,6 +862,7 @@ test("partial evidence writes are never published, including abrupt process exit
     assert.deepEqual(fs.readdirSync(project), []);
   } finally {
     fs.writeFileSync = write;
+    fs.openSync = open;
     if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
     if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;
     fs.rmSync(root, { recursive: true, force: true });

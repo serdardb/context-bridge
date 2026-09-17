@@ -780,7 +780,7 @@ function withStatePidLock(lock, fn, staleMs) {
     // finally still removes it, and until then others fall back to mtime staleness.
     held = true;
     try {
-      fs.writeSync(fd, `${process.pid} ${nowIso()}`);
+      fs.writeFileSync(fd, Buffer.from(`${process.pid} ${nowIso()}`));
     } catch {
       // couldn't stamp the pid; we still hold the lock
     } finally {

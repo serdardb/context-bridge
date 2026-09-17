@@ -23,7 +23,7 @@ function withImportPidLock(hash, fn) {
     try {
       const fd = fs.openSync(lock, "wx");
       try {
-        fs.writeSync(fd, `${process.pid}\n`);
+        fs.writeFileSync(fd, Buffer.from(`${process.pid}\n`));
         fs.closeSync(fd);
       }
       catch (error) {

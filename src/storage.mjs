@@ -207,7 +207,7 @@ function createStampedLock(lock) {
   const fd = fs.openSync(lock, "wx");
   let closed = false;
   try {
-    fs.writeSync(fd, `${process.pid}\n`);
+    fs.writeFileSync(fd, Buffer.from(`${process.pid}\n`));
     fs.closeSync(fd);
     closed = true;
   } catch (error) {
