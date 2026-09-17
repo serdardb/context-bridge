@@ -644,6 +644,25 @@ test("project retirement and restoration preserve evidence through real process 
       const registry = fs.readFileSync(path.join(home, 'projects.json'));
       assert.equal(cli('retire').status, 0);
       assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
+      const stateFile = path.join(store, 'state.json');
+      const originalState = fs.readFileSync(stateFile);
+      for (const owners of [
+        { launchers: { unknown: { pid: process.pid, lane: 'main' } } },
+        { launchers: { [process.pid]: { pid: process.pid + 1 } } },
+        { launchers: [] },
+        { launcher: { pid: 'unknown' } },
+      ]) {
+        fs.writeFileSync(stateFile, JSON.stringify({ ...JSON.parse(originalState), ...owners }));
+        const before = fs.readFileSync(stateFile);
+        const inspection = cli('inspect');
+        assert.equal(inspection.status, 1, 'uncertain launcher ownership must make inspection incomplete');
+        assert.ok(JSON.parse(inspection.stdout).issues.some(issue => issue.reason === 'invalid-launcher-records'));
+        assert.equal(cli('retire', true).status, 1, 'uncertain ownership must block retirement');
+        assert.deepEqual(fs.readFileSync(stateFile), before);
+        assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
+        assert.equal(fs.existsSync(archive), false);
+      }
+      fs.writeFileSync(stateFile, originalState);
       mutateState(project, 'main', s => { s.pendingHandoff = { target: 'codex' }; });
       assert.equal(cli('retire', true).status, 1);
       mutateState(project, 'main', s => { s.pendingHandoff = null; });

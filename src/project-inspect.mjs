@@ -79,6 +79,22 @@ export function inspectRegisteredProject(id) {
         issue("state.json", "unsupported-state");
       } else {
         report.state = "present";
+        // A malformed owner record is uncertainty, not evidence of quiescence.
+        const launchers = state.launchers;
+        if (launchers != null && (typeof launchers !== "object" || Array.isArray(launchers))) {
+          issue("state.json", "invalid-launcher-records");
+        } else {
+          for (const [key, record] of Object.entries(launchers ?? {})) {
+            const pid = Number(key);
+            if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== key ||
+                !record || typeof record !== "object" || Array.isArray(record) ||
+                (record.pid !== undefined && record.pid !== pid)) issue("state.json", "invalid-launcher-records");
+          }
+        }
+        if (state.launcher != null && (typeof state.launcher !== "object" ||
+            Array.isArray(state.launcher) || !Number.isSafeInteger(state.launcher.pid) || state.launcher.pid <= 0)) {
+          issue("state.json", "invalid-launcher-records");
+        }
         report.launchers = liveLaunchers(state);
         for (const [lane, value] of Object.entries(state.lanes)) {
           if (!value || typeof value !== "object" || Array.isArray(value)) { issue("state.json", "invalid-lane"); continue; }
