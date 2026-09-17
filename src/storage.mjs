@@ -155,12 +155,17 @@ export function pathLocator(projectDir) {
 }
 
 function fileIdentity(projectDir) {
-  try {
-    const stat = fs.statSync(projectDir);
-    return `${stat.dev}:${stat.ino}`;
-  } catch {
-    return null;
-  }
+  const stat = fs.statSync(projectDir, { bigint: true });
+  // Inodes are recycled after deletion. Never reconnect a different creation
+  // instance merely because it received a former project's inode.
+  if (!stat.isDirectory() || stat.birthtimeNs <= 0n) return null;
+  return `v2:${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+}
+
+function requireFileIdentity(identity) {
+  if (!identity) throw new BridgeError("This filesystem does not provide a directory creation identity. Automatic project registration or adoption is unsafe here; use a filesystem with directory birth times. No existing project context was selected.", {
+    code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE", operation: "identify project",
+  });
 }
 
 function registryPath() {
@@ -175,6 +180,7 @@ function readRegistry() {
     if (parsed?.version !== REGISTRY_VERSION || !parsed.projects || typeof parsed.projects !== "object" ||
         Array.isArray(parsed.projects) || Object.entries(parsed.projects).some(([id, record]) =>
           !PROJECT_UUID.test(id) || !record || record.id !== id ||
+          (record.fileIdentity != null && typeof record.fileIdentity !== "string") ||
           (record.lifecycle !== undefined && !["active", "retiring", "retired", "restoring", "purging", "purged"].includes(record.lifecycle)) ||
           typeof record.path !== "string" || !path.isAbsolute(record.path))) {
       throw new BridgeError("Global bridge registry is invalid. Refusing to select a new project identity.", { code: "BRIDGE_REGISTRY_INVALID" });
@@ -306,9 +312,13 @@ export function projectIdentity(projectDir, { create = false } = {}) {
     // reuse a path after its old native sessions are gone. Filesystem identity is
     // the only automatic same-machine move signal; cross-device moves require an
     // explicit adoption operation.
-    const known =
-      records.find((record) => identity && record.fileIdentity === identity) ||
-      records.find((record) => !record.fileIdentity && record.path === canonical);
+    const legacy = records.find((record) => record.path === canonical &&
+      !record.fileIdentity?.startsWith("v2:"));
+    if (legacy) throw new BridgeError("This project's older registration cannot distinguish a moved directory from a recycled inode. Verify the project UUID before explicitly adopting its stored context.", {
+      code: "BRIDGE_PROJECT_IDENTITY_UNVERIFIED", nextCommand: `bridge project adopt ${legacy.id}`,
+    });
+    if (!identity && records.some((record) => record.path === canonical)) requireFileIdentity(identity);
+    const known = records.find((record) => identity && record.fileIdentity === identity);
     if (known) {
       if (known.lifecycle && known.lifecycle !== "active") throw new BridgeError("This project is not active. Inspect its lifecycle before writing runtime data; permanently purged stores cannot be restored.", {
         code: "BRIDGE_PROJECT_RETIRED", nextCommand: `bridge project inspect ${known.id} --json`,
@@ -320,6 +330,7 @@ export function projectIdentity(projectDir, { create = false } = {}) {
       return { kind: known.gitId ? "git-clone" : "local", id: known.id, root: canonical, portable: false, fileIdentity: identity };
     }
     if (!create) return { kind: "path-locator", id: pathLocator(canonical), root: canonical, portable: false, fileIdentity: identity };
+    requireFileIdentity(identity);
     const root = gitRoot(projectDir);
     const localId = root && gitProjectId(root);
     const id = newProjectId();
@@ -355,8 +366,11 @@ export function registeredProjects() {
       const stat = fs.lstatSync(root);
       if (stat.isSymbolicLink()) availability = "redirected";
       else if (!stat.isDirectory()) availability = "not-directory";
-      else if (recorded && recorded !== `${stat.dev}:${stat.ino}`) availability = "replaced";
-      else availability = "present";
+      else {
+        const current = fileIdentity(root);
+        availability = !recorded?.startsWith("v2:") || !current ? "unverified" :
+          recorded !== current ? "replaced" : "present";
+      }
     } catch (error) {
       availability = error.code === "ENOENT" || error.code === "ENOTDIR" ? "missing" : "unreadable";
       errorCode = error.code ?? "UNKNOWN";
@@ -397,6 +411,7 @@ export function adoptProject(projectDir, id) {
   const canonical = fs.realpathSync.native(path.resolve(projectDir));
   if (!fs.statSync(canonical).isDirectory()) throw new Error("Project adoption requires a directory.");
   const destinationIdentity = fileIdentity(canonical);
+  requireFileIdentity(destinationIdentity);
   if (hasLegacyRuntime(legacyBridgeDir(canonical))) {
     throw new Error("This directory contains legacy bridge state; refusing to merge it with another project.");
   }

@@ -434,6 +434,16 @@ Already-registered identity lookups (including mutating lookups) use the registr
 and filesystem identity without launching Git. Audit branch/commit probes remain
 independent and current; the identity annotation is not a live Git-config mirror.
 
+Automatic directory matching uses device, inode and nanosecond birth time, not
+device/inode alone: Linux can reuse an inode immediately after deletion. Older
+registrations require explicit `project adopt <id>` after checking ownership;
+they are listed as `unverified`, not silently upgraded from a pathname. Matching
+creation identities preserve same-filesystem rename behavior. Filesystems that
+report no positive birth time currently cannot register or adopt projects;
+existing uncertain associations are refused rather than exposing old context.
+This is an open filesystem compatibility limitation, not universal identity
+support or a guarantee against adversarial metadata forgery.
+
 `launchers` records each live launcher by pid and the lane it opened. It exists
 because a launcher started before an upgrade cannot read a newer state file — it
 says so and asks to be restarted rather than waiting for a switch that can never

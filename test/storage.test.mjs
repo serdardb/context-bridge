@@ -28,6 +28,52 @@ import { pruneCheckpoints } from "../src/clean.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
 const LEGACY_CHECKPOINT = "2026-09-16T00-00-00-000Z-claude-to-codex.md";
 
+test("project creation identity rejects recycled inodes and requires explicit legacy adoption", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-creation-identity-"));
+  const project = path.join(root, "project"), moved = path.join(root, "moved");
+  fs.mkdirSync(project);
+  const oldHome = process.env.CONTEXT_BRIDGE_HOME;
+  process.env.CONTEXT_BRIDGE_HOME = path.join(root, "home");
+  const stat = fs.statSync;
+  try {
+    const original = projectIdentity(project, { create: true });
+    fs.renameSync(project, moved);
+    assert.equal(projectIdentity(moved, { create: true }).id, original.id);
+    // Keep dev/ino identical and change only the creation instance.
+    fs.statSync = (...args) => {
+      const value = stat(...args);
+      if (args[0] === fs.realpathSync(moved) && args[1]?.bigint) value.birthtimeNs += 1n;
+      return value;
+    };
+    assert.equal(projectIdentity(moved).kind, "path-locator");
+    assert.notEqual(projectIdentity(moved, { create: true }).id, original.id);
+    fs.statSync = stat;
+    const registryPath = path.join(process.env.CONTEXT_BRIDGE_HOME, "projects.json");
+    const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+    registry.projects = { [original.id]: registry.projects[original.id] };
+    registry.projects[original.id].fileIdentity = original.fileIdentity.split(":").slice(1, 3).join(":");
+    fs.writeFileSync(registryPath, JSON.stringify(registry));
+    const before = fs.readFileSync(registryPath, "utf8");
+    assert.throws(() => projectIdentity(moved, { create: true }), { code: "BRIDGE_PROJECT_IDENTITY_UNVERIFIED" });
+    assert.equal(fs.readFileSync(registryPath, "utf8"), before);
+    assert.equal(registeredProjects()[0].availability, "unverified");
+    adoptProject(moved, original.id);
+    assert.equal(projectIdentity(moved).id, original.id);
+    fs.statSync = (...args) => {
+      const value = stat(...args);
+      if (args[0] === fs.realpathSync(moved) && args[1]?.bigint) value.birthtimeNs = 0n;
+      return value;
+    };
+    assert.throws(() => projectIdentity(moved), { code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE" });
+    assert.throws(() => adoptProject(moved, original.id), { code: "BRIDGE_PROJECT_IDENTITY_UNAVAILABLE" });
+  } finally {
+    fs.statSync = stat;
+    if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME;
+    else process.env.CONTEXT_BRIDGE_HOME = oldHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("migration flush failures preserve originals and recovery evidence", () => {
   for (const point of ["backup", "retired"]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-migration-sync-"));
