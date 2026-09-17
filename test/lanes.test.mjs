@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +14,7 @@ import {
   lanes,
   agentSlot,
   statePath,
+  safeCheckpointPath,
   bridgeDir,
   checkpointsDir,
   writeCheckpoint,
@@ -39,7 +41,7 @@ const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
 
 function twoLaneProject() {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-2lane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
 
   const main = emptyLane();
   main.activeAgent = "claude";
@@ -164,7 +166,7 @@ test("a hook writes the lane its launcher pinned, not the project's active lane"
   // Without the pinned lane the hook would follow the active-lane view and write
   // `main`, silently filing one lane's session under another.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hooklane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify(
@@ -194,7 +196,7 @@ test("a malformed state file is refused, not silently recreated over", () => {
   // every lane the instant a byte went bad. A present-but-unparseable file must be
   // refused so the corruption is loud and the lanes are recoverable.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-corrupt-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(statePath(project), "{ this is not, json ]");
 
   assert.throws(() => loadState(project), /could not be parsed/);
@@ -232,7 +234,7 @@ test("a hook files its session in the lane it is linked to, not a stale env lane
   // CONTEXT_BRIDGE_LANE=feature (stale or hand-set). Trusting the env over the live
   // link would file main's own session under feature.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hookstale-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const main = emptyLane();
   const transcript = path.join(project, "claude-main.jsonl");
   fs.writeFileSync(transcript, JSON.stringify({ type: "user", timestamp: "2026-01-01T00:00:00.000Z", message: { content: "hi" } }) + "\n");
@@ -259,15 +261,15 @@ test("main's checkpoints stay flat while a new lane's live under it", () => {
   // lane has no such history and starts clean in its own directory. Same filename
   // in two lanes must not collide.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-ckpt-lane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
 
   const mainRel = writeCheckpoint(project, "main", "2026-01-01T00-00-00-000Z-claude-to-codex.md", "main body");
   const featRel = writeCheckpoint(project, "feature", "2026-01-01T00-00-00-000Z-claude-to-codex.md", "feature body");
 
   assert.equal(mainRel, path.join(".bridge", "checkpoints", "2026-01-01T00-00-00-000Z-claude-to-codex.md"), "main stays flat");
   assert.equal(featRel, path.join(".bridge", "lanes", "feature", "checkpoints", "2026-01-01T00-00-00-000Z-claude-to-codex.md"), "a new lane is under it");
-  assert.equal(fs.readFileSync(path.join(project, mainRel), "utf8"), "main body");
-  assert.equal(fs.readFileSync(path.join(project, featRel), "utf8"), "feature body", "the same name in two lanes does not collide");
+  assert.equal(fs.readFileSync(safeCheckpointPath(project, mainRel), "utf8"), "main body");
+  assert.equal(fs.readFileSync(safeCheckpointPath(project, featRel), "utf8"), "feature body", "the same name in two lanes does not collide");
 });
 
 test("retention keeps each lane's newest groups independently, not one shared window", () => {
@@ -275,7 +277,7 @@ test("retention keeps each lane's newest groups independently, not one shared wi
   // keep window. If retention swept one flat pile, feature's group, being the
   // oldest overall, would be pruned; per lane it is the newest in its own.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-ret-lane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -284,7 +286,7 @@ test("retention keeps each lane's newest groups independently, not one shared wi
   const old = Date.now() / 1000 - 30 * 24 * 60 * 60; // 30 days ago, well past any cutoff
   const put = (lane, stem, ageOffset) => {
     const rel = writeCheckpoint(project, lane, `${stem}.md`, "x");
-    fs.utimesSync(path.join(project, rel), old + ageOffset, old + ageOffset);
+    fs.utimesSync(safeCheckpointPath(project, rel), old + ageOffset, old + ageOffset);
   };
   // main is the newer, busier lane; feature is quieter and older overall.
   put("main", "2026-03-01T00-00-00-000Z-claude-to-codex", 300);
@@ -323,7 +325,7 @@ test("retention prunes a lane directory the state has forgotten", () => {
   // orphaned lane's checkpoints from growing forever the way an uncollected kind
   // once did.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-orphan-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   // State knows only main; `feature` exists on disk but is not in state.
   fs.writeFileSync(
     statePath(project),
@@ -331,11 +333,11 @@ test("retention prunes a lane directory the state has forgotten", () => {
   );
   const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
   const rel = writeCheckpoint(project, "feature", "2025-01-01T00-00-00-000Z-claude-to-codex.md", "orphan");
-  fs.utimesSync(path.join(project, rel), old, old);
+  fs.utimesSync(safeCheckpointPath(project, rel), old, old);
 
   pruneCheckpoints(project, { keep: 0, days: 1 });
 
-  assert.ok(!fs.existsSync(path.join(project, rel)), "the forgotten lane's old checkpoint was collected, not left to leak");
+  assert.ok(!fs.existsSync(safeCheckpointPath(project, rel)), "the forgotten lane's old checkpoint was collected, not left to leak");
 });
 
 test("clean fails closed on a corrupt state and keeps a pending checkpoint", () => {
@@ -344,14 +346,14 @@ test("clean fails closed on a corrupt state and keeps a pending checkpoint", () 
   // state is a fresh project with nothing to lose; corrupt state is not, so it must
   // refuse to delete rather than guess in the one direction that loses a handoff.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-failclosed-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const rel = writeCheckpoint(project, "main", "2026-08-03T12-00-00-000Z-claude-to-codex.md", "the delta a switch is waiting on");
   fs.writeFileSync(statePath(project), "{ corrupt, not valid json"); // unreadable
 
   const res = pruneCheckpoints(project, { all: true });
   assert.equal(res.skippedCorruptState, true, "it says it refused because state was unreadable");
   assert.equal(res.deletedFiles, 0);
-  assert.ok(fs.existsSync(path.join(project, rel)), "nothing was deleted, including the pending delta");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, rel)), "nothing was deleted, including the pending delta");
 });
 
 test("clean refuses the whole prune when a lane's checkpoints resolve outside the project", () => {
@@ -362,7 +364,7 @@ test("clean refuses the whole prune when a lane's checkpoints resolve outside th
   // and let a safe lane be pruned. So the outside victim AND a prunable main group
   // must both survive, and the refusal must be reported.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-symlink-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   const victim = path.join(outside, "2026-01-01T00-00-00-000Z-claude-to-codex.md");
   fs.writeFileSync(victim, "not the bridge's to delete");
@@ -370,7 +372,7 @@ test("clean refuses the whole prune when a lane's checkpoints resolve outside th
   // would happily delete.
   const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
   const mainRel = writeCheckpoint(project, "main", "2026-01-02T00-00-00-000Z-claude-to-codex.md", "safe lane, must survive the refusal");
-  fs.utimesSync(path.join(project, mainRel), old, old);
+  fs.utimesSync(safeCheckpointPath(project, mainRel), old, old);
   // A lane the state knows, whose checkpoints directory is a symlink to `outside`.
   fs.mkdirSync(path.join(bridgeDir(project), "lanes", "feature"), { recursive: true });
   fs.symlinkSync(outside, path.join(bridgeDir(project), "lanes", "feature", "checkpoints"));
@@ -383,20 +385,20 @@ test("clean refuses the whole prune when a lane's checkpoints resolve outside th
   assert.equal(res.skippedEscapingBridge, true, "it reports the refusal instead of silently skipping the lane");
   assert.equal(res.deletedGroups, 0, "no lane is pruned when one escapes");
   assert.ok(fs.existsSync(victim), "a symlinked lane must not let clean reach outside the project");
-  assert.ok(fs.existsSync(path.join(project, mainRel)), "the safe main group survives the refusal");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, mainRel)), "the safe main group survives the refusal");
 });
 
 test("clean fails closed when there is no state file but checkpoints exist", () => {
   // A checkpoint with no state to name it could be a handoff whose state was lost;
   // deleting it takes the recovery with it. Missing state is safe only when empty.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-nostate-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const rel = writeCheckpoint(project, "main", "2026-08-03T12-00-00-000Z-claude-to-codex.md", "maybe a lost handoff");
   // no state.json is written
 
   const res = pruneCheckpoints(project, { all: true });
   assert.equal(res.skippedNoState, true, "it says it refused because there is no state to check against");
-  assert.ok(fs.existsSync(path.join(project, rel)), "the checkpoint was not deleted");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, rel)), "the checkpoint was not deleted");
 });
 
 test("many processes hammering their own lanes at once lose no lane's write", async () => {
@@ -405,7 +407,7 @@ test("many processes hammering their own lanes at once lose no lane's write", as
   // lane-scoped splice were wrong, a child would read another mid-write and a
   // lane would end on the wrong value or vanish.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lane-race-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const names = ["main", "alpha", "beta", "gamma"];
   const lanesObj = {};
   for (const n of names) lanesObj[n] = emptyLane();
@@ -424,10 +426,15 @@ test("many processes hammering their own lanes at once lose no lane's write", as
           }
         });
       `;
-      spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: "ignore" }).on("exit", resolve);
+      const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (data) => { stderr += data; });
+      child.on("close", (status) => resolve({ status, stderr }));
     });
 
-  await Promise.all(names.map(child));
+  for (const result of await Promise.all(names.map(child))) {
+    assert.equal(result.status, 0, result.stderr);
+  }
 
   const final = loadState(project);
   for (const n of names) {
@@ -442,9 +449,10 @@ test("writeCheckpoint refuses to write through a symlinked lane checkpoints dire
   // component from .bridge down must be a real directory. Reintroduce the raw
   // checkpointsDir in writeCheckpoint and the file lands in the external directory.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-write-")));
-  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  ensureRuntimeStore(project);
+  fs.mkdirSync(path.join(bridgeDir(project), "lanes", "feature"), { recursive: true });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
-  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+  fs.symlinkSync(outside, checkpointsDir(project, "feature"));
 
   assert.throws(
     () => writeCheckpoint(project, "feature", "2026-01-01T00-00-00-000Z-claude-to-codex.md", "escaped"),
@@ -490,7 +498,7 @@ test("removeLaneFromState refuses main and the active lane, removes any other", 
 
 test("mutateProject persists a lane creation and an activeLane move, unlike mutateState", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-laneproj-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -511,7 +519,7 @@ test("mutateProject persists a lane creation and an activeLane move, unlike muta
 test("laneSummaries marks the active lane, lists linked agents, and orders by recency", async () => {
   const { laneSummaries } = await import("../src/state.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanesum-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
 
   const main = emptyLane();
   main.agents.claude = { id: "claude-1", transcriptPath: "/m/c.jsonl", mark: null, idle: false };
@@ -522,8 +530,8 @@ test("laneSummaries marks the active lane, lists linked agents, and orders by re
   // main has an older checkpoint; feature a newer one -> feature is more recent.
   const older = writeCheckpoint(project, "main", "2026-01-01T00-00-00-000Z-claude-to-codex.md", "x");
   const newer = writeCheckpoint(project, "feature", "2026-02-02T00-00-00-000Z-codex-to-claude.md", "x");
-  fs.utimesSync(path.join(project, older), new Date("2026-01-01"), new Date("2026-01-01"));
-  fs.utimesSync(path.join(project, newer), new Date("2026-02-02"), new Date("2026-02-02"));
+  fs.utimesSync(safeCheckpointPath(project, older), new Date("2026-01-01"), new Date("2026-01-01"));
+  fs.utimesSync(safeCheckpointPath(project, newer), new Date("2026-02-02"), new Date("2026-02-02"));
 
   const summaries = laneSummaries(project, s);
   assert.deepEqual(summaries.map((l) => l.name), ["feature", "main"], "newest activity first");
@@ -538,7 +546,7 @@ test("bridge lane rm deletes the lane directory only after --yes, and never main
   const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, "lane", ...a], { cwd: project, encoding: "utf8" });
 
   run("new", "feature");
-  const laneDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  const laneDir = checkpointsDir(project, "feature");
   fs.mkdirSync(laneDir, { recursive: true });
   fs.writeFileSync(path.join(laneDir, "2026-01-01T00-00-00-000Z-claude-to-codex.md"), "x");
   run("switch", "main"); // cannot remove the active lane
@@ -549,7 +557,7 @@ test("bridge lane rm deletes the lane directory only after --yes, and never main
 
   const removed = run("rm", "feature", "--yes");
   assert.equal(removed.status, 0);
-  assert.equal(fs.existsSync(path.join(project, ".bridge", "lanes", "feature")), false, "the whole lane directory is gone");
+  assert.equal(fs.existsSync(path.join(bridgeDir(project), "lanes", "feature")), false, "the whole lane directory is gone");
 
   const main = run("rm", "main", "--yes");
   assert.equal(main.status, 1, "main is never removable");
@@ -563,7 +571,7 @@ test("bridge lane rm refuses while a launcher is alive, so a live session cannot
   // empty on its next hook. Until a per-lane launcher record exists, rm refuses
   // whenever any launcher is alive. This process is alive, so it stands in for one.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-rmlive-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify(
@@ -597,7 +605,7 @@ test("a stale mutateState after lane rm does not resurrect the lane, but a fresh
   // still works because there is no state file at all in that case.
   const { mutateProject, removeLaneFromState } = await import("../src/state.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resurrect-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -612,7 +620,6 @@ test("a stale mutateState after lane rm does not resurrect the lane, but a fresh
 
   // Bootstrap still works: a project with no state file at all gets its first lane.
   const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-bootstrap-")));
-  fs.mkdirSync(bridgeDir(fresh), { recursive: true });
   mutateState(fresh, "main", (st) => (st.activeAgent = "claude"));
   assert.equal(loadState(fresh)?.lanes?.main?.activeAgent, "claude", "a brand-new project's first lane is still created");
 
@@ -648,7 +655,7 @@ test("unlinkAgent clears the slot and every watermark that names the agent, both
 
 test("bridge unlink clears one agent in the active lane and reports it", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlink-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const main = emptyLane();
   main.activeAgent = "claude";
   main.agents.claude = { id: "c1", transcriptPath: "/c", mark: "mc", idle: false };
@@ -694,7 +701,7 @@ test("bridge unlink refuses while a launcher is alive, so a live session cannot 
   // live session; refuse while a launcher is alive (same guard as lane rm). This
   // process stands in for the launcher.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlinklive-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const main = emptyLane();
   main.agents.codex = { id: "x1", transcriptPath: "/x", mark: "mx", idle: false };
   fs.writeFileSync(
@@ -719,7 +726,7 @@ test("bridge unlink refuses while a launcher is alive, so a live session cannot 
 
 test("lane rm frees a lane no launcher holds while still protecting the one a live launcher drives", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-rmperlane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify(
@@ -811,7 +818,7 @@ test("extractResume pulls --resume and its lane out of forwarded args in every f
 test("resolveResumeLane requires an existing lane, falls back, or asks to pick", async () => {
   const { resolveResumeLane } = await import("../src/cli.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resume-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -825,7 +832,7 @@ test("resolveResumeLane requires an existing lane, falls back, or asks to pick",
 
   // single-lane project: nothing to choose, so the bare form just opens it
   const solo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resume1-")));
-  fs.mkdirSync(bridgeDir(solo), { recursive: true });
+  ensureRuntimeStore(solo);
   fs.writeFileSync(
     statePath(solo),
     JSON.stringify({ version: STATE_VERSION, project: solo, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -838,7 +845,7 @@ test("resolveResumeLane requires an existing lane, falls back, or asks to pick",
 
 test("bridge <agent> --resume <missing> refuses before launching anything", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-resumecli-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -929,13 +936,13 @@ test("a deliberate link (adopt) of the same unlinked id retires just that one to
 
 test("bridge clean --lane and inspect --lane target one lane and reject an unknown one", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanescope-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane(), feature: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
   );
   // An old, prunable group in feature only.
-  const fdir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  const fdir = checkpointsDir(project, "feature");
   fs.mkdirSync(fdir, { recursive: true });
   const ff = path.join(fdir, "2026-01-01T00-00-00-000Z-claude-to-codex.md");
   fs.writeFileSync(ff, "x");
@@ -958,7 +965,7 @@ test("bridge clean --lane and inspect --lane target one lane and reject an unkno
 
 test("clean --lane and inspect --lane fail closed on corrupt state instead of crashing", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-corruptlane-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(statePath(project), "{ this is not, valid json"); // corrupt, not missing
   const run = (...a) => spawnSync(process.execPath, [BRIDGE_BIN, ...a], { cwd: project, encoding: "utf8" });
 

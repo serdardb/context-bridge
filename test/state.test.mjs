@@ -1,9 +1,10 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ensureState, loadState, STATE_VERSION, safeCheckpointPath } from "../src/state.mjs";
+import { ensureState, loadState, STATE_VERSION, safeCheckpointPath, statePath, bridgeDir, checkpointsDir } from "../src/state.mjs";
 import { writeJsonAtomic, writeFileExclusive, processAlive } from "../src/util.mjs";
 
 test("process ownership requires ESRCH before treating a valid owner as dead", () => {
@@ -24,20 +25,25 @@ test("process ownership requires ESRCH before treating a valid owner as dead", (
   } finally { process.kill = kill; }
 });
 
-test("ensureState creates bridge layout and appends .bridge/ to gitignore once", () => {
+test("ensureState creates the runtime layout without unnecessary project ignore changes", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-state-"));
   fs.mkdirSync(path.join(project, ".git"));
   fs.writeFileSync(path.join(project, ".gitignore"), "node_modules/\n");
 
   const state = ensureState(project);
   assert.equal(state.project, project);
-  assert.ok(fs.existsSync(path.join(project, ".bridge", "state.json")));
-  assert.ok(fs.existsSync(path.join(project, ".bridge", "checkpoints")));
-  assert.ok(fs.existsSync(path.join(project, ".bridge", "logs")));
+  assert.ok(fs.existsSync(statePath(project)));
+  assert.ok(fs.existsSync(checkpointsDir(project)));
+  assert.ok(fs.existsSync(path.join(bridgeDir(project), "logs")));
 
   ensureState(project);
   const gitignore = fs.readFileSync(path.join(project, ".gitignore"), "utf8");
-  assert.equal(gitignore.match(/^\.bridge\/$/gm)?.length, 1);
+  if (process.env.CONTEXT_BRIDGE_STORAGE === "project") {
+    assert.equal(gitignore.match(/^\.bridge\/$/gm)?.length, 1);
+  } else {
+    assert.equal(gitignore, "node_modules/\n");
+    assert.equal(fs.existsSync(path.join(project, ".bridge")), false);
+  }
   assert.equal(loadState(project).version, STATE_VERSION, "a literal here breaks on every bump; the constant is the claim");
 });
 
@@ -147,7 +153,7 @@ test("migrating to lanes moves every field and loses none of it", async () => {
     launcher: { stateVersion: 4, pid: 999, recordedAt: "2026-07-20T12:00:00.000Z" },
     updatedAt: "2026-07-20T12:00:00.000Z",
   };
-  fs.writeFileSync(statePath(project), JSON.stringify(v4));
+  fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(v4));
 
   const s = loadState(project);
   const raw = JSON.parse(fs.readFileSync(statePath(project), "utf8"));
@@ -221,7 +227,7 @@ test("a migration says what it did and where the original went, exactly once", (
   assert.match(spoke[0], /from v4 to v5/, "it has to name both versions or it is not actionable");
   assert.match(spoke[0], /state\.json\.v4\.backup/, "and the file that makes going back possible");
   assert.match(spoke[1], /cannot read the new file/, "one way is the part nobody would guess");
-  assert.ok(fs.existsSync(path.join(project, ".bridge", "state.json.v4.backup")));
+  assert.ok(fs.existsSync(`${statePath(project)}.v4.backup`));
 });
 
 test("every intermediate state version migrates to the current schema with its own backup", () => {
@@ -242,10 +248,10 @@ test("every intermediate state version migrates to the current schema with its o
     };
     fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(common));
     const loaded = loadState(project);
-    const raw = JSON.parse(fs.readFileSync(path.join(project, ".bridge", "state.json"), "utf8"));
+    const raw = JSON.parse(fs.readFileSync(statePath(project), "utf8"));
     assert.equal(loaded.version, STATE_VERSION);
     assert.equal(raw.version, STATE_VERSION);
-    assert.ok(fs.existsSync(path.join(project, ".bridge", `state.json.v${version}.backup`)));
+    assert.ok(fs.existsSync(`${statePath(project)}.v${version}.backup`));
     assert.equal(loaded.agents.claude.id, "claude-1");
     assert.equal(loaded.agents.codex.id, "codex-1");
     assert.deepEqual(loaded.pendingInjection, common.pendingInjection);
@@ -253,12 +259,12 @@ test("every intermediate state version migrates to the current schema with its o
   }
 });
 
-test("a migration write failure preserves the old state for every legacy version", () => {
+test("a schema migration write failure preserves the old state for every legacy version", () => {
   for (const version of [1, 2, 3, 4]) {
     const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `bridge-migration-fail-v${version}-`)));
-    const bridge = path.join(project, ".bridge");
+    // Test schema publication independently of moving a project-local directory.
+    const bridge = ensureRuntimeStore(project);
     const stateFile = path.join(bridge, "state.json");
-    fs.mkdirSync(bridge, { recursive: true });
     const original = JSON.stringify({
       version,
       project,
@@ -292,20 +298,21 @@ test("a migration write failure preserves the old state for every legacy version
 // safeCheckpointPath flips exactly one of these from null to a path.
 test("safeCheckpointPath allows a real checkpoint path and refuses every escape", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-safe-")));
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
+  ensureRuntimeStore(project);
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const name = "2026-01-01T00-00-00-000Z-claude-to-codex.md";
 
   // legitimate: flat main checkpoints
   assert.equal(
     safeCheckpointPath(project, path.join(".bridge", "checkpoints", name)),
-    path.join(project, ".bridge", "checkpoints", name),
+    path.join(checkpointsDir(project), name),
     "a real .bridge/checkpoints path resolves"
   );
   // legitimate: a lane's checkpoints
-  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature", "checkpoints"), { recursive: true });
+  fs.mkdirSync(checkpointsDir(project, "feature"), { recursive: true });
   assert.equal(
     safeCheckpointPath(project, path.join(".bridge", "lanes", "feature", "checkpoints", name)),
-    path.join(project, ".bridge", "lanes", "feature", "checkpoints", name),
+    path.join(checkpointsDir(project, "feature"), name),
     "a real lane checkpoints path resolves"
   );
 
@@ -320,35 +327,39 @@ test("safeCheckpointPath allows a real checkpoint path and refuses every escape"
   fs.rmSync(project, { recursive: true });
 });
 
-test("safeCheckpointPath refuses a symlinked checkpoints directory and a symlinked .bridge root", () => {
+test("safeCheckpointPath refuses a symlinked checkpoints directory and a symlinked runtime root", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-safe-")));
-  fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  ensureRuntimeStore(project);
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   const name = "2026-01-01T00-00-00-000Z-claude-to-codex.md";
   fs.writeFileSync(path.join(outside, name), "external");
 
   // a lane checkpoints directory that is a symlink out
-  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
-  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+  fs.mkdirSync(path.join(bridgeDir(project), "lanes", "feature"), { recursive: true });
+  fs.symlinkSync(outside, checkpointsDir(project, "feature"));
   assert.equal(
     safeCheckpointPath(project, path.join(".bridge", "lanes", "feature", "checkpoints", name)),
     null,
     "a symlinked checkpoints directory is refused"
   );
 
-  // .bridge root itself a symlink out (build a fresh project so .bridge can be the link)
+  // Replace the runtime root itself, keeping the project's registered identity.
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-root-")));
   const proj2 = path.join(base, "proj");
   fs.mkdirSync(proj2);
   const evil = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-evil-")));
   fs.mkdirSync(path.join(evil, "checkpoints"), { recursive: true });
   fs.writeFileSync(path.join(evil, "checkpoints", name), "external");
-  fs.symlinkSync(evil, path.join(proj2, ".bridge"));
-  assert.equal(
-    safeCheckpointPath(proj2, path.join(".bridge", "checkpoints", name)),
-    null,
-    "a symlinked .bridge root is refused"
-  );
+  const runtimeRoot = ensureRuntimeStore(proj2);
+  fs.rmSync(runtimeRoot, { recursive: true });
+  fs.symlinkSync(evil, runtimeRoot);
+  const resolve = () => safeCheckpointPath(proj2, path.join(".bridge", "checkpoints", name));
+  if (process.env.CONTEXT_BRIDGE_STORAGE === "project") {
+    assert.equal(resolve(), null, "a symlinked legacy root is refused");
+  } else {
+    assert.throws(resolve, /Unsafe bridge project storage directory/, "the registry boundary refuses the root before resolving a checkpoint");
+  }
+  assert.equal(fs.readFileSync(path.join(evil, "checkpoints", name), "utf8"), "external");
 
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });
@@ -365,7 +376,7 @@ test("ensureState refuses to initialise a project through a symlinked .bridge", 
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   fs.symlinkSync(outside, path.join(project, ".bridge"));
 
-  assert.throws(() => ensureState(project), /\.bridge is a symlink/, "a symlinked .bridge root must refuse init");
+  assert.throws(() => ensureState(project), /\.bridge.*symlink|symlinked.*\.bridge/, "a symlinked .bridge root must refuse init");
   assert.equal(fs.existsSync(path.join(outside, "state.json")), false, "no state written into the external directory");
   assert.equal(fs.existsSync(path.join(outside, "checkpoints")), false, "no checkpoints dir created outside");
 

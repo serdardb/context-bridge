@@ -1,4 +1,5 @@
 import test from "node:test";
+import { ensureRuntimeStore } from "../src/storage.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,7 +8,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { seedLane, prepareSeed, writeSeed, bindSeed, unbindSeed, composeSeed, sectionBody, seedBinding } from "../src/seed.mjs";
 import { fullContextFor } from "../src/delivery.mjs";
-import { loadState, statePath, bridgeDir, emptyLane, STATE_VERSION } from "../src/state.mjs";
+import { loadState, statePath, bridgeDir, checkpointsDir, safeCheckpointPath, emptyLane, STATE_VERSION } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE = path.join(ROOT, "bin", "bridge.mjs");
@@ -52,9 +53,10 @@ test("composeSeed carries decisions, next, git and files but never the conversat
 
 test("seedLane writes a seed doc without the conversation and leaves an unbound seed injection", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-seed-")));
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
+  ensureRuntimeStore(project);
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
   // main is the source lane (flat checkpoints); it has a full-context checkpoint.
-  fs.writeFileSync(path.join(project, ".bridge", "checkpoints", "2026-08-04T00-00-00-000Z-claude-to-codex-full.md"), FULL);
+  fs.writeFileSync(path.join(checkpointsDir(project), "2026-08-04T00-00-00-000Z-claude-to-codex-full.md"), FULL);
   const main = emptyLane();
   main.activeAgent = "claude";
   fs.writeFileSync(
@@ -73,7 +75,7 @@ test("seedLane writes a seed doc without the conversation and leaves an unbound 
   assert.equal(inj.id, null, "it seeds the first session, resuming nothing");
   assert.equal(inj.deltaFile, rep.deltaRel);
 
-  const doc = fs.readFileSync(path.join(project, rep.deltaRel), "utf8");
+  const doc = fs.readFileSync(safeCheckpointPath(project, rep.deltaRel), "utf8");
   assert.match(doc, /- use mutateProject/, "decisions crossed into the seed");
   assert.match(doc, /- finish the seed/, "next crossed");
   assert.doesNotMatch(doc, /a long chat that must not cross/, "the conversation did NOT cross");
@@ -91,7 +93,7 @@ test("seedBinding binds an unbound seed to the opening agent and ignores everyth
 
 test("bridge lane new --seed validates the source before creating anything", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-seedcli-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   fs.writeFileSync(
     statePath(project),
     JSON.stringify({ version: STATE_VERSION, project, activeLane: "main", lanes: { main: emptyLane() }, launcher: null, updatedAt: null }, null, 2)
@@ -114,8 +116,9 @@ test("bridge lane new --seed validates the source before creating anything", () 
 // an empty target lane ready to receive a seed.
 function seededProject() {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-seedfix-")));
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
-  fs.writeFileSync(path.join(project, ".bridge", "checkpoints", "2026-08-04T00-00-00-000Z-claude-to-codex-full.md"), FULL);
+  ensureRuntimeStore(project);
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
+  fs.writeFileSync(path.join(checkpointsDir(project), "2026-08-04T00-00-00-000Z-claude-to-codex-full.md"), FULL);
   const main = emptyLane();
   main.activeAgent = "claude";
   fs.writeFileSync(
@@ -127,7 +130,7 @@ function seededProject() {
 
 test("bindSeed gives the seed to the first opener and refuses a second racer", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-bind-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const target = emptyLane();
   target.pendingInjection = { seed: true, agent: null, via: null, id: null, deltaFile: ".bridge/lanes/target/checkpoints/x.md", createdAt: "x" };
   fs.writeFileSync(
@@ -153,8 +156,8 @@ test("writeSeed writes the seed as both a delta and a full-context checkpoint, s
   const deltaRel = writeSeed(project, "target", prepared);
   const fullRel = deltaRel.replace(/\.md$/, "-full.md");
 
-  assert.ok(fs.existsSync(path.join(project, fullRel)), "the full-context checkpoint was written beside the delta");
-  assert.equal(fullContextFor(project, deltaRel), fullRel, "delivery can point a road-trimmed seed at the full one");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, fullRel)), "the full-context checkpoint was written beside the delta");
+  assert.equal(path.resolve(project, fullContextFor(project, deltaRel)), safeCheckpointPath(project, fullRel), "delivery can point a road-trimmed seed at the full one");
 
   fs.rmSync(project, { recursive: true });
 });
@@ -163,8 +166,8 @@ test("lane new --seed rolls the lane back if the seed write fails", () => {
   const project = seededProject();
   // Sabotage: make .bridge/lanes/x a FILE so writeCheckpoint's mkdir fails after the
   // lane is created in state.
-  fs.mkdirSync(path.join(project, ".bridge", "lanes"), { recursive: true });
-  fs.writeFileSync(path.join(project, ".bridge", "lanes", "x"), "not a directory");
+  fs.mkdirSync(path.join(bridgeDir(project), "lanes"), { recursive: true });
+  fs.writeFileSync(path.join(bridgeDir(project), "lanes", "x"), "not a directory");
 
   const res = spawnSync(process.execPath, [BRIDGE, "lane", "new", "x", "--seed", "main"], { cwd: project, encoding: "utf8" });
   assert.equal(res.status, 1, "the seed write failed");
@@ -179,7 +182,7 @@ const SEED_MODULE = fileURLToPath(new URL("../src/seed.mjs", import.meta.url));
 
 test("bindSeed under real concurrency gives the seed to exactly one racer", async () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-seedrace-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const target = emptyLane();
   target.pendingInjection = { seed: true, agent: null, via: null, id: null, deltaFile: ".bridge/lanes/target/checkpoints/x.md", createdAt: "x" };
   fs.writeFileSync(
@@ -193,13 +196,19 @@ test("bindSeed under real concurrency gives the seed to exactly one racer", asyn
   const race = (agent) =>
     new Promise((resolve) => {
       const code = `import(${JSON.stringify(SEED_MODULE)}).then(({ bindSeed }) => { process.stdout.write(String(bindSeed(${JSON.stringify(project)}, "target", ${JSON.stringify(agent)}, true))); });`;
-      let out = "";
-      const c = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "ignore"] });
+      let out = "", stderr = "";
+      const c = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"] });
       c.stdout.on("data", (d) => (out += d));
-      c.on("exit", () => resolve(out.trim() === "true"));
+      c.stderr.on("data", (d) => (stderr += d));
+      c.on("close", (status) => resolve({ status, stderr, output: out.trim() }));
     });
 
-  const winners = (await Promise.all(agents.map(race))).filter(Boolean).length;
+  const results = await Promise.all(agents.map(race));
+  for (const result of results) {
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(["true", "false"].includes(result.output), "every racer returns a binding result");
+  }
+  const winners = results.filter((result) => result.output === "true").length;
   assert.equal(winners, 1, "exactly one racer bound the seed, the rest lost");
 
   const inj = loadState(project).lanes.target.pendingInjection;
@@ -209,7 +218,7 @@ test("bindSeed under real concurrency gives the seed to exactly one racer", asyn
 
 test("unbindSeed hands a seed back after a failed launch, so another agent can take it", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unbind-")));
-  fs.mkdirSync(bridgeDir(project), { recursive: true });
+  ensureRuntimeStore(project);
   const target = emptyLane();
   target.pendingInjection = { seed: true, agent: null, via: null, id: null, deltaFile: ".bridge/lanes/target/checkpoints/x.md", createdAt: "x" };
   fs.writeFileSync(
