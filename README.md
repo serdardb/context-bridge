@@ -211,6 +211,11 @@ npm install -g .
 
 `bridge doctor --fix` can install, with your confirmation, using only official mechanisms:
 
+Shared skill updates are atomically published. The bridge's Codex allow-rule is
+created only when absent; custom `bridge.rules` content is preserved for manual
+review, never replaced. Diagnostics recognize the exact managed rule rather than
+an arbitrary file; effective permission decisions still belong to Codex.
+
 - the **context-bridge Claude plugin** (provides `/bridge` + session hooks)
 - the **official OpenAI Codex plugin** for Claude Code (`openai/codex-plugin-cc`, used for the first import)
 - the **$bridge agent skill** (`~/.agents/skills/bridge/SKILL.md`, shared by Codex, Grok, Antigravity and OpenCode)

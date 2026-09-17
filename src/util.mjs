@@ -189,6 +189,10 @@ export function writeFileExclusive(file, content) {
  * Newly created ancestors and multi-file ordering require a separate protocol.
  */
 export function writeJsonAtomic(p, obj) {
+  return writeFileAtomic(p, JSON.stringify(obj, null, 2) + "\n");
+}
+
+export function writeFileAtomic(p, content) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
   let fd;
@@ -196,7 +200,7 @@ export function writeJsonAtomic(p, obj) {
   try {
     fd = fs.openSync(tmp, "wx", 0o600);
     owned = true;
-    fs.writeFileSync(fd, JSON.stringify(obj, null, 2) + "\n");
+    fs.writeFileSync(fd, content);
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;

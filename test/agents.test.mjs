@@ -537,13 +537,29 @@ test("doctor rows describe the state they are in, never just the happy one", asy
   try {
     const missing = codex.health().extras.find((e) => e.label.includes("allow-rule") || e.label.includes("pre-allowed"));
     assert.equal(missing.ok, false);
-    assert.match(missing.label, /No Codex allow-rule/, "a missing rule must not read as if it were installed");
+    assert.match(missing.label, /No verified Codex allow-rule/, "a missing rule must not read as if it were installed");
 
     fs.mkdirSync(path.join(home, ".codex", "rules"), { recursive: true });
     fs.writeFileSync(path.join(home, ".codex", "rules", "bridge.rules"), "x");
-    const present = codex.health().extras.find((e) => e.label.includes("pre-allowed"));
+    const invalid = codex.health().extras.find((e) => e.label.includes("allow-rule"));
+    assert.equal(invalid.ok, false, "a file's existence is not proof of an allow rule");
+    const { installCodexRule, installCodexSkill } = await import("../src/doctor.mjs");
+    assert.throws(() => installCodexRule(), /custom content/);
+    const ruleFile = path.join(home, ".codex", "rules", "bridge.rules");
+    assert.equal(fs.readFileSync(ruleFile, "utf8"), "x", "custom permission policy must remain unchanged");
+    fs.unlinkSync(ruleFile);
+    installCodexRule();
+    installCodexRule();
+    const present = codex.health().extras.find((e) => e.label.includes("allow-rule installed"));
     assert.equal(present.ok, true);
+    assert.match(present.label, /effective permissions are decided by Codex/);
+    const skillFile = path.join(home, ".agents", "skills", "bridge", "SKILL.md");
+    installCodexSkill();
+    assert.equal(fs.readFileSync(skillFile, "utf8"), fs.readFileSync(new URL("../codex/SKILL.md", import.meta.url), "utf8"));
   } finally {
-    Object.assign(process.env, previous);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

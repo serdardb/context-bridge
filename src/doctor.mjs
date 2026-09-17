@@ -5,9 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import {
-  HOME,
   CLAUDE_DIR,
-  CODEX_HOME,
+  codexHome,
+  sharedSkillPath,
+  writeFileAtomic,
+  writeFileExclusive,
+  BridgeError,
   tryExec,
   readJson,
   fileExists,
@@ -22,12 +25,11 @@ import {
 import { findCompanionScript } from "./transfer.mjs";
 import { loadState, agentSlot } from "./state.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { installHooks as installCodexHooks, hooksPath as codexHooksPath } from "./agents/codex.mjs";
+import { installHooks as installCodexHooks, hooksPath as codexHooksPath, installedAllowRule, BRIDGE_ALLOW_RULE } from "./agents/codex.mjs";
 import { projectIdentity, projectStoreDir, runtimeStoreDir, storageHome, inspectMigrationReceipts } from "./storage.mjs";
 import { kernelLockHealth } from "./locking.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CODEX_SKILL_PATH = path.join(HOME, ".agents", "skills", "bridge", "SKILL.md");
 
 export async function runDoctor(projectDir, { fix = false, json = false, deep = false } = {}) {
   const r = collect(projectDir);
@@ -230,7 +232,7 @@ export function integrationStatus(agentId, health) {
   if (agentId === "claude") trusted = extraOk(health, "context-bridge plugin installed");
   if (agentId === "codex") {
     const skill = extraOk(health, "$bridge skill installed and current");
-    const rule = extraOk(health, "bridge command pre-allowed");
+    const rule = extraOk(health, "bridge allow-rule installed");
     trusted = skill && rule;
   }
   if (agentId === "grok") trusted = extraOk(health, "$bridge skill installed and current");
@@ -480,7 +482,7 @@ async function applyFixes(projectDir, r) {
         log(dim("  Codex will not run them until you review them once with /hooks inside Codex."));
       }
     }
-    if (!r.codex.rules) {
+    if (!installedAllowRule()) {
       if (await yes("Pre-allow the `bridge` command in Codex (writes ~/.codex/rules/bridge.rules)?")) {
         installCodexRule();
         log(`${OK} Codex allow-rule installed.`);
@@ -502,15 +504,28 @@ function run(cmd, args) {
 
 export function installCodexSkill() {
   const src = path.join(REPO_ROOT, "codex", "SKILL.md");
-  fs.mkdirSync(path.dirname(CODEX_SKILL_PATH), { recursive: true });
-  fs.copyFileSync(src, CODEX_SKILL_PATH);
+  const destination = sharedSkillPath();
+  inspectInstallDestination(destination);
+  writeFileAtomic(destination, fs.readFileSync(src));
 }
 
 export function installCodexRule() {
-  const dir = path.join(CODEX_HOME, "rules");
+  const dir = path.join(codexHome(), "rules");
+  const file = path.join(dir, "bridge.rules");
+  if (inspectInstallDestination(file)) {
+    if (fs.readFileSync(file, "utf8").trim() === BRIDGE_ALLOW_RULE.trim()) return;
+    throw new BridgeError("Existing bridge.rules contains custom content. It was preserved; review it manually instead of replacing its permission policy.", { path: file });
+  }
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, "bridge.rules"),
-    'prefix_rule(pattern=["bridge"], decision="allow")\n'
-  );
+  writeFileExclusive(file, BRIDGE_ALLOW_RULE);
+}
+
+function inspectInstallDestination(file) {
+  let stat;
+  try { stat = fs.lstatSync(file); }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    throw new BridgeError("Refusing to replace an unsafe installation destination; existing files were preserved.", { path: file });
+  }
+  return true;
 }

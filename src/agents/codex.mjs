@@ -23,6 +23,16 @@ import {
 
 export const id = "codex";
 export const displayName = "Codex";
+export const BRIDGE_ALLOW_RULE = 'prefix_rule(pattern=["bridge"], decision="allow")\n';
+
+export function installedAllowRule() {
+  const file = path.join(codexHome(), "rules", "bridge.rules");
+  try {
+    const stat = fs.lstatSync(file);
+    return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 &&
+      fs.readFileSync(file, "utf8").trim() === BRIDGE_ALLOW_RULE.trim();
+  } catch { return false; }
+}
 export const injection = "prompt";
 
 export const conflictFlags = [
@@ -253,7 +263,7 @@ export function health() {
   const version = tryExec("codex", ["--version"]);
   const detail = version ? tryExec("sh", ["-c", "codex login status 2>&1"]) : null;
   const skill = installedCopyStatus(sharedSkillPath(), path.join(REPO_ROOT, "codex", "SKILL.md"));
-  const rules = fileExists(path.join(codexHome(), "rules", "bridge.rules"));
+  const rules = installedAllowRule();
   return {
     version,
     auth: { ok: detail !== null, via: "codex login", account: detail },
@@ -269,8 +279,8 @@ export function health() {
         // The label has to follow the state: a row that says "pre-allowed" while
         // the rule is missing reads as reassurance and is simply untrue.
         label: rules
-          ? "bridge command pre-allowed in Codex rules"
-          : "No Codex allow-rule for `bridge` — Codex will ask for approval once",
+          ? "bridge allow-rule installed; effective permissions are decided by Codex"
+          : "No verified Codex allow-rule for `bridge`; existing custom rules are not evaluated",
         fix: "bridge doctor --fix",
         info: true,
       },
