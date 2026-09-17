@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { writeJsonAtomic, processAlive as processIsAlive } from "./util.mjs";
+import { writeJsonAtomic, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -491,7 +491,7 @@ export function planLegacyMigration(projectDir) {
     let entries;
     if (recovering) {
       const record = readMigrationJournal(journal, identity.id, source, plan.target);
-      plan.recovery = { backup: record.backup, action: "finish-source-cleanup" };
+      plan.recovery = { backup: record.backup, retired: retiredMigrationDir(record.backup), action: "finish-source-cleanup" };
       entries = inspectLegacyCleanup(source, plan.target, record.backup);
     } else entries = treeEntries(source);
     plan.files = entries.map(([name, bytes, sha256]) => ({ name, bytes, sha256 }));
@@ -527,7 +527,7 @@ export function migrateLegacyStorage(projectDir) {
       finishLegacyCleanup(legacy, target, record.backup);
       const stagingCleanup = cleanupMigrationStaging(identity.id, target, record.backup);
       fs.unlinkSync(journal);
-      return { identity, target, backup: record.backup, recovered: true, stagingCleanup };
+      return { identity, target, backup: record.backup, retired: retiredMigrationDir(record.backup), recovered: true, stagingCleanup };
     }
     // Re-read after acquiring the lock. Another process may have completed the
     // migration while this process was waiting.
@@ -566,7 +566,7 @@ export function migrateLegacyStorage(projectDir) {
     finishLegacyCleanup(legacy, target, backup);
     const stagingCleanup = cleanupMigrationStaging(identity.id, target, backup);
     fs.unlinkSync(journal);
-    return { identity, target, backup, stagingCleanup };
+    return { identity, target, backup, retired: retiredMigrationDir(backup), stagingCleanup };
     } catch (err) {
       try { fs.rmSync(staging, { recursive: true, force: true }); } catch {}
       try { if (backupStaging) fs.rmSync(backupStaging, { recursive: true, force: true }); } catch {}
@@ -603,6 +603,18 @@ function inspectLegacyCleanup(legacy, target, backup) {
   if (JSON.stringify(entries) !== JSON.stringify(treeEntries(target))) {
     throw new Error("Migration recovery target differs from its verified backup; refusing cleanup.");
   }
+  const retired = retiredMigrationDir(backup);
+  if (fs.existsSync(retired)) {
+    if (!fs.lstatSync(retired).isDirectory() || fs.lstatSync(retired).isSymbolicLink()) {
+      throw new Error(`Unsafe migration retirement directory: ${retired}`);
+    }
+    const expected = new Map(entries.map(([name, size, hash]) => [name, `${size}:${hash}`]));
+    for (const [name, size, hash] of treeEntries(retired)) {
+      if (expected.get(name) !== `${size}:${hash}`) {
+        throw new BridgeError(`A legacy writer changed retired evidence. Stop old bridge processes and recover the newer data from ${retired}; automatic migration is refused.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
+      }
+    }
+  }
   if (!fs.existsSync(legacy)) return [];
   const stat = fs.lstatSync(legacy);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe legacy migration recovery source.");
@@ -614,16 +626,51 @@ function inspectLegacyCleanup(legacy, target, backup) {
   return remaining;
 }
 
+function retiredMigrationDir(backup) {
+  return path.join(storageHome(), "retired-migrations", path.basename(backup));
+}
+
+function retirementDirectory(backup, relative = "") {
+  let dir = storageHome();
+  for (const part of ["retired-migrations", path.basename(backup), ...relative.split(path.sep).filter(Boolean)]) {
+    dir = path.join(dir, part);
+    try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe migration retirement directory: ${dir}`);
+  }
+  return dir;
+}
+
 function finishLegacyCleanup(legacy, target, backup) {
   const remaining = inspectLegacyCleanup(legacy, target, backup);
+  // Keep the source inode, not just an earlier copy. An old binary can replace
+  // state after our hash check, or keep an append descriptor open across rename.
+  // These originals are never automatically pruned as duplicate backups.
+  const retired = retirementDirectory(backup);
   for (const [name, , hash] of remaining) {
     if (!ownedLegacyFile(name)) continue;
     const file = path.join(legacy, name);
     if (!fs.lstatSync(file).isFile() || crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== hash) {
       throw new Error(`Legacy bridge file changed before removal: ${name}`);
     }
-    fs.unlinkSync(file);
+    const destination = path.join(retired, name);
+    retirementDirectory(backup, path.dirname(name) === "." ? "" : path.dirname(name));
+    try {
+      fs.lstatSync(destination);
+      throw new BridgeError(`Legacy data reappeared after retirement: ${file}. Both copies are preserved; stop old bridge processes before recovery.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { fs.renameSync(file, destination); } catch (error) {
+      if (error.code !== "EXDEV") throw error;
+      throw new BridgeError("Safe legacy retirement requires an atomic move on the source filesystem. Cross-filesystem automatic cleanup is refused; source files and verified backups are preserved.", { code: "BRIDGE_MIGRATION_CROSS_DEVICE", operation: "migrate legacy storage", nextCommand: "bridge storage plan" });
+    }
+    if (!fs.lstatSync(destination).isFile() || crypto.createHash("sha256").update(fs.readFileSync(destination)).digest("hex") !== hash) {
+      throw new BridgeError(`A legacy writer changed ${name} during retirement. The newer file is preserved at ${destination}; stop old bridge processes before recovery.`, { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
+    }
   }
+  inspectLegacyCleanup(legacy, target, backup);
+  if (hasLegacyRuntime(legacy)) throw new BridgeError("Legacy runtime files reappeared during migration. Stop old bridge processes; all source and retired files are preserved.", { code: "BRIDGE_MIGRATION_CHANGED", nextCommand: "bridge storage plan" });
   if (fs.existsSync(legacy)) removeEmptyLegacyDirs(legacy);
 }
 

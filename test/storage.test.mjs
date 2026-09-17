@@ -1165,9 +1165,9 @@ test("migration resumes after the process dies during legacy cleanup and refuses
       const crash = run(`
         import fs from 'node:fs';
         import { migrateLegacyStorage } from ${JSON.stringify(moduleUrl)};
-        const unlink = fs.unlinkSync;
-        fs.unlinkSync = function(file) {
-          unlink.call(fs, file);
+        const rename = fs.renameSync;
+        fs.renameSync = function(file, destination) {
+          rename.call(fs, file, destination);
           if (${JSON.stringify(point)} === 'first' && String(file).startsWith(${JSON.stringify(legacy + path.sep)})) process.exit(79);
           if (${JSON.stringify(point)} === 'last' && file === ${JSON.stringify(path.join(legacy, "state.json"))}) process.exit(79);
         };
@@ -1219,6 +1219,56 @@ test("migration resumes after the process dies during legacy cleanup and refuses
       }
       assert.equal(fs.readFileSync(path.join(home, "projects", id, "state.json"), "utf8"), '{"marker":"original state"}');
       assert.equal(fs.readFileSync(path.join(home, "projects", id, "checkpoints", LEGACY_CHECKPOINT), "utf8"), "evidence");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("migration preserves late old-writer replacements and refuses non-atomic retirement", () => {
+  const storageUrl = pathToFileURL(path.resolve("src/storage.mjs")).href;
+  for (const mode of ["replace", "append", "cross-device"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-retirement-"));
+    const project = path.join(root, "project");
+    const home = path.join(root, "home");
+    const legacy = path.join(project, ".bridge");
+    fs.mkdirSync(legacy, { recursive: true });
+    const file = path.join(legacy, "state.json");
+    fs.writeFileSync(file, '{"marker":"original"}');
+    try {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import fs from 'node:fs';
+        import assert from 'node:assert/strict';
+        import { migrateLegacyStorage } from ${JSON.stringify(storageUrl)};
+        const file = ${JSON.stringify(file)};
+        const mode = ${JSON.stringify(mode)};
+        const rename = fs.renameSync;
+        const descriptor = mode === 'append' ? fs.openSync(file, 'a') : null;
+        let reached = false, retired;
+        fs.renameSync = (source, target) => {
+          if (source !== file) return rename(source, target);
+          reached = true;
+          if (mode === 'cross-device') throw Object.assign(new Error('cross device'), { code: 'EXDEV' });
+          if (mode === 'replace') {
+            fs.writeFileSync(file + '.old-writer', '{"marker":"late old writer"}');
+            rename(file + '.old-writer', file);
+          }
+          rename(source, target);
+          retired = target;
+          if (mode === 'append') fs.writeSync(descriptor, '\\nlate open descriptor');
+        };
+        try {
+          assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}),
+            mode === 'cross-device' ? { code: 'BRIDGE_MIGRATION_CROSS_DEVICE', expected: true } : /changed.*retirement/);
+          assert.ok(reached, 'must cross the real source retirement boundary');
+          if (mode === 'cross-device') assert.equal(fs.readFileSync(file, 'utf8'), '{"marker":"original"}');
+          else {
+            assert.match(fs.readFileSync(retired, 'utf8'), /late/);
+            assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}), /changed retired evidence/);
+            assert.match(fs.readFileSync(retired, 'utf8'), /late/, 'recovery must not discard the new content');
+          }
+        } finally { if (descriptor !== null) fs.closeSync(descriptor); }
+      `], { env: { ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", CONTEXT_BRIDGE_ADAPTERS: "" },
+        encoding: "utf8", timeout: 10000 });
+      assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   }
 });
