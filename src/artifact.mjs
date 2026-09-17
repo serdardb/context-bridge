@@ -76,15 +76,33 @@ function keyId(key) {
   return crypto.createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("hex");
 }
 
+const SECRET_KEYS = "token|access_token|refresh_token|api[_-]?key|password|passwd|secret|cookie|authorization|aws_access_key_id|aws_secret_access_key|private_key";
+const SECRET_KEY = new RegExp(`^(?:${SECRET_KEYS})$`, "i");
+const SECRET_ASSIGNMENT = new RegExp(
+  `\\b(?:${SECRET_KEYS})(["']?)\\s*[:=]\\s*("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'|(?:Bearer|Basic)\\s+[^\\s,;]+|[^\\s,;]+)`, "gi",
+);
+
 function redact(text, projectDir) {
   let value = String(text ?? "");
-  for (const [needle, replacement] of [[os.homedir(), "<home>"], [path.resolve(projectDir), "<project>"]]) {
+  // Replace the most specific path first: a project normally lives under home.
+  const paths = [[path.resolve(projectDir), "<project>"], [os.homedir(), "<home>"]]
+    .sort((a, b) => b[0].length - a[0].length);
+  for (const [needle, replacement] of paths) {
     if (needle) value = value.split(needle).join(replacement);
   }
   return value
+    .replace(/-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g, "<redacted-private-key>")
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "<redacted-key>")
+    .replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "<redacted-key>")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "<redacted-key>")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "<redacted-token>")
+    .replace(/^([ \t]*(?:Authorization|Cookie)[ \t]*:[ \t]*)[^\r\n]+/gmi, "$1<redacted>")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer <redacted>")
     .replace(/\b(?:sk|pk)-[A-Za-z0-9_-]{12,}\b/g, "<redacted-key>")
-    .replace(/\b(?:token|password|passwd|secret|cookie)\s*[:=]\s*[^\s,;]+/gi, (match) => `${match.split(/[:=]/)[0]}=<redacted>`)
+    .replace(SECRET_ASSIGNMENT, (match, keyQuote, secret) => {
+      const quote = /^["']/.test(secret) ? secret[0] : "";
+      return match.slice(0, -secret.length) + quote + "<redacted>" + quote;
+    })
     .replace(/(?:^|\s)(\/(?:Users|home|private|var|tmp)\/[^\s,;]+)/g, (match, absolute) => match.replace(absolute, "<path>"));
 }
 
@@ -93,7 +111,7 @@ function redactValue(value, projectDir) {
   if (Array.isArray(value)) return value.map((entry) => redactValue(entry, projectDir));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
-      /^(?:token|access_token|refresh_token|api[_-]?key|password|passwd|secret|cookie|authorization)$/i.test(key)
+      SECRET_KEY.test(key)
         ? "<redacted>" : redactValue(entry, projectDir),
     ]));
   }
