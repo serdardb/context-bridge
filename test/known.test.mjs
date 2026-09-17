@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { handoff } from "../src/handoff.mjs";
 import { appendFinalWords } from "../src/launcher.mjs";
+import { publication } from "../src/publication.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
 import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject, safeCheckpointPath, checkpointsDir } from "../src/state.mjs";
 
@@ -28,14 +29,15 @@ test("real clean --all cannot delete a handoff paused before its state commit", 
     child = spawn(process.execPath, ["--input-type=module", "-e", `
       import fs from 'node:fs';
       import { handoff } from ${JSON.stringify(new URL("../src/handoff.mjs", import.meta.url).href)};
-      const link = fs.linkSync, lstat = fs.lstatSync;
+      import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+      const publish = publication.renameExclusive, lstat = fs.lstatSync;
       let publishedFull = null;
-      fs.linkSync = (temp, file) => {
-        link(temp, file);
+      publication.renameExclusive = (temp, file) => {
+        publish(temp, file);
         if (file.endsWith('-full.md')) publishedFull = file;
       };
       // remember() inspects the published leaf after writeCheckpoint has left
-      // runtime ownership. Pausing inside linkSync would hold that ownership
+      // runtime ownership. Pausing inside publication would hold that ownership
       // and test lock waiting, not retention during uncommitted preparation.
       fs.lstatSync = (file, ...args) => {
         const stat = lstat(file, ...args);
@@ -104,11 +106,12 @@ test("real handoff process exits recover unchanged evidence and preserve committ
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import fs from 'node:fs';
         import { handoff } from ${JSON.stringify(new URL("../src/handoff.mjs", import.meta.url).href)};
-        const link = fs.linkSync, rename = fs.renameSync;
-        fs.linkSync = (temp, file) => {
-          link(temp, file);
+        import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+        const publish = publication.renameExclusive, rename = fs.renameSync;
+        publication.renameExclusive = (temp, file) => {
+          publish(temp, file);
           if (${JSON.stringify(stage)} !== 'state' && file.endsWith(${JSON.stringify(suffix)})) {
-            fs.unlinkSync(temp); process.exit(79);
+            process.exit(79);
           }
         };
         fs.renameSync = (from, to) => {
@@ -239,7 +242,7 @@ test("failed replacement writes never delete the previous pending handoff", () =
     const { project } = fixture();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-replace-fault-"));
     const oldHome = process.env.CONTEXT_BRIDGE_HOME, oldMode = process.env.CONTEXT_BRIDGE_STORAGE;
-    const link = fs.linkSync, rename = fs.renameSync;
+    const publish = publication.renameExclusive, rename = fs.renameSync;
     process.env.CONTEXT_BRIDGE_HOME = home;
     delete process.env.CONTEXT_BRIDGE_STORAGE;
     try {
@@ -253,10 +256,10 @@ test("failed replacement writes never delete the previous pending handoff", () =
       assert.equal(originalFiles.size, 3);
       let injected = false;
       const fail = () => { injected = true; throw Object.assign(new Error(`injected ${stage} write failure`), { code: "ENOSPC" }); };
-      fs.linkSync = (from, file) => {
+      publication.renameExclusive = (from, file) => {
         if (typeof file === "string" && path.dirname(file) === dir &&
           (stage === "full" && file.endsWith("-full.md") || stage === "delta" && file.endsWith(".md") && !file.endsWith("-full.md"))) fail();
-        return link(from, file);
+        return publish(from, file);
       };
       fs.renameSync = (from, to) => {
         if (stage === "state" && to === stateFile) fail();
@@ -272,7 +275,7 @@ test("failed replacement writes never delete the previous pending handoff", () =
         assert.deepEqual(fs.readFileSync(path.join(dir, name)), bytes);
       }
     } finally {
-      fs.linkSync = link;
+      publication.renameExclusive = publish;
       fs.renameSync = rename;
       if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = oldHome;
       if (oldMode === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = oldMode;

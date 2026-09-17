@@ -240,11 +240,11 @@ test("checkpoint-stage import crashes recover verified orphans but preserve modi
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import fs from 'node:fs';
         import { importArtifact } from ${JSON.stringify(new URL("../src/artifact.mjs", import.meta.url).href)};
-        const link = fs.linkSync;
-        fs.linkSync = function(temp, file) {
-          link.call(fs, temp, file);
+        import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+        const publish = publication.renameExclusive;
+        publication.renameExclusive = function(temp, file) {
+          publish(temp, file);
           if (file.endsWith(${JSON.stringify(suffix)})) {
-            fs.unlinkSync(temp);
             // Retain the legacy partial-file recovery case even though new
             // publication no longer exposes a partially written destination.
             if (${JSON.stringify(mode)} === 'partial') fs.writeFileSync(file, fs.readFileSync(file).subarray(0, 5));

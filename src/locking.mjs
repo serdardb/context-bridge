@@ -124,9 +124,19 @@ export function kernelLockHealth() {
   try {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lock-health-"));
     const script = `
+      import fs from 'node:fs';
       import { withKernelLockSync } from ${JSON.stringify(import.meta.url)};
+      import { publication } from ${JSON.stringify(new URL("./publication.mjs", import.meta.url).href)};
       try {
         for (let i = 0; i < 2; i++) withKernelLockSync(${JSON.stringify(path.join(dir, "guard"))}, () => {});
+        const from = ${JSON.stringify(path.join(dir, "temporary"))}, to = ${JSON.stringify(path.join(dir, "published"))};
+        fs.writeFileSync(from, 'original');
+        publication.renameExclusive(from, to);
+        if (fs.existsSync(from) || fs.statSync(to).nlink !== 1) throw new Error('Publication left aliases');
+        fs.writeFileSync(from, 'replacement');
+        let collision = false;
+        try { publication.renameExclusive(from, to); } catch (error) { if (error.code !== 'EEXIST') throw error; collision = true; }
+        if (!collision || fs.readFileSync(to, 'utf8') !== 'original' || fs.readFileSync(from, 'utf8') !== 'replacement') throw new Error('Publication replaced existing evidence');
         console.log(JSON.stringify({ ok: true }));
       } catch (error) {
         console.log(JSON.stringify({ ok: false, code: error.expected ? error.code : "BRIDGE_LOCK_FAILED",
@@ -142,7 +152,7 @@ export function kernelLockHealth() {
       code: result.error?.code === "ETIMEDOUT" ? "BRIDGE_LOCK_PROBE_TIMEOUT" : "BRIDGE_LOCK_PROBE_FAILED",
       detail: "Native lock probe could not complete; mutations are not verified. Check the native runtime and run bridge doctor --json again." };
     const report = JSON.parse(result.stdout);
-    if (report.ok === true && result.status === 0) return { ok: true, platform, arch, detail: "Native lock acquisition, release and reacquisition succeeded." };
+    if (report.ok === true && result.status === 0) return { ok: true, platform, arch, detail: "Native lock acquisition, release, reacquisition and exclusive publication succeeded." };
     return { ...report, ok: false, platform, arch };
   } catch {
     return { ok: false, platform, arch, code: "BRIDGE_LOCK_PROBE_FAILED",

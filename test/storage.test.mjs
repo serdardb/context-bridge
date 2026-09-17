@@ -286,6 +286,7 @@ test("all global state writers require a verified schema backup and reject futur
       import path from 'node:path';
       import { ensureState, statePath, loadState, mutateState, mutateProject, saveState, defaultState, STATE_VERSION }
         from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+      import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
       for (const writer of ['load', 'ensure', 'lane', 'project', 'save']) {
         for (const mode of ['io-error', 'conflict', 'symlink', 'matching', 'future']) {
           const project = path.join(${JSON.stringify(root)}, writer + '-' + mode);
@@ -299,10 +300,10 @@ test("all global state writers require a verified schema backup and reject futur
           if (mode === 'conflict') fs.writeFileSync(backup, 'a different original');
           const outside = path.join(${JSON.stringify(root)}, writer + '-outside');
           if (mode === 'symlink') { fs.writeFileSync(outside, original); fs.symlinkSync(outside, backup); }
-          const link = fs.linkSync;
-          fs.linkSync = (source, target) => {
+          const publish = publication.renameExclusive;
+          publication.renameExclusive = (source, target) => {
             if (mode === 'io-error' && target === backup) throw Object.assign(new Error('backup I/O'), { code: 'EIO' });
-            return link(source, target);
+            return publish(source, target);
           };
           let invoked = false;
           const fn = () => { invoked = true; };
@@ -325,7 +326,7 @@ test("all global state writers require a verified schema backup and reject futur
               if (mode === 'symlink') assert.equal(fs.readFileSync(outside, 'utf8'), original);
               if (mode !== 'future') assert.equal(loadState(project, { readOnly: true }).version, STATE_VERSION);
             }
-          } finally { fs.linkSync = link; }
+          } finally { publication.renameExclusive = publish; }
           assert.equal(fs.existsSync(file + '.lock'), false);
           if (mode === 'io-error') {
             operation();
@@ -689,9 +690,10 @@ test("journal staging from an abruptly exited real writer is cleaned only after 
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import fs from 'node:fs';
         import { beginPreparation } from ${JSON.stringify(new URL("../src/preparation.mjs", import.meta.url).href)};
-        const link = fs.linkSync;
-        fs.linkSync = (...args) => {
-          if (${published}) link(...args);
+        import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+        const publish = publication.renameExclusive;
+        publication.renameExclusive = (...args) => {
+          if (${published}) publish(...args);
           process.exit(79);
         };
         beginPreparation(${JSON.stringify(project)}, 'main', ${JSON.stringify(LEGACY_CHECKPOINT.slice(0, -3))},
@@ -700,18 +702,19 @@ test("journal staging from an abruptly exited real writer is cleaned only after 
       assert.equal(child.status, 79, child.stderr);
       const dir = checkpointsDir(project);
       const temporary = fs.readdirSync(dir).find((name) => name.includes(".tmp-"));
-      assert.ok(temporary?.startsWith("..handoff-"));
+      if (published) assert.equal(temporary, undefined, "publication must leave only a single name");
+      else assert.ok(temporary?.startsWith("..handoff-"));
       const preview = pruneCheckpoints(project, { staging: true, dryRun: true });
       assert.equal(preview.deletedStagingFiles, published ? 0 : 1);
-      assert.ok(fs.existsSync(path.join(dir, temporary)));
+      if (!published) assert.ok(fs.existsSync(path.join(dir, temporary)));
       if (published) {
         assert.equal(pruneCheckpoints(project, { staging: true }).deletedStagingFiles, 0);
         recoverPreparations(project, "main");
       }
-      const live = temporary.replace(/\.tmp-\d+-/, `.tmp-${process.pid}-`);
+      const live = (temporary ?? `..handoff-${LEGACY_CHECKPOINT.slice(0, -3)}.json.tmp-1-00000000-0000-4000-8000-000000000001`).replace(/\.tmp-\d+-/, `.tmp-${process.pid}-`);
       fs.writeFileSync(path.join(dir, live), "live journal writer");
-      assert.equal(pruneCheckpoints(project, { staging: true }).deletedStagingFiles, 1);
-      assert.equal(fs.existsSync(path.join(dir, temporary)), false);
+      assert.equal(pruneCheckpoints(project, { staging: true }).deletedStagingFiles, published ? 0 : 1);
+      if (!published) assert.equal(fs.existsSync(path.join(dir, temporary)), false);
       assert.equal(fs.readFileSync(path.join(dir, live), "utf8"), "live journal writer");
       assert.deepEqual(fs.readFileSync(statePath(project)), original);
       assert.deepEqual(fs.readdirSync(project), []);

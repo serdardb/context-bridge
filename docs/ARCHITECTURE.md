@@ -235,8 +235,16 @@ read-only load does not acquire that write lock.
 The shared JSON writer creates an exclusive, randomly named private
 temporary file, writes and fsyncs its content, closes it, then renames it over
 the destination. POSIX builds then fsync the containing directory. Exclusive
-evidence publication similarly syncs its directory after linking the complete
-file. A write/content-flush failure leaves the previous destination intact
+evidence publication uses an exclusive native rename of the complete temporary
+file, then syncs its directory. Unlike link-then-unlink publication, an exit
+immediately after the rename does not leave two names for the published inode.
+The backends are macOS `renamex_np(RENAME_EXCL)`, Linux
+`renameat2(RENAME_NOREPLACE)` and Windows `MoveFileExW` without replacement or
+copy fallback. Other platforms or unavailable native operations fail closed;
+there is no hardlink fallback. The Windows backend still requires native
+acceptance testing. The diagnostic lock probe also exercises exclusive
+publication and collision preservation.
+A write/content-flush failure leaves the previous destination intact
 and cleans only the temporary file owned by that invocation. A subsequent
 directory-sync failure reports `BRIDGE_PUBLICATION_UNCERTAIN` with
 `published: true`; it does not remove the visible destination. This is not a

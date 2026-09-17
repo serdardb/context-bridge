@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { publication } from "./publication.mjs";
 
 export const HOME = os.homedir();
 export const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -205,9 +206,8 @@ export function writeFileExclusive(file, content) {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;
-    // Unlike rename, hard-link creation fails if the destination exists. The
-    // temporary file shares its filesystem, and no partial body is published.
-    fs.linkSync(tmp, file);
+    // One no-replace move, with no two-link crash window before cleanup.
+    publication.renameExclusive(tmp, file);
     syncPublishedDirectory(file);
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}

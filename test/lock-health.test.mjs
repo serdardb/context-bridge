@@ -21,6 +21,7 @@ test("a stalled native backend cannot hang diagnostics", { timeout: 15000 }, () 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-stall-"));
   try {
     fs.copyFileSync(path.join(repo, "src/locking.mjs"), path.join(root, "locking.mjs"));
+    fs.copyFileSync(path.join(repo, "src/publication.mjs"), path.join(root, "publication.mjs"));
     fs.mkdirSync(path.join(root, "node_modules/koffi"), { recursive: true });
     fs.writeFileSync(path.join(root, "node_modules/koffi/index.js"),
       'module.exports = { load() { for (;;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); } };');
@@ -39,6 +40,7 @@ test("native acquisition errors retain errno without leaking a stack", { skip: p
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-error-"));
   try {
     fs.copyFileSync(path.join(repo, "src/locking.mjs"), path.join(root, "locking.mjs"));
+    fs.copyFileSync(path.join(repo, "src/publication.mjs"), path.join(root, "publication.mjs"));
     fs.mkdirSync(path.join(root, "node_modules/koffi"), { recursive: true });
     fs.writeFileSync(path.join(root, "node_modules/koffi/index.js"),
       'module.exports = { load: () => ({func: () => () => -1}), errno: () => 13, os: {errno: {EINTR: 4, EAGAIN: 11, EWOULDBLOCK: 35}} };');
