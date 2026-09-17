@@ -192,11 +192,14 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
   try {
     const ref = adapter.hydrate(projectDir, slot);
     if (!ref) return unavailable();
+    // Anything arriving during extraction may be repeated, never acknowledged
+    // by a mark taken after the content it was supposed to describe.
+    const mark = adapter.currentMark(ref);
     const probe = adapter.parseProbe(ref);
     if (!["readable", "partial"].includes(probe.status)) return unavailable();
     const activity = adapter.activitySince(ref, since);
     if (probe.status === "partial") warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
-    return { ref, activity, complete: probe.status === "readable" };
+    return { ref, activity, mark, complete: probe.status === "readable" };
   } catch (error) {
     if (error instanceof AdapterResultError) throw error;
     return unavailable();
@@ -544,10 +547,10 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
     const since = otherId === sourceId && adopted ? null : knownMark(s, target, otherId);
     const read = readHandoffSource(adapter, projectDir, slot, since, warnings);
     if (!read) continue;
-    const { ref, activity, complete } = read;
+    const { ref, activity, mark, complete } = read;
     auditRefs[otherId] = ref;
     auditMarks[otherId] = since;
-    if (complete) packed[otherId] = adapter.currentMark(ref);
+    if (complete) packed[otherId] = mark;
     if (!activity.messages.length && !activity.patchedFiles.length) continue;
     streams.push({ id: otherId, label: adapter.displayName, messages: activity.messages });
     messageCount += activity.messages.length;

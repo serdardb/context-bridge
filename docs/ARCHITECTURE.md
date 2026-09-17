@@ -399,6 +399,10 @@ and an empty readable session is not called unavailable. Closing-word collection
 also declines a source that is not fully readable. Probing and extracting vendor
 sessions are separate operations, not an atomic snapshot of a concurrently
 changing vendor store; a probe cannot eliminate all read-time races.
+Delivery marks are captured before extraction, including closing-word collection.
+For append-only streams this favors possible repetition of concurrent arrivals
+over acknowledging a later row that the payload never read. It does not prove
+consistency for an external rewrite or branch replacement during extraction.
 
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive

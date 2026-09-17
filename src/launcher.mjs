@@ -673,8 +673,9 @@ function appendFinalWordsOwned(projectDir, s, agent) {
 
   const ref = adapter.hydrate(projectDir, slot);
   if (!ref) return;
-  let tail;
+  let tail, finalMark;
   try {
+    finalMark = adapter.currentMark(ref);
     if (adapter.parseProbe(ref).status !== "readable") {
       log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
       return;
@@ -732,7 +733,6 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   // The closing words are now part of the delta destined for the other agent,
   // so the packed mark has to move with them: committing the pre-handoff mark
   // would either resend them later or, worse, skip them entirely.
-  const finalMark = adapter.currentMark(ref);
   mutateState(projectDir, launcherLane, (st) => {
     agentSlot(st, agent).set({ mark: finalMark });
     const stInj = st.pendingInjection;

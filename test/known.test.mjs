@@ -335,14 +335,23 @@ test("preparation cleanup preserves changed evidence and an already committed ha
 test("a chain carries what the target missed from EVERY agent, labelled by source", async () => {
   // Claude talks to Grok, Grok works, then Grok hands to Codex. Codex has seen
   // neither, so it must receive both streams, not just Grok's.
-  const { project, claudeTranscript } = fixture();
+  const { project, claudeTranscript, grokChat } = fixture();
   const s = loadState(project);
   // Claude spoke, then handed to Grok: Grok knows Claude up to that point.
   s.knownBy = { grok: { claude: "2026-07-20T10:00:00.000Z" } };
   s.activeAgent = "grok";
   saveState(project, s);
 
-  const out = handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+  const originalRead = fs.readFileSync;
+  let arriving = 0, out;
+  fs.readFileSync = (file, ...args) => {
+    const content = originalRead(file, ...args);
+    if (file === grokChat) fs.appendFileSync(grokChat,
+      JSON.stringify({ type: "assistant", content: `Arrived during extraction ${++arriving}` }) + "\n");
+    return content;
+  };
+  try { out = handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
+  finally { fs.readFileSync = originalRead; }
   assert.match(out, /including catch-up from Claude Code/);
 
   const after = loadState(project);
@@ -351,6 +360,10 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   assert.match(delta, /From Grok/, "Grok's side must be attributed");
   assert.match(delta, /claude decided the architecture/, "what Claude said reaches Codex through Grok");
   assert.match(delta, /grok found the bug/);
+  const full = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile.replace(/\.md$/, "-full.md")), "utf8");
+  const acknowledged = fs.readFileSync(grokChat, "utf8").trim().split("\n").map(JSON.parse)
+    .slice(0, after.pendingInjection.sources.grok.rows);
+  for (const row of acknowledged) assert.ok(full.includes(row.content), "no unseen arrival may be acknowledged");
 
   saveState(project, s);
   const sourceBytes = fs.readFileSync(claudeTranscript);

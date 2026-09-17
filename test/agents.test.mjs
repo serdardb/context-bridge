@@ -515,7 +515,19 @@ test("closing words written after the handoff still reach the other agent", asyn
     JSON.stringify({ type: "assistant", content: assessment }) + "\n"
   );
 
-  appendFinalWords(project, loadState(project), "grok");
+  const originalAppend = fs.appendFileSync;
+  let arrived = false;
+  fs.appendFileSync = (file, ...args) => {
+    const result = originalAppend(file, ...args);
+    if (!arrived && typeof file === "number") {
+      arrived = true;
+      originalAppend(path.join(sessionDir, "chat_history.jsonl"),
+        JSON.stringify({ type: "assistant", content: "LATE_AFTER_CLOSING_READ" }) + "\n");
+    }
+    return result;
+  };
+  try { appendFinalWords(project, loadState(project), "grok"); }
+  finally { fs.appendFileSync = originalAppend; }
 
   const closedDelta = fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8");
   assert.match(closedDelta, /Closing words from Grok/);
@@ -523,7 +535,10 @@ test("closing words written after the handoff still reach the other agent", asyn
   assert.doesNotMatch(closedDelta, /…/, "the clip character is the signature of the rule that was removed");
   assert.ok(fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8").includes(assessment));
   // The mark moves with it, so the next handoff does not send it a second time.
-  assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows);
+  assert.equal(arrived, true);
+  assert.doesNotMatch(closedDelta, /LATE_AFTER_CLOSING_READ/);
+  assert.equal(loadState(project).agents.grok.mark.rows, grok.currentMark(ref).rows - 1);
+  assert.ok(grok.activitySince(ref, loadState(project).agents.grok.mark).messages.some(m => m.text === "LATE_AFTER_CLOSING_READ"));
   const external = path.join(project, "outside-closing-words.txt");
   fs.writeFileSync(external, "private bytes must stay unchanged");
   for (const rel of [deltaRel, fullRel]) {
