@@ -190,12 +190,16 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     return null;
   };
   try {
-    const ref = adapter.hydrate(projectDir, slot);
+    let ref = adapter.hydrate(projectDir, slot);
     if (!ref) return unavailable();
     const before = transcriptStamp(ref);
     // Anything arriving during extraction may be repeated, never acknowledged
     // by a mark taken after the content it was supposed to describe.
     const mark = adapter.currentMark(ref);
+    if (adapter.snapshotSource) {
+      ref = adapter.snapshotSource(ref);
+      if (!ref) return unavailable();
+    }
     const probe = adapter.parseProbe(ref);
     if (!["readable", "partial"].includes(probe.status)) return unavailable();
     const activity = adapter.activitySince(ref, since);

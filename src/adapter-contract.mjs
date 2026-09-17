@@ -7,7 +7,7 @@ export const REQUIRED_OPERATIONS = Object.freeze([
 ]);
 const OPTIONAL_OPERATIONS = [
   "promptArgs", "kickoffArgs", "refById", "preResume", "fabricateSession",
-  "evaluationCommand", "evaluationUsage",
+  "evaluationCommand", "evaluationUsage", "snapshotSource",
 ];
 export const RECORD_FIELDS = Object.freeze([
   "commands", "commandArgs", "outcome", "exitCode", "duration", "filesRead",
@@ -65,7 +65,7 @@ export function createAdapterRegistry(adapters, apiVersion = ADAPTER_API_VERSION
 
 const COMMAND_OPERATIONS = ["startCommand", "resumeCommand", "smokeCommand", "evaluationCommand"];
 const ARG_OPERATIONS = ["promptArgs", "kickoffArgs"];
-const SESSION_OPERATIONS = ["discover", "hydrate", "refById"];
+const SESSION_OPERATIONS = ["discover", "hydrate", "refById", "snapshotSource"];
 const REPORT_OPERATIONS = ["auditSince", "observeAudit", "health", "parseProbe", "discoveryProbe", "idleAfter", "detectHost"];
 const strings = (value) => Array.isArray(value) && Array.from(value).every((item) => typeof item === "string" && !item.includes("\0"));
 const text = (value) => typeof value === "string" && Boolean(value.trim()) && !value.includes("\0");

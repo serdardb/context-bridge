@@ -124,6 +124,14 @@ Optional operations include native pre-resume preparation, native session
 fabrication, lookup by ID and live recall evaluation. `evaluationUsage` requires
 `evaluationCommand`; telemetry parsing without an evaluation command is invalid.
 
+`snapshotSource(ref)` is optional. It synchronously returns a session reference
+for one handoff's stable read view, or null when unavailable, and must not mutate
+the vendor store. Handoff captures `currentMark` before requesting the snapshot,
+then passes the returned reference to probe, activity and audit. Keep snapshot
+payloads private to that reference, not in persistent state or a session-wide
+cache. OpenCode uses this to share one export; adapters without the operation
+retain live reads and their documented consistency limitations.
+
 `conflictFlags` is an array of `{ flags, value, why }` rules. `value` is `none`,
 `optional` or `required`. These rules prevent caller arguments from overriding
 the session or project selected by the bridge.

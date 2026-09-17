@@ -21,7 +21,8 @@ import {
   SQLITE_OPERATION_TIMEOUT_MS,
 } from "../src/agents/opencode.mjs";
 import { buildCommand } from "../src/launcher.mjs";
-import { defaultState, saveState, checkpointsDir, writeCheckpoint } from "../src/state.mjs";
+import { handoff } from "../src/handoff.mjs";
+import { defaultState, saveState, loadState, safeCheckpointPath, checkpointsDir, writeCheckpoint } from "../src/state.mjs";
 
 // OpenCode stores its sessions in SQLite, so the bridge injects a delta by
 // writing a message and its text part directly into that database — authless,
@@ -224,6 +225,48 @@ test("the export parser keeps user and assistant text and drops everything else"
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;
+  }
+});
+
+test("handoff shares one OpenCode export between conversation and audit without caching future handoffs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "oc-source-snapshot-"));
+  const project = path.join(root, "project"), bin = path.join(root, "bin");
+  fs.mkdirSync(project); fs.mkdirSync(bin);
+  const counter = path.join(root, "exports");
+  fs.writeFileSync(path.join(bin, "opencode"), `#!${process.execPath}
+const fs = require('node:fs');
+const file = ${JSON.stringify(counter)};
+const n = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) + 1 : 1;
+fs.writeFileSync(file, String(n));
+console.log(JSON.stringify({messages:[{info:{role:'assistant',time:{created:Date.now()}},parts:[
+{type:'text',text:'export-generation-'+n},
+{type:'tool',tool:'bash',state:{status:'completed',input:{command:'echo export-generation-'+n},metadata:{exit:0}}}
+]}]}));
+`, { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ""}`;
+  try {
+    const s = defaultState(project);
+    s.activeAgent = "opencode";
+    s.agents.opencode = { id: "ses_snapshot", transcriptPath: null, mark: null, idle: false };
+    saveState(project, s);
+    let previous = null;
+    for (let turn = 0; turn < 2; turn++) {
+      handoff(project, "codex", { from: "opencode", checkTarget: () => {} });
+      const state = loadState(project);
+      const file = safeCheckpointPath(project, state.pendingInjection.deltaFile);
+      const body = fs.readFileSync(file.replace(/\.md$/, "-full.md"), "utf8");
+      const generation = body.match(/export-generation-\d+/)?.[0];
+      const audit = JSON.parse(fs.readFileSync(file.replace(/\.md$/, "-audit.json"), "utf8"));
+      assert.ok(generation);
+      assert.equal(audit.agents.opencode.commands[0].args, `echo ${generation}`);
+      assert.notEqual(generation, previous, "a later handoff must read a fresh export");
+      assert.equal(audit.readerErrors, undefined);
+      previous = generation;
+    }
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -410,6 +410,12 @@ the delta and manifest, and withhold the source watermark. Error-only manifests
 are retained even when no commands could be recovered. A file changing after
 these checks or auxiliary evidence changing independently remains outside this
 bounded detection; this is not a vendor transaction.
+OpenCode uses the optional adapter `snapshotSource(ref)` operation instead:
+handoff captures the mark first, then one export is held privately for that
+ref's probe, activity and audit reads. A later handoff creates a fresh ref and
+export. Idle detection and discovery still read live data. This prevents the
+bridge from mixing separate exports; it does not establish transaction isolation
+inside OpenCode's export implementation.
 Delivery marks are captured before extraction, including closing-word collection.
 For append-only streams this favors possible repetition of concurrent arrivals
 over acknowledging a later row that the payload never read. It does not prove

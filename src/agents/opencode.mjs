@@ -461,8 +461,24 @@ export function parseExportMessages(raw, { required = false } = {}) {
 /**
  * Read the session export and extract activity since the mark.
  */
-export function activitySince(ref, sinceIso) {
+const sourceExports = new WeakMap();
+
+/** A per-handoff export shared by probe, activity and audit, never session-wide. */
+export function snapshotSource(ref) {
   const raw = ref?.id ? exportSession(ref.id) : null;
+  if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+  exportDocument(raw);
+  const snapshot = { ...ref };
+  sourceExports.set(snapshot, raw);
+  return snapshot;
+}
+
+function sourceExport(ref) {
+  return ref?.id ? sourceExports.get(ref) ?? exportSession(ref.id) : null;
+}
+
+export function activitySince(ref, sinceIso) {
+  const raw = sourceExport(ref);
   if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
   const all = parseExportMessages(raw, { required: true });
   const since = sinceIso ? Date.parse(sinceIso) : 0;
@@ -493,7 +509,7 @@ export function idleAfter(ref, sinceIso) {
  */
 export function parseProbe(ref) {
   if (!ref?.id) return { status: "missing", detail: "no session id" };
-  const raw = exportSession(ref.id);
+  const raw = sourceExport(ref);
   if (!raw) return { status: "unreadable", detail: "export failed" };
   let messages;
   try { messages = parseExportMessages(raw, { required: true }); }
@@ -640,7 +656,7 @@ export function observeAudit(ref) {
  * What OpenCode actually ran since the mark.
  */
 export function auditSince(ref, sinceIso) {
-  const raw = ref?.id ? exportSession(ref.id) : null;
+  const raw = sourceExport(ref);
   if (!raw) throw new BridgeError("OpenCode audit export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
   return parseAudit(raw, sinceIso);
 }
