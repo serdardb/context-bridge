@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { writeJsonAtomic, processAlive as processIsAlive, BridgeError } from "./util.mjs";
+import { writeJsonAtomic, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -72,18 +72,21 @@ function registryPath() {
 
 function readRegistry() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(registryPath(), "utf8"));
+    const raw = readOwnedFile(registryPath(), { encoding: "utf8", missing: true });
+    if (raw === null) return { version: REGISTRY_VERSION, projects: {} };
+    const parsed = JSON.parse(raw);
     if (parsed?.version !== REGISTRY_VERSION || !parsed.projects || typeof parsed.projects !== "object" ||
         Array.isArray(parsed.projects) || Object.entries(parsed.projects).some(([id, record]) =>
           !PROJECT_UUID.test(id) || !record || record.id !== id ||
           typeof record.path !== "string" || !path.isAbsolute(record.path))) {
-      throw new Error(`Global bridge registry is invalid: ${registryPath()}. Refusing to select a new project identity.`);
+      throw new BridgeError("Global bridge registry is invalid. Refusing to select a new project identity.", { code: "BRIDGE_REGISTRY_INVALID" });
     }
     return parsed;
   } catch (err) {
-    if (err.code === "ENOENT") return { version: REGISTRY_VERSION, projects: {} };
-    if (err.message?.startsWith("Global bridge registry is invalid:")) throw err;
-    throw new Error(`Global bridge registry could not be read: ${registryPath()}. Refusing to select a new project identity.`);
+    if (err.code === "BRIDGE_REGISTRY_INVALID") throw err;
+    throw new BridgeError("Global bridge registry could not be read. Refusing to select a new project identity.", {
+      code: "BRIDGE_REGISTRY_UNREADABLE", cause: err, operation: "read project registry",
+    });
   }
 }
 

@@ -1936,6 +1936,37 @@ test("a corrupt global registry fails closed instead of selecting a new identity
       () => projectIdentity(project),
       /Global bridge registry could not be read.*Refusing to select a new project identity/
     );
+    const registry = path.join(home, "projects.json"), outside = path.join(project, "external-registry.json");
+    const original = JSON.stringify({ version: 1, projects: {} });
+    fs.writeFileSync(outside, original);
+    for (const kind of ["symlink", "hardlink", "dangling", "directory"]) {
+      fs.unlinkSync(registry);
+      if (kind === "directory") fs.mkdirSync(registry);
+      else if (kind === "hardlink") fs.linkSync(outside, registry);
+      else fs.symlinkSync(kind === "dangling" ? outside + ".absent" : outside, registry);
+      assert.throws(() => registeredProjects(), { code: "BRIDGE_REGISTRY_UNREADABLE" });
+      assert.throws(() => projectIdentity(project, { create: true }), { code: "BRIDGE_REGISTRY_UNREADABLE" });
+      const result = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "project", "list", "--json"], {
+        cwd: project, encoding: "utf8", env: { ...process.env, PATH: "" },
+      });
+      assert.equal(result.status, 1, kind);
+      assert.ok(!result.stderr.includes(outside));
+      assert.ok(!result.stderr.includes("at readRegistry"));
+      assert.equal(fs.readFileSync(outside, "utf8"), original);
+      assert.equal(fs.existsSync(path.join(home, "projects")), false);
+      if (kind === "directory") fs.rmdirSync(registry); else fs.unlinkSync(registry);
+      fs.writeFileSync(registry, original);
+    }
+    const open = fs.openSync;
+    try {
+      fs.openSync = (name, ...args) => {
+        if (name === registry) throw Object.assign(new Error("disappeared after lookup"), { code: "ENOENT" });
+        return open(name, ...args);
+      };
+      assert.throws(() => registeredProjects(), { code: "BRIDGE_REGISTRY_UNREADABLE" }, "post-lookup absence cannot reset the registry");
+    } finally { fs.openSync = open; }
+    fs.unlinkSync(registry);
+    assert.deepEqual(registeredProjects(), []);
   } finally {
     if (oldHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME;
     else process.env.CONTEXT_BRIDGE_HOME = oldHome;
