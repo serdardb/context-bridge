@@ -261,6 +261,10 @@ export async function main(argv) {
           log(`Resume verified source cleanup using backup: ${plan.recovery.backup}`);
           log(`Retired originals: ${plan.recovery.retired}`);
         }
+        for (const receipt of plan.completed) {
+          log(`Completed migration originals: ${receipt.retired ?? receipt.receipt}`);
+          for (const change of receipt.changes) log(`  ${change.reason}: ${change.file}`);
+        }
         if (plan.removedEntries.length) log(`Files removed after verified backup: ${plan.removedEntries.join(", ")}`);
         if (plan.retainedEntries.length) {
           log(`Kept in the project: ${plan.retainedEntries.join(", ")}`);

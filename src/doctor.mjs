@@ -23,7 +23,7 @@ import { findCompanionScript } from "./transfer.mjs";
 import { loadState, agentSlot } from "./state.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "./agents/index.mjs";
 import { installHooks as installCodexHooks, hooksPath as codexHooksPath } from "./agents/codex.mjs";
-import { projectIdentity, projectStoreDir, runtimeStoreDir, storageHome } from "./storage.mjs";
+import { projectIdentity, projectStoreDir, runtimeStoreDir, storageHome, inspectMigrationReceipts } from "./storage.mjs";
 import { kernelLockHealth } from "./locking.mjs";
 
 const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,7 +34,7 @@ export async function runDoctor(projectDir, { fix = false, json = false, deep = 
   // Installed and authenticated is not the same as working: --deep asks each
   // agent a harmless one-line question and reports what actually came back.
   r.deep = deep;
-  if (deep && r.bridge.locking.ok) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+  if (deep && r.bridge.locking.ok && !r.bridge.storage.error && !r.bridge.stateError) for (const agentId of AGENT_IDS) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   refreshIntegration(r);
   if (json) {
     log(JSON.stringify(r, null, 2));
@@ -50,7 +50,7 @@ export async function runVerify(projectDir, { json = false, all = false } = {}) 
   const r = collect(projectDir);
   r.deep = true;
   for (const agentId of AGENT_IDS) {
-    if (r.bridge.locking.ok && r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
+    if (r.bridge.locking.ok && !r.bridge.storage.error && !r.bridge.stateError && r.agents[agentId].version) r.agents[agentId].smoke = smoke(agentId, r.agents[agentId]);
   }
   refreshIntegration(r);
   r.verify = verifyReport(r, { all });
@@ -69,6 +69,7 @@ export function verifyReport(r, { all = false } = {}) {
   const installed = AGENT_IDS.filter((id) => r.agents[id]?.version);
   const failures = [];
   if (r.bridge?.locking?.ok !== true) failures.push("native locking is unavailable or unverified; mutations cannot be verified");
+  if (r.bridge?.storage?.error || r.bridge?.stateError) failures.push("runtime storage or migration evidence needs recovery");
   if (all) for (const id of AGENT_IDS) {
     if (!installed.includes(id)) failures.push(`${id} is required for release verification but is not installed`);
   }
@@ -103,7 +104,7 @@ function anyRouteReady(r) {
   const drifted = AGENT_IDS.some(
     (id) => SESSION_BROKEN.has(r.agents[id].session.status) || r.agents[id].discovery?.status === "blind"
   );
-  return r.bridge.locking.ok && !drifted && Object.values(r.routes).some((route) => route.ready);
+  return r.bridge.locking.ok && !r.bridge.storage.error && !r.bridge.stateError && !drifted && Object.values(r.routes).some((route) => route.ready);
 }
 
 function smoke(agentId, health) {
@@ -145,6 +146,9 @@ export function collect(projectDir) {
   try {
     const identity = projectIdentity(projectDir);
     storage = { ...storage, projectId: identity.id, projectStore: projectStoreDir(projectDir), runtimeStore: runtimeStoreDir(projectDir) };
+    storage.completedMigrations = inspectMigrationReceipts(projectDir);
+    const issues = storage.completedMigrations.filter((record) => record.error);
+    if (issues.length) storage.error = issues.map((record) => record.error).join("\n");
   } catch (error) {
     storage.error = error.message;
   }
@@ -400,6 +404,7 @@ function render(r) {
       : "No project state yet (created on first use)"
   );
   if (r.bridge.stateError) row(false, `State error: ${r.bridge.stateError}`, "run `bridge doctor --json` for the diagnostic");
+  if (r.bridge.storage.error) row(false, `Storage error: ${r.bridge.storage.error}`, "run `bridge storage plan --json` to inspect preserved evidence");
 
   log("");
   log(bold("Available routes"));

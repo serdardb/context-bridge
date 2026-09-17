@@ -472,10 +472,12 @@ export function planLegacyMigration(projectDir) {
   const plan = {
     needed: false, source, target: null, createsIdentity: false, recovery: null,
     backupRoot: path.join(storageHome(), "migrations"),
-    staging: { removable: [], retained: [] },
+    staging: { removable: [], retained: [] }, completed: [],
     files: [], bytes: 0, removedEntries: [], retainedEntries: [], blockers: [],
   };
   try {
+    plan.completed = inspectMigrationReceipts(projectDir);
+    for (const receipt of plan.completed) if (receipt.error) plan.blockers.push(receipt.error);
     plan.needed = hasLegacyRuntime(source);
     if (plan.needed) assertLegacyInactive(source);
     const identity = projectIdentity(projectDir);
@@ -543,6 +545,7 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
       }
       finishLegacyCleanup(legacy, target, record.backup, record.retired);
       const stagingCleanup = cleanupMigrationStaging(identity.id, target, record.backup);
+      writeMigrationReceipt(identity.id, record.backup, record.retired);
       fs.unlinkSync(journal);
       return { identity, target, backup: record.backup, retired: record.retired, recovered: true, stagingCleanup };
     }
@@ -583,6 +586,7 @@ export function migrateLegacyStorage(projectDir, { retirementDir = null } = {}) 
     writeJsonAtomic(journal, { version: 1, source: legacy, target, backup, retired });
     finishLegacyCleanup(legacy, target, backup, retired);
     const stagingCleanup = cleanupMigrationStaging(identity.id, target, backup);
+    writeMigrationReceipt(identity.id, backup, retired);
     fs.unlinkSync(journal);
     return { identity, target, backup, retired, stagingCleanup };
     } catch (err) {
@@ -653,6 +657,58 @@ function inspectLegacyCleanup(legacy, target, backup, retired = retiredMigration
 
 function retiredMigrationDir(backup) {
   return path.join(storageHome(), "retired-migrations", path.basename(backup));
+}
+
+function writeMigrationReceipt(projectId, backup, retired) {
+  const root = path.join(storageHome(), "migration-receipts");
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink()) throw new Error("Unsafe migration receipt directory.");
+  writeJsonAtomic(path.join(root, `${path.basename(backup)}.json`), {
+    version: 1, projectId, backup, retired, completedAt: new Date().toISOString(),
+    files: treeEntries(backup).filter(([name]) => ownedLegacyFile(name)),
+  });
+}
+
+/** Compare preserved source originals, not the actively changing global state. */
+export function inspectMigrationReceipts(projectDir) {
+  const identity = projectIdentity(projectDir);
+  if (identity.kind === "path-locator") return [];
+  const root = path.join(storageHome(), "migration-receipts");
+  let stat;
+  try { stat = fs.lstatSync(root); } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe migration receipt directory.");
+  return fs.readdirSync(root).filter((name) => name.startsWith(`${identity.id}-`) && /^\d+\.json$/.test(name.slice(identity.id.length + 1))).sort().map((name) => {
+    const file = path.join(root, name);
+    const result = { receipt: file, backup: null, retired: null, completedAt: null, changes: [], error: null };
+    try {
+      if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink()) throw new Error("Unsafe migration receipt file.");
+      const record = JSON.parse(fs.readFileSync(file, "utf8"));
+      const basename = name.slice(0, -5);
+      if (record.version !== 1 || record.projectId !== identity.id ||
+          record.backup !== path.join(storageHome(), "migrations", basename) ||
+          typeof record.retired !== "string" || !path.isAbsolute(record.retired) || path.basename(record.retired) !== basename ||
+          !Number.isFinite(Date.parse(record.completedAt)) || !Array.isArray(record.files) ||
+          record.files.some((entry) => !Array.isArray(entry) || entry.length !== 3 || typeof entry[0] !== "string" ||
+            !ownedLegacyFile(entry[0]) || !Number.isSafeInteger(entry[1]) || entry[1] < 0 || !/^[a-f0-9]{64}$/.test(entry[2])) ||
+          new Set(record.files.map(([entry]) => entry)).size !== record.files.length) throw new Error("Invalid migration receipt.");
+      Object.assign(result, { backup: record.backup, retired: record.retired, completedAt: record.completedAt });
+      const retiredStat = fs.lstatSync(record.retired);
+      if (!retiredStat.isDirectory() || retiredStat.isSymbolicLink()) throw new Error("Retired originals are unavailable or unsafe.");
+      const expected = new Map(record.files.map(([entry, size, hash]) => [entry, `${size}:${hash}`]));
+      const actual = new Map(treeEntries(record.retired).map(([entry, size, hash]) => [entry, `${size}:${hash}`]));
+      for (const [entry, value] of expected) {
+        if (actual.get(entry) !== value) result.changes.push({ file: entry, reason: actual.has(entry) ? "changed" : "missing" });
+      }
+      for (const entry of actual.keys()) if (!expected.has(entry)) result.changes.push({ file: entry, reason: "added" });
+      if (result.changes.length) result.error = `Retired originals changed after migration: ${record.retired}. Stop old bridge processes and reconcile the preserved evidence; nothing was merged or deleted.`;
+    } catch (error) {
+      result.error = `Cannot verify migration evidence ${file}: ${error.code === "ENOENT" ? "recorded originals are missing or the volume is unavailable" : error.message}`;
+    }
+    return result;
+  });
 }
 
 function validateRetirementRoot(root, legacy) {

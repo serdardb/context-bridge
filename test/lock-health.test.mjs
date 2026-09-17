@@ -56,7 +56,7 @@ test("native acquisition errors retain errno without leaking a stack", { skip: p
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test("missing native dependency fails diagnostics and mutations, but preserves inspection and both stores", { timeout: 60000 }, () => {
+test("diagnostics refuse missing native locking and changed migration evidence without destroying stores", { timeout: 60000 }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-missing-"));
   const install = path.join(root, "install"), home = path.join(root, "home");
   const store = path.join(root, "store"), project = path.join(root, "project");
@@ -139,5 +139,21 @@ test("missing native dependency fails diagnostics and mutations, but preserves i
         assert.deepEqual(fs.readFileSync(path.join(project, ".bridge/personal.txt")), personal);
       }
     }
+    fs.symlinkSync(path.join(repo, "node_modules"), path.join(install, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    const migrated = run("storage", "migrate", "--json");
+    assert.equal(migrated.status, 0, migrated.stderr + migrated.stdout);
+    const { retired } = JSON.parse(migrated.stdout);
+    assert.equal(run("doctor", "--json").status, 0, "healthy completed migration must not make diagnostics fail");
+    fs.appendFileSync(path.join(retired, "state.json"), "\nlate old-writer append");
+    for (const command of ["doctor", "verify"]) {
+      const report = run(command, "--json");
+      assert.equal(report.status, 1, report.stderr + report.stdout);
+      const data = JSON.parse(report.stdout);
+      assert.equal(data.bridge.locking.ok, true);
+      assert.match(data.bridge.storage.error, /Retired originals changed/);
+      assert.equal(data.routes["first->second"].configured, true, "agent configuration is not the failing gate");
+      assert.ok(!data.agents.first.smoke, "storage failure must not spend a model call");
+    }
+    assert.match(run("doctor").stdout, /Storage error:.*Retired originals changed/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
