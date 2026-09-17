@@ -80,6 +80,6 @@ export const capabilities = Object.fromEntries(["commands", "commandArgs", "outc
   "filesRead", "filesChanged", "toolOutput", "reasoning", "tokenUsage", "pairing"].map((key) => [key, false]));
 export const observeAudit = () => ({ ...capabilities });
 export function auditSince(ref, mark) {
-  activitySince(ref, mark);
-  return { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
+  const activity = activitySince(ref, mark);
+  return { commands: [], filesRead: [], filesChanged: [], dropped: 0, sourceComplete: activity.sourceComplete };
 }

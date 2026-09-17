@@ -117,5 +117,5 @@ export function aiderActivity(history, evidence, mark = null) {
   if (mark && mark.history.bytes > covered.bytes) covered = mark.history;
   const unobservedText = aiderHistorySince(history, covered);
   return { messages, patchedFiles: [], turnsCompleted: rows.filter((row) => row.completed).length,
-    deliveryObserved, unobservedText };
+    deliveryObserved, unobservedText, sourceComplete: !evidence.incompleteTail && !unobservedText };
 }

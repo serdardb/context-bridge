@@ -15,6 +15,9 @@ import {
   bridgeTouchedSessionIds,
   parseExportMessages,
   parseAudit,
+  activitySince,
+  auditSince,
+  parseProbe,
   SQLITE_OPERATION_TIMEOUT_MS,
 } from "../src/agents/opencode.mjs";
 import { buildCommand } from "../src/launcher.mjs";
@@ -206,6 +209,22 @@ test("the export parser keeps user and assistant text and drops everything else"
   );
   assert.equal(msgs[0].at, new Date(1000).toISOString(), "timestamps come through as ISO");
   assert.deepEqual(parseExportMessages("not json at all"), [], "garbage in, empty out, no throw");
+  for (const invalid of ["not json", "{broken", "{}", '{"messages":[{}]}']) {
+    assert.throws(() => parseExportMessages(invalid, { required: true }), { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+    assert.equal(parseAudit(invalid).sourceComplete, false);
+  }
+  assert.deepEqual(parseExportMessages('{"messages":[]}', { required: true }), []);
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = "";
+    const ref = { id: "unavailable-export" };
+    assert.equal(parseProbe(ref).status, "unreadable");
+    assert.throws(() => activitySince(ref), { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+    assert.throws(() => auditSince(ref), { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
 });
 
 test("the audit parser pulls commands, reads and changes from tool parts, honouring the mark", () => {

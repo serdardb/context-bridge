@@ -16,7 +16,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { tryExec, readJson, fileExists, opencodeHome, HOME } from "../util.mjs";
+import { tryExec, readJson, fileExists, opencodeHome, HOME, BridgeError } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -419,13 +419,27 @@ export function currentMark() {
  * Exported so its handling of the export shape can be tested against fixtures
  * without shelling out to a real OpenCode session.
  */
-export function parseExportMessages(raw) {
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart < 0) return [];
+function exportDocument(raw) {
+  try {
+    const start = raw.indexOf("{");
+    if (start < 0) throw new Error("Missing JSON document");
+    const document = JSON.parse(raw.slice(start));
+    if (!Array.isArray(document?.messages) || document.messages.some((m) =>
+      typeof m?.info?.role !== "string" || !Array.isArray(m.parts))) throw new Error("Unsupported export schema");
+    return document;
+  } catch (cause) {
+    throw new BridgeError("OpenCode export is malformed or has an unsupported message schema.", {
+      code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
+    });
+  }
+}
+
+export function parseExportMessages(raw, { required = false } = {}) {
   let d;
   try {
-    d = JSON.parse(raw.slice(jsonStart));
-  } catch {
+    d = exportDocument(raw);
+  } catch (error) {
+    if (required) throw error;
     return [];
   }
   const messages = [];
@@ -448,10 +462,9 @@ export function parseExportMessages(raw) {
  * Read the session export and extract activity since the mark.
  */
 export function activitySince(ref, sinceIso) {
-  if (!ref?.id) return { messages: [], patchedFiles: [], turnsCompleted: 0 };
-  const raw = exportSession(ref.id);
-  if (!raw) return { messages: [], patchedFiles: [], turnsCompleted: 0 };
-  const all = parseExportMessages(raw);
+  const raw = ref?.id ? exportSession(ref.id) : null;
+  if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+  const all = parseExportMessages(raw, { required: true });
   const since = sinceIso ? Date.parse(sinceIso) : 0;
   const messages = all.filter((m) => {
     if (!m.at) return true;
@@ -481,10 +494,12 @@ export function idleAfter(ref, sinceIso) {
 export function parseProbe(ref) {
   if (!ref?.id) return { status: "missing", detail: "no session id" };
   const raw = exportSession(ref.id);
-  if (!raw) return { status: "missing", detail: "export failed" };
-  const messages = parseExportMessages(raw);
+  if (!raw) return { status: "unreadable", detail: "export failed" };
+  let messages;
+  try { messages = parseExportMessages(raw, { required: true }); }
+  catch { return { status: "mismatch", detail: "invalid export document" }; }
   return {
-    status: messages.length > 0 ? "readable" : "partial",
+    status: "readable",
     detail: `${messages.length} messages parsed from export`,
   };
 }
@@ -625,9 +640,8 @@ export function observeAudit(ref) {
  * What OpenCode actually ran since the mark.
  */
 export function auditSince(ref, sinceIso) {
-  if (!ref?.id) return { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
-  const raw = exportSession(ref.id);
-  if (!raw) return { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
+  const raw = ref?.id ? exportSession(ref.id) : null;
+  if (!raw) throw new BridgeError("OpenCode audit export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
   return parseAudit(raw, sinceIso);
 }
 
@@ -637,14 +651,11 @@ export function auditSince(ref, sinceIso) {
  * use as `part.type === "tool"` with the call in `part.state.input`.
  */
 export function parseAudit(raw, sinceIso) {
-  const empty = { commands: [], filesRead: [], filesChanged: [], dropped: 0 };
-  const jsonStart = raw.indexOf("{");
-  if (jsonStart < 0) return empty;
   let d;
   try {
-    d = JSON.parse(raw.slice(jsonStart));
+    d = exportDocument(raw);
   } catch {
-    return empty;
+    return { commands: [], filesRead: [], filesChanged: [], dropped: 0, sourceComplete: false };
   }
 
   const commands = [];

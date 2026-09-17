@@ -91,12 +91,12 @@ test("each adapter recognises its own real record shape and rejects a foreign on
   for (const id of AGENT_IDS) {
     if (samples[id] === null) {
       // CLI-based agent: probe returns a result based on CLI availability, not file shape.
-      // On a machine without opencode, parseProbe returns {status: "missing"}.
+      // On a machine without opencode, parseProbe reports an unreadable export.
       // On a machine with opencode, it returns whatever export yields.
       // Either way the probe must not crash.
       const ref = { id: "test-session", transcriptPath: null };
       const result = adapterFor(id).parseProbe(ref);
-      assert.ok(["readable", "missing", "partial"].includes(result.status), `${id} probe returns a valid status`);
+      assert.ok(["readable", "missing", "partial", "unreadable", "mismatch"].includes(result.status), `${id} probe returns a valid status`);
       continue;
     }
     const own = probeOne(id, samples[id]);

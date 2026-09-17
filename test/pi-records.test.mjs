@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { readPiSession, piMark, piActivity } from "../src/agents/pi-records.mjs";
+import { readPiSession, piMark, piActivity, piAudit } from "../src/agents/pi-records.mjs";
 
 test("Pi reader follows the persisted branch and resends its context when a mark is off-branch", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pi-records-"));
@@ -27,6 +27,8 @@ test("Pi reader follows the persisted branch and resends its context when a mark
     assert.deepEqual(piActivity(session, piMark(session)).messages, []);
     fs.appendFileSync(file, '{"type":"message"');
     assert.equal(readPiSession(file).incompleteTail, true);
+    assert.equal(piActivity(readPiSession(file)).sourceComplete, false);
+    assert.equal(piAudit(readPiSession(file)).sourceComplete, false);
     assert.deepEqual(piMark(readPiSession(file)), piMark(session));
     fs.appendFileSync(file, "\n");
     assert.throws(() => readPiSession(file), /damaged Pi session/);

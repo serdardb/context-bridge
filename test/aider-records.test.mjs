@@ -67,6 +67,7 @@ test("Aider completion evidence binds identity, history and the observed prefix 
   assert.equal(aiderDeliverySince(read(), current), false, "old success is not new receipt");
   const activity = aiderActivity(readAiderHistory(historyFile), read(), failedMark);
   assert.equal(activity.deliveryObserved, true);
+  assert.equal(activity.sourceComplete, true);
   assert.deepEqual(activity.messages.map(({ role, text }) => ({ role, text })), lines[2].messages);
   assert.equal(activity.turnsCompleted, 1);
   const settled = aiderMark(readAiderHistory(historyFile), read());
@@ -74,6 +75,7 @@ test("Aider completion evidence binds identity, history and the observed prefix 
   const unfinished = aiderActivity(readAiderHistory(historyFile), read(), settled);
   assert.deepEqual(unfinished.messages, []);
   assert.equal(unfinished.deliveryObserved, false);
+  assert.equal(unfinished.sourceComplete, false);
   assert.equal(unfinished.unobservedText, "Unobserved partial output\n");
   assert.throws(() => aiderDeliverySince(read(), null), /refusing/);
   assert.throws(() => aiderDeliverySince(read(), { ...current, count: 0 }), /refusing/);

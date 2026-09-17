@@ -178,6 +178,13 @@ and Antigravity JSONL audits throw on unavailable required input and report
 malformed rows as partial; Grok's optional hunk file may be absent, but other
 read errors are not treated as absence. This is not an atomic vendor snapshot
 or proof of completeness for adapters that omit the optional field.
+OpenCode's actual activity extraction refuses failed exports and invalid export
+schemas; an empty valid message array remains readable. Its audit marks invalid
+documents incomplete instead of reporting successful empty work. Pi propagates
+an incomplete JSONL tail to both activity and audit; Aider does the same for
+an unfinished evidence tail or native text not yet covered by its observation
+record. These flags prevent the handoff from acknowledging unverified source
+progress; they do not imply all vendor reads share one snapshot.
 
 ## Acceptance Evidence
 

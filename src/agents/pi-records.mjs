@@ -72,7 +72,8 @@ export function piActivity(session, mark = null) {
       if (message.role === "assistant" && ["stop", "length"].includes(message.stopReason)) turnsCompleted++;
     }
   }
-  return { messages, patchedFiles: [], turnsCompleted, branchChanged, incompleteTail: session.incompleteTail };
+  return { messages, patchedFiles: [], turnsCompleted, branchChanged, incompleteTail: session.incompleteTail,
+    sourceComplete: !session.incompleteTail };
 }
 
 export function piAudit(session, mark = null) {
@@ -107,5 +108,5 @@ export function piAudit(session, mark = null) {
     }
   }
   return { commands: [...calls].filter(([id]) => changed.has(id)).map(([, call]) => call),
-    filesRead: [...filesRead], filesChanged: [...filesChanged], dropped: 0 };
+    filesRead: [...filesRead], filesChanged: [...filesChanged], dropped: 0, sourceComplete: !session.incompleteTail };
 }
