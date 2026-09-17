@@ -1546,6 +1546,26 @@ test("explicit adoption reconnects a different-inode directory without Git or ch
     assert.equal(report.launchers[0].pid, process.pid);
     assert.deepEqual(report.preparations, ["checkpoints/.handoff-retained.json"]);
     assert.ok(report.files >= 3 && report.bytes > 0);
+    const migrationDir = path.join(runtimeHome, "migrations");
+    fs.mkdirSync(migrationDir, { recursive: true });
+    const migrationJournal = path.join(migrationDir, `${identity.id}.json`);
+    fs.writeFileSync(migrationJournal, "unparsed recovery evidence");
+    fs.renameSync(store, `${store}-saved`);
+    try {
+      inspection = inspect();
+      assert.equal(inspection.status, 0, inspection.stderr);
+      report = JSON.parse(inspection.stdout);
+      assert.equal(report.store, "absent");
+      assert.deepEqual(report.migrationEvidence, [{ file: `migrations/${identity.id}.json`, type: "file" }]);
+      fs.unlinkSync(migrationJournal);
+      fs.symlinkSync(path.join(`${store}-saved`, "state.json"), migrationJournal);
+      inspection = inspect();
+      assert.equal(inspection.status, 1);
+      assert.ok(JSON.parse(inspection.stdout).issues.some(issue => issue.reason === "unsafe-migration-entry"));
+    } finally {
+      fs.unlinkSync(migrationJournal);
+      fs.renameSync(`${store}-saved`, store);
+    }
     fs.symlinkSync(path.join(store, "state.json"), path.join(store, "linked-evidence"));
     inspection = inspect();
     assert.equal(inspection.status, 1);
