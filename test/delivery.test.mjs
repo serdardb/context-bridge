@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, checkpointsDir, ensureState, safeCheckpointPath } from "../src/state.mjs";
 import { hookBody, HOOK_DELTA_BYTES, deltaWasConsumed, hookDeliveryEligible, fullContextFor } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,7 +35,7 @@ test("a delta routed to the hook is delivered in the shape Codex reads", () => {
   assert.equal(payload.hookSpecificOutput.hookEventName, "SessionStart");
   assert.match(payload.hookSpecificOutput.additionalContext, /DELTA BODY/);
   assert.equal(loadState(project).pendingInjection, null, "a delivered delta is no longer pending");
-  assert.ok(fs.existsSync(path.join(project, deltaFile + ".consumed")), "the rename is what makes it exactly once");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")), "the rename is what makes it exactly once");
 });
 
 test("a second hook run delivers nothing, because the first one already claimed it", () => {
@@ -91,6 +91,7 @@ test("a handoff to a Codex session whose hook has run takes the measured hook ro
   process.env.CODEX_HOME = codexHome;
   try {
     installHooks();
+    ensureState(project);
     fs.mkdirSync(checkpointsDir(project), { recursive: true });
     const claudeTranscript = path.join(project, "claude.jsonl");
     const codexRollout = path.join(project, "rollout.jsonl");
@@ -127,7 +128,7 @@ test("a handoff to a Codex session whose hook has run takes the measured hook ro
     const after = loadState(project);
     const inj = after.pendingInjection;
     assert.equal(inj?.via, "hook", "hookSeen on the stored slot has to survive the agentSlot facade");
-    const delta = fs.readFileSync(path.join(project, inj.deltaFile), "utf8");
+    const delta = fs.readFileSync(safeCheckpointPath(project, inj.deltaFile), "utf8");
     const delivered = hookBody(delta, fullContextFor(project, inj.deltaFile));
     assert.ok(Buffer.byteLength(delivered) <= HOOK_DELTA_BYTES, "the real hook body must fit the hook road");
     assert.doesNotMatch(delivered, /trimmed to fit/, "a delta composed for the hook road should not be cut again by delivery");
@@ -155,22 +156,24 @@ test("an oversized delta is trimmed and always names the file holding the rest",
 // launcher raced to write state.
 test("consumption is read from the file on disk, not from what state remembers", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-consumed-"));
+  ensureState(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const rel = path.join(".bridge", "checkpoints", "d.md");
-  fs.writeFileSync(path.join(project, rel), "delta");
+  fs.writeFileSync(safeCheckpointPath(project, rel), "delta");
 
   assert.equal(deltaWasConsumed(project, { deltaFile: rel }), false);
-  fs.renameSync(path.join(project, rel), path.join(project, rel + ".consumed"));
+  fs.renameSync(safeCheckpointPath(project, rel), safeCheckpointPath(project, rel + ".consumed"));
   assert.equal(deltaWasConsumed(project, { deltaFile: rel }), true);
 });
 
 function pendingDelta(via, body) {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-delivery-"));
+  ensureState(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const name = "2026-07-21T09-00-00-000Z-claude-to-codex.md";
   const rel = path.join(".bridge", "checkpoints", name);
-  fs.writeFileSync(path.join(project, rel), body);
-  fs.writeFileSync(path.join(project, rel.replace(".md", "-full.md")), "the untrimmed version");
+  fs.writeFileSync(safeCheckpointPath(project, rel), body);
+  fs.writeFileSync(safeCheckpointPath(project, rel.replace(".md", "-full.md")), "the untrimmed version");
 
   const state = defaultState(project);
   state.agents.codex = {
@@ -251,8 +254,8 @@ test("a launch that never starts leaves the delta exactly where it was", () => {
     env: { ...cleanEnv(), PATH: scratch }, // codex is not there, so the spawn fails
   });
 
-  assert.ok(fs.existsSync(path.join(project, deltaFile)), "the delta must survive a failed launch");
-  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile)), "the delta must survive a failed launch");
+  assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")));
   assert.ok(loadState(project).pendingInjection, "and it must still be pending");
 });
 
@@ -281,8 +284,8 @@ test("a launch that starts but says nothing leaves the delta pending", () => {
     env: { ...cleanEnv(), PATH: scratch },
   });
 
-  assert.ok(fs.existsSync(path.join(project, deltaFile)), "a silent agent must not consume the handoff");
-  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile)), "a silent agent must not consume the handoff");
+  assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")));
   assert.ok(loadState(project).pendingInjection, "so the next launch can hand it over again");
 });
 
@@ -314,8 +317,8 @@ test("an agent that answers consumes the delta, and only once", () => {
     env: { ...cleanEnv(), PATH: scratch },
   });
 
-  assert.ok(fs.existsSync(path.join(project, deltaFile + ".consumed")), "an answered handoff is a delivered one");
-  assert.ok(!fs.existsSync(path.join(project, deltaFile)), "and it must not still be pending, or it ships twice");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")), "an answered handoff is a delivered one");
+  assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile)), "and it must not still be pending, or it ships twice");
   assert.equal(loadState(project).pendingInjection, null);
 });
 
@@ -350,8 +353,8 @@ test("the echoed delta prompt is not mistaken for the agent answering", () => {
     env: { ...cleanEnv(), PATH: scratch },
   });
 
-  assert.ok(fs.existsSync(path.join(project, deltaFile)), "the delta prompt is not its own delivery; it stays pending");
-  assert.ok(!fs.existsSync(path.join(project, deltaFile + ".consumed")));
+  assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile)), "the delta prompt is not its own delivery; it stays pending");
+  assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")));
   assert.ok(loadState(project).pendingInjection, "so a session the model never answered can be handed over again");
 });
 
@@ -374,6 +377,7 @@ test("a delta too large for a command line is trimmed, not handed to spawn whole
 // outside .bridge. Both go through the containment gate now.
 test("delivery refuses a deltaFile that escapes .bridge", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-deliv-escape-")));
+  ensureState(project);
   fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";

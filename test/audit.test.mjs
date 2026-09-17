@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildManifest, renderManifest, latestManifest, writeManifest } from "../src/audit.mjs";
 import { handoff } from "../src/handoff.mjs";
-import { defaultState, saveState, loadState } from "../src/state.mjs";
+import { defaultState, saveState, loadState, ensureState, checkpointsDir, safeCheckpointPath } from "../src/state.mjs";
 import { AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
 import { fileURLToPath } from "node:url";
 
@@ -31,9 +31,9 @@ test("a handoff writes the manifest beside its delta and points at it in one lin
   const deltaRel = state.pendingInjection.deltaFile;
   const stem = path.basename(deltaRel, ".md");
   const manifestRel = path.join(".bridge", "checkpoints", `${stem}-audit.json`);
-  assert.ok(fs.existsSync(path.join(project, manifestRel)), "the pair must share a stem, or nobody can find one from the other");
+  assert.ok(fs.existsSync(safeCheckpointPath(project, manifestRel)), "the pair must share a stem, or nobody can find one from the other");
 
-  const delta = fs.readFileSync(path.join(project, deltaRel), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8");
   assert.match(delta, /bridge inspect/, "the delta has to say the audit exists");
   assert.ok(!delta.includes("exit 0"), "and must not carry the audit itself, which was the whole point");
 });
@@ -142,7 +142,7 @@ test("inspect finds the newest manifest and survives a project with none", () =>
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "audit-latest-")));
   assert.equal(latestManifest(project), null, "a project with no handoff yet is not an error");
 
-  fs.mkdirSync(path.join(project, ".bridge", "checkpoints"), { recursive: true });
+  ensureState(project);
   writeManifest(project, "main", "2026-07-21T10-00-00-000Z-a-to-b", { manifestVersion: 1, source: "a", target: "b", agents: {} });
   writeManifest(project, "main", "2026-07-21T11-00-00-000Z-b-to-c", { manifestVersion: 1, source: "b", target: "c", agents: {} });
   assert.equal(latestManifest(project).manifest.source, "b", "the newest one is the one anybody means");
@@ -330,7 +330,7 @@ test("a dead agent's work is recovered from disk by naming it as the source", as
 
   // Read through loadState: tests must not be coupled to the on-disk shape.
   const state = loadState(project);
-  const delta = fs.readFileSync(path.join(project, state.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, state.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /Codex/, "the recovered delta must attribute the dead agent");
   assert.match(delta, /from-codex-fixture-message/, "and carry what that agent actually said");
 });
@@ -426,11 +426,12 @@ test("writeManifest refuses, and latestManifest will not read, through a symlink
   // write boundary: a symlinked lane checkpoints dir must not let a manifest be
   // created outside the project, and inspect must not read one back through it.
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-audit-")));
-  fs.mkdirSync(path.join(project, ".bridge", "lanes", "feature"), { recursive: true });
+  ensureState(project);
+  fs.mkdirSync(path.dirname(checkpointsDir(project, "feature")), { recursive: true });
   const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-outside-")));
   // Plant a real manifest in the external target to prove latestManifest won't read it.
   fs.writeFileSync(path.join(outside, "2026-01-01T00-00-00-000Z-claude-to-codex-audit.json"), JSON.stringify({ planted: true }));
-  fs.symlinkSync(outside, path.join(project, ".bridge", "lanes", "feature", "checkpoints"));
+  fs.symlinkSync(outside, checkpointsDir(project, "feature"));
 
   assert.throws(
     () => writeManifest(project, "feature", "2026-01-01T00-00-00-000Z-claude-to-codex", { commands: [] }),

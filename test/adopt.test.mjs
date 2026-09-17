@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, STATE_VERSION } from "../src/state.mjs";
+import { defaultState, saveState, loadState, STATE_VERSION, ensureState, checkpointsDir, safeCheckpointPath } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -32,7 +32,7 @@ test("handoff claude auto-adopts the running Codex session via CODEX_THREAD_ID",
   assert.equal(s.pendingInjection.id, null);
   assert.equal(s.pendingHandoff.target, "claude");
 
-  const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, s.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /fix the bug/);
   assert.ok(delta.includes(rolloutPath), "delta should reference the full adopted rollout");
 });
@@ -65,7 +65,7 @@ test("handoff claude env-adopt without a rollout warns loudly but still transfer
 
   const s = loadState(project);
   assert.equal(s.agents.codex.id, THREAD_ID);
-  const delta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, s.pendingInjection.deltaFile), "utf8");
   assert.match(delta, /\[Bridge warning\]/);
   assert.match(delta, /ship it/);
 });
@@ -171,7 +171,8 @@ test("handoff claude without any Codex session fails with guidance", () => {
 
 test("SessionStart hook delivers a sessionId=null delta to the first new Claude session", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-firstinj-"));
-  const checkpointDir = path.join(project, ".bridge", "checkpoints");
+  ensureState(project);
+  const checkpointDir = checkpointsDir(project);
   fs.mkdirSync(checkpointDir, { recursive: true });
   fs.writeFileSync(path.join(checkpointDir, "delta.md"), "[Bridge Context Update]\nCodex-first seed.\n");
 

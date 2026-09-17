@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir, ensureState } from "../src/state.mjs";
 import { hookBody, fullContextFor } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -97,7 +97,8 @@ test("production hooks link, deliver and finish turns without Git or project-loc
 
 test("Claude SessionStart hook injects pending delta exactly once", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-hook-"));
-  const checkpointDir = path.join(project, ".bridge", "checkpoints");
+  ensureState(project);
+  const checkpointDir = checkpointsDir(project);
   fs.mkdirSync(checkpointDir, { recursive: true });
   fs.writeFileSync(path.join(checkpointDir, "delta.md"), "[Bridge Context Update]\nCodex changed files.\n");
 
@@ -343,7 +344,8 @@ test("a Claude SessionStart hook refuses to relink a session that was unlinked, 
 
 test("a stale Codex hook for an unlinked session neither stamps hookSeen nor consumes a pending delta", () => {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-codextomb-")));
-  const checkpoints = path.join(project, ".bridge", "checkpoints");
+  ensureState(project);
+  const checkpoints = checkpointsDir(project);
   fs.mkdirSync(checkpoints, { recursive: true });
   const deltaName = "2026-08-04T00-00-00-000Z-codex-to-claude.md";
   fs.writeFileSync(path.join(checkpoints, deltaName), "[Bridge] context for the NEW codex session");

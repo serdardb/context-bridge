@@ -97,7 +97,7 @@ test("a first switch carries the whole conversation, a later one carries only wh
   const first = run();
   assert.equal(first.status, 0, first.stderr);
   let s = loadState(project);
-  const firstDelta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  const firstDelta = fs.readFileSync(safeCheckpointPath(project, s.pendingInjection.deltaFile), "utf8");
   assert.ok(firstDelta.includes(LONG_MESSAGE), "a small first conversation still travels whole");
   assert.match(firstDelta, /This is the first switch/, "and says so, pointing at the checkpoint for the rest");
   assert.match(firstDelta, /Full context checkpoint:/);
@@ -122,7 +122,7 @@ test("a first switch carries the whole conversation, a later one carries only wh
   const second = run();
   assert.equal(second.status, 0, second.stderr);
   s = loadState(project);
-  const laterDelta = fs.readFileSync(path.join(project, s.pendingInjection.deltaFile), "utf8");
+  const laterDelta = fs.readFileSync(safeCheckpointPath(project, s.pendingInjection.deltaFile), "utf8");
   // This assertion used to be its opposite: it required the later delta to clip
   // the long message, because clipping was what the code did. It was proving the
   // defect rather than a requirement. A message that fits inside the road's
@@ -142,7 +142,7 @@ test("a first switch carries the whole conversation, a later one carries only wh
     /kept with this handoff's other checkpoints until they are pruned together/,
     "the real lifetime is the group's, and the delta has to say which one it is"
   );
-  const full = fs.readFileSync(path.join(project, ref[1]), "utf8");
+  const full = fs.readFileSync(path.resolve(project, ref[1]), "utf8");
   assert.ok(full.includes(LONG_MESSAGE), "the checkpoint keeps the message verbatim");
 });
 
@@ -157,12 +157,11 @@ test("a first switch carries the whole conversation, a later one carries only wh
 // rest lives in the checkpoint.
 test("a first switch on a huge conversation fits the delivery channel", async () => {
   const { handoff } = await import("../src/handoff.mjs");
-  const { defaultState, saveState, loadState, checkpointsDir } = await import("../src/state.mjs");
+  const { defaultState, saveState, loadState } = await import("../src/state.mjs");
   const { PROMPT_DELTA_BYTES } = await import("../src/delivery.mjs");
   const os = await import("node:os");
 
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-firstbig-")));
-  fs.mkdirSync(checkpointsDir(project), { recursive: true });
   const rollout = path.join(project, "rollout.jsonl");
   // Far past ARG_MAX if it were inlined: 3000 messages of 500 bytes each is ~1.5MB.
   fs.writeFileSync(
@@ -184,19 +183,19 @@ test("a first switch on a huge conversation fits the delivery channel", async ()
   handoff(project, "grok", { from: "codex", summary: "the reading", decisions: "d", next: "n", checkTarget: () => {} });
 
   const rel = loadState(project).pendingInjection.deltaFile;
-  const bytes = fs.statSync(path.join(project, rel)).size;
+  const bytes = fs.statSync(safeCheckpointPath(project, rel)).size;
   assert.ok(bytes <= PROMPT_DELTA_BYTES, `first-switch delta was ${bytes}, over the road it must fit`);
 
   // And it must actually be spawnable as an argument, which is the real failure.
   const { spawnSync } = await import("node:child_process");
-  const delta = fs.readFileSync(path.join(project, rel), "utf8");
+  const delta = fs.readFileSync(safeCheckpointPath(project, rel), "utf8");
   const r = spawnSync("/bin/echo", ["--", delta]);
   assert.equal(r.error?.code, undefined, "a delta that cannot be passed to spawn never reaches the agent");
 
   // The conversation it could not carry is whole in the checkpoint it points at.
   const ref = delta.match(/Full context checkpoint: (\S+)/);
   assert.ok(ref, "and the overflow is pointed at, not lost");
-  const full = fs.readFileSync(path.join(project, ref[1]), "utf8");
+  const full = fs.readFileSync(path.resolve(project, ref[1]), "utf8");
   assert.ok(full.includes("m2999"), "the newest message is in the checkpoint");
   assert.ok(full.includes("m0"), "and so is the oldest");
 });

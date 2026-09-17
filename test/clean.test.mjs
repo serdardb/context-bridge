@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pruneCheckpoints, supersedePending } from "../src/clean.mjs";
 import { AGENT_IDS } from "../src/agents/index.mjs";
-import { defaultState, saveState, loadState, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, checkpointsDir, bridgeDir } from "../src/state.mjs";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -72,9 +72,9 @@ test("files not named by the bridge are never touched", () => {
 
 function makeProject() {
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
-  fs.mkdirSync(checkpointsDir(project), { recursive: true });
   // Valid state is required: without it the missing-state guard refuses all deletion.
   saveState(project, defaultState(project));
+  fs.mkdirSync(checkpointsDir(project), { recursive: true });
   return project;
 }
 
@@ -486,13 +486,13 @@ test("a pending delta in one lane protects the group even when another lane's ma
 
 test("symlinked project root still prunes normally", () => {
   const realProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-clean-")));
+  saveState(realProject, defaultState(realProject));
   fs.mkdirSync(checkpointsDir(realProject), { recursive: true });
   const stem = "2026-08-03T12-00-00-000Z-claude-to-codex";
   const fpath = path.join(checkpointsDir(realProject), `${stem}.md`);
   fs.writeFileSync(fpath, "content");
   const oldTime = new Date(Date.now() - 30 * DAY);
   fs.utimesSync(fpath, oldTime, oldTime);
-  saveState(realProject, defaultState(realProject));
 
   // Create alias symlink to the project
   const alias = realProject + "-alias";
@@ -520,7 +520,7 @@ test("a malformed pending marker refuses the WHOLE prune, not just its own lane"
   fs.utimesSync(mainVictim, oldTime, oldTime);
 
   // feature also has its own old checkpoint and a malformed pending marker.
-  const featureDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  const featureDir = checkpointsDir(project, "feature");
   fs.mkdirSync(featureDir, { recursive: true });
   const fpath = path.join(featureDir, `${stem}.md`);
   fs.writeFileSync(fpath, "feature content");
@@ -585,7 +585,7 @@ test("a symlinked .bridge/lanes root fails the prune closed", () => {
   fs.utimesSync(mainVictim, oldTime, oldTime);
 
   const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lanes-")));
-  fs.symlinkSync(elsewhere, path.join(project, ".bridge", "lanes"));
+  fs.symlinkSync(elsewhere, path.join(bridgeDir(project), "lanes"));
 
   const res = pruneCheckpoints(project, { all: true });
   assert.equal(res.skippedEscapingBridge, true, "it refused because .bridge/lanes is a symlink");
@@ -658,7 +658,7 @@ test("supersedePending refuses a deltaFile whose directory component is a symlin
   const stem = "2026-01-01T00-00-00-000Z-claude-to-codex";
   const victim = path.join(outside, `${stem}.md`);
   fs.writeFileSync(victim, "external, not the bridge's to delete");
-  fs.symlinkSync(outside, path.join(project, ".bridge", "escape")); // symlinked dir component
+  fs.symlinkSync(outside, path.join(bridgeDir(project), "escape")); // symlinked dir component
 
   const res = supersedePending(project, { deltaFile: path.join(".bridge", "escape", `${stem}.md`) });
 
@@ -697,7 +697,7 @@ test("clean --lane deletes only the named lane's checkpoints and leaves the othe
   const project = makeProject();
   makeGroups(project, { count: 2, ageDays: 30, startIndex: 0 }); // two old groups in main (flat)
 
-  const featureDir = path.join(project, ".bridge", "lanes", "feature", "checkpoints");
+  const featureDir = checkpointsDir(project, "feature");
   fs.mkdirSync(featureDir, { recursive: true });
   const ff = path.join(featureDir, "2026-02-02T00-00-00-000Z-claude-to-codex.md");
   fs.writeFileSync(ff, "x");
