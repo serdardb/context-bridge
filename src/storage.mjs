@@ -292,13 +292,12 @@ function newProjectId() {
  * authority for runtime identity. A directory's device/inode pair detects a
  * same-filesystem move; the path is retained as a human-facing locator. Git's
  * local config is an optional diagnostic annotation when a user or another tool has
- * already placed an id there, never a required bootstrap step.
+ * already placed an id there, captured on registration rather than polled on
+ * every runtime lookup, and never a required bootstrap step.
  */
 export function projectIdentity(projectDir, { create = false } = {}) {
   const absolute = path.resolve(projectDir);
   const canonical = fs.realpathSync.native(absolute);
-  const root = gitRoot(projectDir);
-  const localId = root && gitProjectId(root);
   const identity = fileIdentity(canonical);
   const resolve = (registry) => {
     const records = Object.values(registry.projects);
@@ -314,14 +313,15 @@ export function projectIdentity(projectDir, { create = false } = {}) {
       if (known.lifecycle && known.lifecycle !== "active") throw new BridgeError("This project is retired or undergoing a lifecycle transition. Restore it explicitly before writing runtime data.", {
         code: "BRIDGE_PROJECT_RETIRED", nextCommand: `bridge project restore ${known.id} --apply`,
       });
-      if (known.path !== canonical || (localId && known.gitId !== localId)) {
+      if (known.path !== canonical) {
         known.path = canonical;
-        if (localId) known.gitId = localId;
         if (create) writeRegistry(registry);
       }
       return { kind: known.gitId ? "git-clone" : "local", id: known.id, root: canonical, portable: false, fileIdentity: identity };
     }
     if (!create) return { kind: "path-locator", id: pathLocator(canonical), root: canonical, portable: false, fileIdentity: identity };
+    const root = gitRoot(projectDir);
+    const localId = root && gitProjectId(root);
     const id = newProjectId();
     registry.projects[id] = { id, path: canonical, fileIdentity: identity, gitId: localId || null, createdAt: new Date().toISOString() };
     writeRegistry(registry);

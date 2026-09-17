@@ -95,6 +95,7 @@ setTimeout(() => { fs.writeFileSync(process.env.PROBE_EXPIRED, 'timeout guard mi
       const project = path.join(root, mode); fs.mkdirSync(project);
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import assert from 'node:assert/strict';
+        import fs from 'node:fs';
         import {projectIdentity, gitMetadata} from ${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)};
         if (${JSON.stringify(mode)} === 'metadata') {
           assert.deepEqual(gitMetadata(process.cwd()), { branch: null, sha: null });
@@ -102,6 +103,11 @@ setTimeout(() => { fs.writeFileSync(process.env.PROBE_EXPIRED, 'timeout guard mi
           const identity = projectIdentity(process.cwd(), { create: true });
           assert.equal(identity.kind, 'local');
           assert.match(identity.id, /^[0-9a-f-]{36}$/);
+          const probes = fs.readFileSync(process.env.PROBE_TRACE, 'utf8');
+          assert.equal(projectIdentity(process.cwd()).id, identity.id);
+          assert.equal(projectIdentity(process.cwd(), { create: true }).id, identity.id);
+          assert.equal(fs.readFileSync(process.env.PROBE_TRACE, 'utf8'), probes,
+            'known identity reads and writes must not launch optional Git probes again');
         }
       `], { cwd: project, encoding: "utf8", timeout: 18000, env: {
         ...process.env, PATH: bin, CONTEXT_BRIDGE_HOME: path.join(root, "home"), CONTEXT_BRIDGE_STORAGE: "",

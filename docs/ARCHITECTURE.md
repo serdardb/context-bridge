@@ -399,6 +399,10 @@ timeout and are terminated if stuck. Failure yields absent Git metadata, not
 failure to create a local project UUID. This is a responsiveness policy, not a
 guarantee that every command using multiple probes finishes within two seconds.
 Bridge identity creation never writes a marker into Git configuration.
+The optional identity annotation is captured only at initial registration.
+Already-registered identity lookups (including mutating lookups) use the registry
+and filesystem identity without launching Git. Audit branch/commit probes remain
+independent and current; the identity annotation is not a live Git-config mirror.
 
 `launchers` records each live launcher by pid and the lane it opened. It exists
 because a launcher started before an upgrade cannot read a newer state file — it
