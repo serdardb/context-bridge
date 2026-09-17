@@ -175,7 +175,7 @@ function readRegistry() {
     if (parsed?.version !== REGISTRY_VERSION || !parsed.projects || typeof parsed.projects !== "object" ||
         Array.isArray(parsed.projects) || Object.entries(parsed.projects).some(([id, record]) =>
           !PROJECT_UUID.test(id) || !record || record.id !== id ||
-          (record.lifecycle !== undefined && !["active", "retiring", "retired", "restoring"].includes(record.lifecycle)) ||
+          (record.lifecycle !== undefined && !["active", "retiring", "retired", "restoring", "purging", "purged"].includes(record.lifecycle)) ||
           typeof record.path !== "string" || !path.isAbsolute(record.path))) {
       throw new BridgeError("Global bridge registry is invalid. Refusing to select a new project identity.", { code: "BRIDGE_REGISTRY_INVALID" });
     }
@@ -310,8 +310,8 @@ export function projectIdentity(projectDir, { create = false } = {}) {
       records.find((record) => identity && record.fileIdentity === identity) ||
       records.find((record) => !record.fileIdentity && record.path === canonical);
     if (known) {
-      if (known.lifecycle && known.lifecycle !== "active") throw new BridgeError("This project is retired or undergoing a lifecycle transition. Restore it explicitly before writing runtime data.", {
-        code: "BRIDGE_PROJECT_RETIRED", nextCommand: `bridge project restore ${known.id} --apply`,
+      if (known.lifecycle && known.lifecycle !== "active") throw new BridgeError("This project is not active. Inspect its lifecycle before writing runtime data; permanently purged stores cannot be restored.", {
+        code: "BRIDGE_PROJECT_RETIRED", nextCommand: `bridge project inspect ${known.id} --json`,
       });
       if (known.path !== canonical) {
         known.path = canonical;

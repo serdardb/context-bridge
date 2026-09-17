@@ -572,6 +572,41 @@ test("project retirement and restoration preserve evidence through real process 
       assert.equal(cli('retire', true).status, 0, 'UUID lifecycle does not need the old root');
       assert.equal(cli('restore', true).status, 0);
       assert.deepEqual(fs.readFileSync(path.join(store, 'state.json')), expectedState);
+      const purge = confirm => spawnSync(process.execPath,
+        [${JSON.stringify(path.resolve("bin/bridge.mjs"))}, 'project', 'purge', id, '--json', '--apply',
+          ...(confirm ? ['--confirm', id] : [])], { encoding: 'utf8', timeout: 20000, env: process.env });
+      assert.equal(purge(true).status, 1, 'active stores cannot be purged');
+      assert.equal(cli('retire', true).status, 0);
+      const preview = cli('purge');
+      assert.equal(preview.status, 0, preview.stderr);
+      assert.ok(JSON.parse(preview.stdout).files > 0);
+      assert.ok(JSON.parse(preview.stdout).bytes > 0);
+      assert.equal(purge(false).status, 1, 'confirmation is separate from apply');
+      assert.deepEqual(fs.readFileSync(path.join(archive, 'state.json')), expectedState);
+      const outside = path.join(home, 'external-backup');
+      fs.writeFileSync(outside, 'retained external evidence');
+      fs.symlinkSync(outside, path.join(archive, 'linked'));
+      assert.equal(purge(true).status, 1);
+      fs.unlinkSync(path.join(archive, 'linked'));
+      const interrupted = spawnSync(process.execPath, ['--input-type=module', '-e',
+        'import fs from "node:fs"; import { purgeProject } from ' +
+        JSON.stringify(${JSON.stringify(new URL("../src/project-lifecycle.mjs", import.meta.url).href)}) + ';' +
+        'const unlink = fs.unlinkSync; fs.unlinkSync = file => { unlink(file); if (file.startsWith(' +
+        JSON.stringify(archive + path.sep) + ')) process.exit(79); };' +
+        'purgeProject(' + JSON.stringify(id) + ',{apply:true,confirm:' + JSON.stringify(id) + '});'],
+        { encoding: 'utf8', timeout: 5000, env: process.env });
+      assert.equal(interrupted.status, 79, interrupted.stderr);
+      const purged = purge(true);
+      assert.equal(purged.status, 0, purged.stderr);
+      assert.equal(JSON.parse(purged.stdout).lifecycle, 'purged');
+      assert.equal(fs.existsSync(archive), false);
+      assert.equal(fs.existsSync(store), false);
+      assert.equal(cli('restore', true).status, 1, 'purge is irreversible');
+      assert.equal(purge(true).status, 0, 'completed purge is idempotent');
+      fs.renameSync(project + '-gone', project);
+      assert.throws(() => ensureState(project), { code: 'BRIDGE_PROJECT_RETIRED' });
+      assert.equal(fs.readFileSync(path.join(project, 'code.txt'), 'utf8'), 'user code');
+      assert.equal(fs.readFileSync(outside, 'utf8'), 'retained external evidence');
     `], { encoding: "utf8", timeout: 60000, env: {
       ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "", PATH: "",
     } });

@@ -40,7 +40,7 @@ export function inspectRegisteredProject(id) {
       } catch { issue(relative, "unreadable-migration-entry"); }
     }
   }
-  const base = path.join(storageHome(), project.lifecycle === "retired" ? "retired-projects" : "projects"), root = path.join(base, id);
+  const base = path.join(storageHome(), ["retired", "purging", "purged"].includes(project.lifecycle) ? "retired-projects" : "projects"), root = path.join(base, id);
   for (const dir of [base, root]) {
     try {
       const stat = fs.lstatSync(dir);

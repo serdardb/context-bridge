@@ -49,6 +49,7 @@ export function projectLifecycle(id, action, { apply = false } = {}) {
   const origin = action === "retire" ? "active" : "retired";
   const inspect = record => {
     const current = record.lifecycle ?? "active";
+    if (current === "purged") throw new BridgeError("The archived store was permanently purged and cannot be restored.");
     if (![origin, transition, target].includes(current)) throw new BridgeError("Finish the existing project lifecycle transition before starting another.");
     const blockers = current === "active" && action === "retire" ? retirementBlockers(id) : [];
     if (current === "retired" && action === "restore" && !inspectRegisteredProject(id).complete) blockers.push("archived evidence could not be completely inspected");
@@ -96,5 +97,64 @@ export function projectLifecycle(id, action, { apply = false } = {}) {
     if (action === "restore") delete record.retirement;
     publish();
     return { ...report, lifecycle: target, applied: true };
+  });
+}
+
+function purgeInventory(id) {
+  const base = path.join(storageHome(), "retired-projects"), root = path.join(base, id);
+  if (!directoryExists(base) || !directoryExists(root)) return { root, entries: [], files: 0, bytes: 0, present: false };
+  const inventory = { root, entries: [], files: 0, bytes: 0, present: true };
+  const visit = file => {
+    const stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) {
+      throw new BridgeError("Unsafe archived entry; purge refused before deleting anything.");
+    }
+    if (stat.isDirectory()) for (const name of fs.readdirSync(file).sort()) visit(path.join(file, name));
+    else { inventory.files++; inventory.bytes += stat.size; }
+    inventory.entries.push({ file, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, directory: stat.isDirectory() });
+  };
+  visit(root);
+  return inventory;
+}
+
+/** Explicit irreversible cleanup of the archive, retaining a UUID tombstone. */
+export function purgeProject(id, { apply = false, confirm = null } = {}) {
+  const project = registeredProjects().find(record => record.id === id);
+  if (!project) throw new BridgeError("Unknown registered project UUID.");
+  if (apply && confirm !== id) throw new BridgeError("Permanent purge requires --confirm followed by the same project UUID. Preview without --apply first.");
+  const inspect = record => {
+    if (!["retired", "purging", "purged"].includes(record.lifecycle)) throw new BridgeError("Retire the project before purging its archived store.");
+    const activeBase = path.join(storageHome(), "projects");
+    if (directoryExists(activeBase) && directoryExists(path.join(activeBase, id))) throw new BridgeError("An active project store exists; purge refused.");
+    const inventory = purgeInventory(id);
+    if (record.lifecycle === "purged" && inventory.present) throw new BridgeError("Unexpected archive data appeared after purge; it will not be deleted automatically.");
+    const blockers = record.lifecycle === "purged" ? [] : retirementBlockers(id);
+    return { inventory, report: { id, action: "purge", lifecycle: record.lifecycle, applied: false,
+      files: inventory.files, bytes: inventory.bytes, blockers, irreversible: true } };
+  };
+  if (!apply) return inspect(project).report;
+  return withProjectRegistration(id, (record, publish) => {
+    const { inventory, report } = inspect(record);
+    if (report.blockers.length || record.lifecycle === "purged") return report;
+    if (record.retirement?.version !== 1 || typeof record.retirement.hadStore !== "boolean") throw new BridgeError("Invalid retirement journal; purge refused.");
+    if (record.lifecycle === "retired" && record.retirement.hadStore !== inventory.present) throw new BridgeError("Archive presence does not match its retirement record; purge refused.");
+    record.lifecycle = "purging";
+    publish();
+    for (const entry of inventory.entries) {
+      const current = fs.lstatSync(entry.file);
+      if (current.isSymbolicLink() || current.dev !== entry.dev || current.ino !== entry.ino ||
+          current.isDirectory() !== entry.directory || (!entry.directory &&
+            (!current.isFile() || current.nlink !== 1 || current.size !== entry.size || current.mtimeMs !== entry.mtimeMs))) {
+        throw new BridgeError("Archive changed during purge. Remaining data was retained; inspect before retrying.");
+      }
+      if (entry.directory) fs.rmdirSync(entry.file);
+      else fs.unlinkSync(entry.file);
+    }
+    if (directoryExists(path.dirname(inventory.root))) syncPublishedDirectory(inventory.root);
+    record.lifecycle = "purged";
+    record.purgedAt = new Date().toISOString();
+    delete record.retirement;
+    publish();
+    return { ...report, lifecycle: "purged", applied: true };
   });
 }

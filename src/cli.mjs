@@ -29,7 +29,7 @@ import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
 import { inspectRegisteredProject } from "./project-inspect.mjs";
-import { projectLifecycle } from "./project-lifecycle.mjs";
+import { projectLifecycle, purgeProject } from "./project-lifecycle.mjs";
 import { ADAPTER_API_VERSION, adapterDescriptor } from "./adapter-contract.mjs";
 import { createWorktreeLane } from "./worktree.mjs";
 import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptProject, cleanupLegacyIgnore, recoverProjectOperations } from "./storage.mjs";
@@ -104,6 +104,7 @@ ${cmd("project inspect <id>")}Inspect retained state by UUID, including missing 
 ${cmd("project recover <id>")}Preview interrupted operation records (--apply to clear; --json)
 ${cmd("project retire <id>")}Preview archiving a quiescent project store (--apply; --json)
 ${cmd("project restore <id>")}Preview restoring its archived store (--apply; --json)
+${cmd("project purge <id>")}Preview permanent archive removal (--apply --confirm <id>; --json)
 ${cmd("status [--json]")}Show project bridge status
 ${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
 ${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
@@ -218,7 +219,19 @@ export async function main(argv) {
       return;
 
     case "project": {
-      if (args[1] === "list" && args.length === 2) {
+      if (args[1] === "purge") {
+        const parsed = parseArgs({ args: argv.slice(2), allowPositionals: true, strict: true,
+          options: { apply: { type: "boolean" }, confirm: { type: "string" }, json: { type: "boolean" } } });
+        if (parsed.positionals.length !== 1) throw new BridgeError("Usage: bridge project purge <id> [--apply --confirm <id>] [--json]");
+        const report = purgeProject(parsed.positionals[0], parsed.values);
+        if (parsed.values.json) log(JSON.stringify(report, null, 2));
+        else {
+          log(`${report.id}: ${report.lifecycle}; ${report.files} files, ${report.bytes} bytes${report.applied ? " removed" : " in archive"}.`);
+          for (const blocker of report.blockers) log(`${WARN} ${blocker}`);
+          if (!parsed.values.apply) log("Irreversible archive removal. Apply requires --apply --confirm followed by this UUID. Code, native sessions and external backups are not deleted.");
+        }
+        if (report.blockers.length) process.exitCode = 1;
+      } else if (args[1] === "list" && args.length === 2) {
         const projects = registeredProjects();
         if (flags.has("--json")) log(JSON.stringify(projects, null, 2));
         else if (!projects.length) log("No registered bridge projects.");

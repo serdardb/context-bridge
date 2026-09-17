@@ -371,8 +371,14 @@ matching transition is recorded; both source and destination present is a hard
 refusal, never a merge. Missing original working directories do not impede UUID
 administration. POSIX rename parent directories are synced before final registry
 publication; this is not evidence of physical power-loss or Windows durability.
-Permanent purge is separate and not implemented. Older nonparticipating writers
-must be stopped before using this lifecycle.
+Permanent purge is separate, requires an already-retired store and an explicit
+matching UUID confirmation, and journals `purging` before removing scanned entries
+in postorder. Each entry is rechecked before unlink/rmdir; symlinks, hardlinks and
+unexpected active stores refuse cleanup. A partial purge can resume, but cannot
+restore. Completion publishes `purged` and retains the identity tombstone and
+stable guard, preventing delayed recreation. External backups, native sessions
+and code are outside its deletion scope. Older nonparticipating writers must be
+stopped before using this lifecycle; unrelated filesystem tools are not locked.
 
 Kernel and PID acquisition retries share a 30-second wait budget across nested
 synchronous lock scopes. `CONTEXT_BRIDGE_LOCK_TIMEOUT_MS` accepts a positive
