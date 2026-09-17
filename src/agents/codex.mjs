@@ -12,7 +12,8 @@ import path from "node:path";
 import {
   nowIso,
   fileExists,
-  readJson,
+  writeJsonAtomic,
+  BridgeError,
   tryExec,
   codexHome,
   REPO_ROOT,
@@ -165,8 +166,10 @@ function hookEventSlug(event) {
 
 /** Which of our hooks are present in the user's file, without judging the rest of it. */
 export function installedHooks() {
-  const file = readJson(hooksPath());
   const mine = hookDefinitions();
+  let file;
+  try { file = readHooksForInstall(); }
+  catch (error) { return { present: [], missing: [...HOOK_EVENTS], fileExists: true, definitions: mine, error: error.message }; }
   const present = HOOK_EVENTS.filter((event) => {
     const groups = file?.hooks?.[event];
     if (!Array.isArray(groups)) return false;
@@ -175,13 +178,37 @@ export function installedHooks() {
   return { present, missing: HOOK_EVENTS.filter((e) => !present.includes(e)), fileExists: !!file, definitions: mine };
 }
 
+function readHooksForInstall() {
+  let found = false;
+  try {
+    const stat = fs.lstatSync(hooksPath());
+    found = true;
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("unsafe configuration path");
+    const file = JSON.parse(fs.readFileSync(hooksPath(), "utf8"));
+    const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+    if (!object(file) || (file.hooks !== undefined && !object(file.hooks))) throw new Error("invalid hooks object");
+    for (const event of HOOK_EVENTS) {
+      const groups = file.hooks?.[event];
+      if (groups === undefined) continue;
+      if (!Array.isArray(groups) || groups.some(group => !object(group) ||
+          (group.hooks !== undefined && !Array.isArray(group.hooks)))) throw new Error("invalid hook groups");
+    }
+    return file;
+  } catch (error) {
+    if (error.code === "ENOENT" && !found) return null;
+    throw new BridgeError("Codex hooks configuration is unreadable, invalid or not a safe regular file. Existing contents were not replaced; repair the file before installing bridge hooks.", {
+      code: "BRIDGE_CODEX_HOOKS_INVALID", operation: "read Codex hooks", path: hooksPath(),
+    });
+  }
+}
+
 /**
  * Add our hooks to whatever is already in the file. Codex merges every hook
  * source rather than letting one replace another, so the only wrong move here is
  * discarding somebody else's entries.
  */
 export function installHooks() {
-  const file = readJson(hooksPath()) ?? {};
+  const file = readHooksForInstall() ?? {};
   const hooks = { ...(file.hooks ?? {}) };
   const mine = hookDefinitions();
   for (const [event, groups] of Object.entries(mine)) {
@@ -191,7 +218,7 @@ export function installHooks() {
     hooks[event] = [...existing, ...groups];
   }
   fs.mkdirSync(codexHome(), { recursive: true });
-  fs.writeFileSync(hooksPath(), JSON.stringify({ ...file, hooks }, null, 2) + "\n");
+  writeJsonAtomic(hooksPath(), { ...file, hooks });
   return hooksPath();
 }
 
@@ -202,7 +229,8 @@ export function installHooks() {
  * tick this project spent a release removing.
  */
 function hookExtra() {
-  const { present, missing } = installedHooks();
+  const { present, missing, error } = installedHooks();
+  if (error) return { ok: false, label: error };
   if (!present.length) {
     return {
       ok: false,

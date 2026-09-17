@@ -233,8 +233,18 @@ test("installing Codex hooks preserves whatever was already in the file", async 
     codex.installHooks();
     const twice = JSON.parse(fs.readFileSync(path.join(home, "hooks.json"), "utf8"));
     assert.equal(twice.hooks.SessionStart.length, 2, "installing again must not pile up duplicates");
+    for (const invalid of ['{"unfinished":', 'null', '[]', '{"hooks":{"SessionStart":{}}}', '{"hooks":{"SessionStart":[{"hooks":{}}]}}']) {
+      fs.writeFileSync(path.join(home, "hooks.json"), invalid);
+      assert.throws(() => codex.installHooks(), { code: "BRIDGE_CODEX_HOOKS_INVALID", expected: true });
+      assert.equal(fs.readFileSync(path.join(home, "hooks.json"), "utf8"), invalid, "invalid user configuration must survive installation unchanged");
+      const health = codex.installedHooks();
+      assert.ok(health.error);
+      assert.equal(health.present.length, 0);
+      assert.equal(health.missing.length, 3);
+    }
   } finally {
     if (previous === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previous;
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
