@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { composeDelta } from "./delta.mjs";
+import { composeDelta, summaryBudgetFor, checkSummaryFits } from "./delta.mjs";
 import { hookBody, HOOK_DELTA_BYTES } from "./delivery.mjs";
 
 function alternatives(descriptions) {
@@ -65,14 +65,37 @@ export function liveDecisionFixture({ variant = randomInt(2) === 0 ? "immediate-
   conversation.push({ role: "assistant", text: revoke
     ? "Earlier proposal: reuse a successful authorization decision for ten minutes to reduce latency."
     : "Earlier proposal: contact authorization on every operation, regardless of service cost." });
-  const body = hookBody(composeDelta({ fromAgent: "claude", summary, conversation, decisions: [], work: [], next: [] }, HOOK_DELTA_BYTES));
+  const sections = { fromAgent: "claude", conversation, decisions: [], work: [], next: [] };
+  const budget = summaryBudgetFor(sections, HOOK_DELTA_BYTES);
   const expected = { decision: decision.correct, reason: reason.correct, rejected: rejected.correct,
     next: next.correct, owner: null, completeTranscript: false };
-  const prompt = "Synthetic handoff assessment. Do not use tools or change files.\n" + body +
+  const assessment =
     "\nSelect the option code whose meaning matches the FINAL decision, its rationale, the rejected proposal, and the required next check. " +
     "Historical proposals are not current decisions. Return only JSON with keys decision, reason, rejected, next, owner, completeTranscript. " +
     "Use null for an unassigned owner; completeTranscript is a boolean indicating whether every source message was delivered inline.\n" +
     JSON.stringify({ decision: decision.values, reason: reason.values, rejected: rejected.values, next: next.values });
-  return { expected, prompt, contextBytes: Buffer.byteLength(body), variant: revoke ? "immediate-revocation" : "stable-permissions",
-    scope: "synthetic constrained-choice decision/rationale/next-step and omission assessment; not a native hook delivery or general semantic-quality proof" };
+  const assessSummary = (text) => {
+    checkSummaryFits(text, budget);
+    const body = hookBody(composeDelta({ ...sections, summary: text }, HOOK_DELTA_BYTES));
+    return { expected, prompt: "Synthetic handoff assessment. Do not use tools or change files.\n" + body + assessment,
+      contextBytes: Buffer.byteLength(body), variant,
+      scope: "synthetic constrained-choice decision/rationale/next-step and omission assessment; not a native hook delivery or general semantic-quality proof" };
+  };
+  const source = [
+    { role: "assistant", text: conversation.at(-1).text },
+    { role: "user", text: revoke
+      ? "Constraint: credentials may be withdrawn at any instant. Withdrawal must deny the very next operation, even during an authorization outage."
+      : "Constraint: permissions are contractually fixed for ten minutes after a check. Remote authorization calls are costly. Accounts must remain isolated." },
+    { role: "assistant", text: revoke
+      ? "Then cached success can incorrectly admit a revoked credential. I propose a fresh check each time and denial when the service is unavailable."
+      : "Then per-operation calls add cost without changing authorization within the guaranteed window. I propose per-account reuse with a strict ten-minute expiry." },
+    { role: "user", text: revoke
+      ? "Approved. Reject the ten-minute cache proposal. Before release, test withdrawal followed by an authorization outage. No owner has been assigned."
+      : "Approved. Reject the per-operation remote-check proposal. Before release, test expiry and separation between accounts. No owner has been assigned." },
+  ];
+  const generationPrompt = "Synthetic handoff-writing exercise. Do not use tools or change files. " +
+    "Write only a concise handoff summary from the conversation below. Preserve the final decision, its stated justification, " +
+    "the rejected alternative, the next required check and any unassigned ownership. Do not invent facts or treat approval as test evidence. " +
+    `Keep the summary within ${budget} UTF-8 bytes.\n` + JSON.stringify(source);
+  return { ...assessSummary(summary), generationPrompt, assessSummary };
 }

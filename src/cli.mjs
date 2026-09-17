@@ -85,6 +85,7 @@ ${cmd("verify [--all] [--json]")}Smoke-test installed agents; --all requires eve
 ${cmd("eval [--json]")}Evaluate deterministic context-quality fixtures (no agent calls)
 ${cmd("eval --live codex [--json]")}Run opt-in synthetic live recall (provider usage applies)
 ${cont}--scenario decision tests final decisions, reasons and omitted context
+${cont}--scenario summary measures an agent-written summary in a second fresh session
 ${cmd("release-check [--json]")}Check release gates; --ci verifies HEAD on GitHub
 ${cmd("release-prepare")}Run acceptance gates and record commit/package-bound evidence
 ${cmd("release-check --evidence")}Verify local acceptance without calling agents or GitHub

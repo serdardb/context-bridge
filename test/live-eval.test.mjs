@@ -48,7 +48,25 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const prompt = args.at(-1);
 fs.writeFileSync(process.env.BRIDGE_TEST_EVAL_LOG, JSON.stringify({cwd:process.cwd(), args, home:process.env.CONTEXT_BRIDGE_HOME}));
-if (process.env.BRIDGE_TEST_EVAL_MODE === "hang") { setInterval(() => {}, 1000); }
+if (process.env.BRIDGE_TEST_EVAL_MODE.startsWith("summary")) {
+  fs.appendFileSync(process.env.BRIDGE_TEST_EVAL_LOG + ".calls", "call\\n");
+  const output=args[args.indexOf("--output-last-message") + 1];
+  if (prompt.startsWith("Synthetic handoff-writing")) {
+    const mode=process.env.BRIDGE_TEST_EVAL_MODE;
+    fs.writeFileSync(output, mode === "summary-empty" ? "" : mode === "summary-large" ? "x".repeat(9000)
+      : prompt.includes("credentials may be withdrawn") ? "SYNTHETIC-SELECT-FRESH" : "SYNTHETIC-SELECT-REUSE");
+  } else {
+    if (!prompt.includes("SYNTHETIC-SELECT-")) process.exit(5);
+    const options=JSON.parse(prompt.slice(prompt.lastIndexOf("\\n")+1));
+    const fresh=prompt.includes("SYNTHETIC-SELECT-FRESH");
+    const patterns=fresh ? {decision:/fresh authorization/,reason:/revoked credential/,rejected:/reuse authorization/,next:/revocation denies/}
+      : {decision:/Reuse/,reason:/Repeated checks/,rejected:/every operation/,next:/reuse stops/};
+    const answer={owner:null,completeTranscript:false};
+    for(const [key,re] of Object.entries(patterns)) answer[key]=options[key].find(item=>re.test(item.description)).code;
+    fs.writeFileSync(output,JSON.stringify(answer));
+  }
+}
+else if (process.env.BRIDGE_TEST_EVAL_MODE === "hang") { setInterval(() => {}, 1000); }
 else {
   const answer = {project:prompt.match(/Current project code: ([^.]+)/)[1],
     decision:prompt.match(/Selected option code: ([^.]+)/)[1],
@@ -83,6 +101,16 @@ else {
       assert.equal(path.dirname(invocation.home), invocation.cwd);
       assert.ok(invocation.args.includes("--ephemeral"));
       assert.ok(invocation.args.includes("read-only"));
+    }
+    process.env.BRIDGE_TEST_EVAL_MODE = "good";
+    for (const mode of ["summary-good", "summary-empty", "summary-large"]) {
+      process.env.BRIDGE_TEST_EVAL_MODE = mode;
+      fs.rmSync(log + ".calls", { force: true });
+      const report = await runLiveEvaluation("codex", { scenario: "summary", timeoutMs: 5000 });
+      assert.equal(report.passed, mode === "summary-good");
+      assert.equal(fs.readFileSync(log + ".calls", "utf8").trim().split("\n").length, mode === "summary-good" ? 2 : 1);
+      assert.equal(fs.existsSync(JSON.parse(fs.readFileSync(log)).cwd), false);
+      assert.equal(JSON.stringify(report).includes("SYNTHETIC-SELECT"), false);
     }
     process.env.BRIDGE_TEST_EVAL_MODE = "good";
     const cli = spawnSync(process.execPath, [path.resolve("bin/bridge.mjs"), "eval", "--live", "codex", "--json"], {

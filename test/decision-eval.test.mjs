@@ -15,8 +15,14 @@ test("decision assessment distinguishes opposing policies, keeps the answer key 
     assert.match(context, /Earlier proposal/);
     assert.equal(fixture.expected.completeTranscript, false);
     assert.equal(fixture.expected.owner, null);
+    const replacement = fixture.assessSummary("Unique generated summary marker.");
+    assert.match(replacement.prompt, /Unique generated summary marker/);
+    assert.ok(!replacement.prompt.includes("Final design:"), "do not silently substitute the hand-authored summary");
+    assert.deepEqual(replacement.expected, fixture.expected);
+    assert.throws(() => fixture.assessSummary("x".repeat(HOOK_DELTA_BYTES)));
     for (const key of ["decision", "reason", "rejected", "next"]) {
       assert.equal(context.includes(fixture.expected[key]), false, "the source cannot hand out answer codes");
+      assert.equal(fixture.generationPrompt.includes(fixture.expected[key]), false, "the writer must never see the answer key");
       const choices = options[key];
       assert.equal(new Set(choices.map((choice) => choice.code)).size, 3);
       assert.equal(choices.filter((choice) => choice.code === fixture.expected[key]).length, 1);

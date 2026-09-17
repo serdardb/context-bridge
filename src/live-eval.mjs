@@ -64,13 +64,22 @@ function runChild(command, cwd, env, timeoutMs) {
   });
 }
 
+function finalResponse(file, outcome) {
+  if (outcome.status !== 0 || outcome.error || outcome.timedOut) return "";
+  try {
+    const info = fs.lstatSync(file);
+    if (info.isFile() && info.nlink === 1 && info.size <= 64 * 1024) return fs.readFileSync(file, "utf8");
+  } catch {}
+  return "";
+}
+
 /** Explicitly opt-in: calls a provider with synthetic data, never project files. */
 export async function runLiveEvaluation(agent, { timeoutMs = 60000, scenario = "recall" } = {}) {
-  if (!["recall", "decision"].includes(scenario)) throw new Error("Live evaluation scenario must be recall or decision.");
+  if (!["recall", "decision", "summary"].includes(scenario)) throw new Error("Live evaluation scenario must be recall, decision or summary.");
   const adapter = adapterFor(agent);
   if (!adapter?.evaluationCommand) throw new Error(`Live recall evaluation is not supported for ${agent}. Supported: codex.`);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) throw new Error("Invalid live evaluation timeout.");
-  const fixture = scenario === "decision" ? liveDecisionFixture() : liveRecallFixture();
+  let fixture = scenario === "recall" ? liveRecallFixture() : liveDecisionFixture();
   const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-live-eval-")));
   const response = path.join(cwd, "answer.json");
   const env = { ...process.env, CONTEXT_BRIDGE_HOME: path.join(cwd, "runtime") };
@@ -78,25 +87,46 @@ export async function runLiveEvaluation(agent, { timeoutMs = 60000, scenario = "
     "CONTEXT_BRIDGE_LAUNCHER", "CONTEXT_BRIDGE_LANE", "CONTEXT_BRIDGE_STORAGE"]) delete env[key];
   const started = Date.now();
   try {
-    const { telemetry, telemetryTruncated, ...outcome } = await runChild(adapter.evaluationCommand(fixture.prompt, response), cwd, env, timeoutMs);
+    let generation = null;
+    if (scenario === "summary") {
+      const writerDir = path.join(cwd, "writer");
+      fs.mkdirSync(writerDir);
+      const writerResponse = path.join(writerDir, "summary.txt");
+      const { telemetry, telemetryTruncated, ...outcome } = await runChild(
+        adapter.evaluationCommand(fixture.generationPrompt, writerResponse), writerDir,
+        { ...env, CONTEXT_BRIDGE_HOME: path.join(writerDir, "runtime") }, timeoutMs);
+      const summary = finalResponse(writerResponse, outcome).trim();
+      generation = { outcome, telemetryTruncated, durationMs: Date.now() - started,
+        promptBytes: Buffer.byteLength(fixture.generationPrompt), responseBytes: Buffer.byteLength(summary),
+        tokens: !telemetryTruncated && outcome.status === 0 && !outcome.timedOut
+          ? adapter.evaluationUsage?.(telemetry) ?? null : null, failure: null };
+      if (!summary) generation.failure = "no-summary";
+      else {
+        try { fixture = fixture.assessSummary(summary); }
+        catch { generation.failure = "summary-does-not-fit"; }
+      }
+      fs.rmSync(writerDir, { recursive: true, force: true });
+      if (Date.now() - started >= timeoutMs) generation.failure ??= "deadline";
+      if (generation.failure) return { mode: "live-summary", scenario, agent, variant: fixture.variant,
+        passed: false, scope: "synthetic generated-summary transfer; receiver was not called",
+        durationMs: Date.now() - started, generation, recall: scoreLiveRecall(fixture.expected, ""),
+        outcome, tokens: null, telemetryTruncated };
+    }
+    const { telemetry, telemetryTruncated, ...outcome } = await runChild(adapter.evaluationCommand(fixture.prompt, response), cwd, env,
+      Math.max(1, timeoutMs - (Date.now() - started)));
     const tokens = !telemetryTruncated && outcome.status === 0 && !outcome.timedOut
       ? adapter.evaluationUsage?.(telemetry) ?? null : null;
-    let answer = "";
-    if (outcome.status === 0 && !outcome.error && !outcome.timedOut) {
-      try {
-        const info = fs.lstatSync(response);
-        if (info.isFile() && info.size <= 64 * 1024) answer = fs.readFileSync(response, "utf8");
-      } catch {}
-    }
+    const answer = finalResponse(response, outcome);
     const score = scoreLiveRecall(fixture.expected, answer);
     return { mode: `live-${scenario}`, scenario, variant: fixture.variant ?? null, agent, passed: score.passed && outcome.status === 0 && !outcome.timedOut,
-      scope: fixture.scope ?? "synthetic fresh-session prompt recall; not a native handoff or semantic-quality proof",
+      scope: scenario === "summary" ? "synthetic generated-summary transfer between fresh sessions; six constrained-choice fields, not native delivery or general semantic-quality proof"
+        : fixture.scope ?? "synthetic fresh-session prompt recall; not a native handoff or semantic-quality proof",
       durationMs: Date.now() - started, contextBytes: fixture.contextBytes,
       promptBytes: Buffer.byteLength(fixture.prompt), responseBytes: Buffer.byteLength(answer),
       efficiency: {
         contextBytesPerCorrectField: score.satisfied ? fixture.contextBytes / score.satisfied : null,
         wholeTurnInputTokensPerCorrectField: score.satisfied && tokens ? tokens.input / score.satisfied : null,
       },
-      tokens, telemetryTruncated, outcome, recall: score };
+      tokens, generation, telemetryTruncated, outcome, recall: score };
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 }
