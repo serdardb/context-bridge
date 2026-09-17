@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultState, saveState, loadState, checkpointsDir, ensureState, safeCheckpointPath } from "../src/state.mjs";
-import { hookBody, HOOK_DELTA_BYTES, deltaWasConsumed, hookDeliveryEligible, fullContextFor } from "../src/delivery.mjs";
+import { hookBody, HOOK_DELTA_BYTES, deltaWasConsumed, hookDeliveryEligible, fullContextFor, pendingDeliveryStatus } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -172,6 +172,26 @@ test("consumption is read from the file on disk, not from what state remembers",
   assert.equal(deltaWasConsumed(project, { deltaFile: rel }), false);
   fs.renameSync(safeCheckpointPath(project, rel), safeCheckpointPath(project, rel + ".consumed"));
   assert.equal(deltaWasConsumed(project, { deltaFile: rel }), true);
+  const external = path.join(project, "private.txt");
+  fs.writeFileSync(external, "private delivery evidence");
+  fs.unlinkSync(safeCheckpointPath(project, rel + ".consumed"));
+  for (const suffix of ["", ".consumed"]) {
+    const leaf = safeCheckpointPath(project, rel + suffix);
+    for (const link of [fs.symlinkSync, fs.linkSync]) {
+      link(external, leaf);
+      assert.equal(deltaWasConsumed(project, { deltaFile: rel }), false, "linked evidence cannot prove delivery");
+      const status = pendingDeliveryStatus(project, { deltaFile: rel, via: "prompt" });
+      assert.equal(status.deltaStatus, "unsafe");
+      assert.equal(status.deltaBytes, null);
+      fs.unlinkSync(leaf);
+    }
+  }
+  const full = safeCheckpointPath(project, rel.replace(".md", "-full.md"));
+  fs.linkSync(external, full);
+  assert.equal(fullContextFor(project, rel), null, "do not instruct an agent to open shared external content");
+  fs.unlinkSync(full);
+  fs.symlinkSync(path.join(project, "missing"), safeCheckpointPath(project, rel));
+  assert.equal(deltaWasConsumed(project, { deltaFile: rel }), false, "dangling links are not missing delivery files");
 });
 
 function pendingDelta(via, body) {

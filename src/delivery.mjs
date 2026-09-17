@@ -17,6 +17,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, safeCheckpointPath, checkpointReference } from "./state.mjs";
 import { adapterFor } from "./agents/index.mjs";
+import { readOwnedFile } from "./util.mjs";
+
+// Metadata-only checks never follow links and distinguish absence from refusal.
+function ownedLeafExists(file) {
+  let stat;
+  try { stat = fs.lstatSync(file); }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  if (!stat.isFile() || stat.nlink !== 1) throw Object.assign(new Error("Unsafe checkpoint leaf"), { code: "BRIDGE_UNSAFE_FILE" });
+  return true;
+}
 
 /**
  * How much of a delta may ride inside a hook's model-visible output.
@@ -94,11 +104,10 @@ export function pendingDeliveryStatus(projectDir, injection) {
   const file = safeCheckpointPath(projectDir, injection.deltaFile);
   if (!file) return { ...result, deltaStatus: "unsafe" };
   try {
-    if (fs.existsSync(`${file}${CONSUMED_SUFFIX}`)) {
-      return { ...result, deltaStatus: fs.lstatSync(`${file}${CONSUMED_SUFFIX}`).isFile() ? "consumed" : "unsafe" };
+    if (ownedLeafExists(`${file}${CONSUMED_SUFFIX}`)) {
+      return { ...result, deltaStatus: "consumed" };
     }
-    if (!fs.lstatSync(file).isFile()) return { ...result, deltaStatus: "unsafe" };
-    const delta = fs.readFileSync(file, "utf8");
+    const delta = readOwnedFile(file, { encoding: "utf8" });
     const full = fullContextFor(projectDir, injection.deltaFile);
     result.fullContextAvailable = Boolean(full);
     result.deltaStatus = "pending";
@@ -109,7 +118,7 @@ export function pendingDeliveryStatus(projectDir, injection) {
     }
     return result;
   } catch (error) {
-    return { ...result, deltaStatus: error.code === "ENOENT" ? "missing" : "unreadable" };
+    return { ...result, deltaStatus: error.code === "ENOENT" ? "missing" : error.code === "BRIDGE_UNSAFE_FILE" ? "unsafe" : "unreadable" };
   }
 }
 
@@ -189,7 +198,7 @@ export function fullContextFor(projectDir, deltaRel) {
   const abs = safeCheckpointPath(projectDir, fullContextRel);
   if (!abs) return null;
   try {
-    return fs.lstatSync(abs).isFile() ? checkpointReference(projectDir, fullContextRel) : null;
+    return ownedLeafExists(abs) ? checkpointReference(projectDir, fullContextRel) : null;
   } catch {
     return null;
   }
@@ -205,6 +214,8 @@ export function deltaWasConsumed(projectDir, injection) {
   // rather than probe a path outside .bridge.
   const delta = safeCheckpointPath(projectDir, injection.deltaFile);
   if (!delta) return true;
-  if (fs.existsSync(`${delta}${CONSUMED_SUFFIX}`)) return true;
-  return !fs.existsSync(delta);
+  try {
+    if (ownedLeafExists(`${delta}${CONSUMED_SUFFIX}`)) return true;
+    return !ownedLeafExists(delta);
+  } catch { return false; } // unsafe or unreadable evidence cannot prove delivery
 }
