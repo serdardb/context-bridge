@@ -143,12 +143,15 @@ export function readJson(p, fallback = null) {
   }
 }
 
-/** Change detector for a native transcript, not an atomic vendor snapshot. */
+/** Change detector for declared native source files, not an atomic snapshot. */
 export function transcriptStamp(ref) {
-  if (!ref.transcriptPath) return null;
-  const stat = fs.statSync(ref.transcriptPath, { bigint: true });
-  if (!stat.isFile()) throw new Error("Source transcript is not a regular file");
-  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs];
+  const files = [...new Set([ref.transcriptPath, ref.eventsPath].filter(Boolean))];
+  if (!files.length) return null;
+  return files.map((file) => {
+    const stat = fs.statSync(file, { bigint: true });
+    if (!stat.isFile()) throw new Error("Source transcript is not a regular file");
+    return [file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs];
+  });
 }
 
 /** Read a bridge-owned regular leaf; only initial absence may return null. */

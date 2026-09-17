@@ -427,6 +427,23 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     commitKnown(failedRead, failedRead.pendingInjection);
     assert.equal(knownMark(failedRead, "codex", "claude"), null);
   }
+  saveState(project, s);
+  fs.writeFileSync(claudeTranscript, sourceBytes);
+  const events = path.join(path.dirname(grokChat), "events.jsonl");
+  const eventBytes = fs.readFileSync(events);
+  let eventReads = 0;
+  fs.readFileSync = (file, ...args) => {
+    if (file === events && ++eventReads === 3) fs.writeFileSync(file, "");
+    return originalRead(file, ...args);
+  };
+  try { handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
+  finally { fs.readFileSync = originalRead; fs.writeFileSync(events, eventBytes); }
+  assert.ok(eventReads >= 3);
+  const changedEvents = loadState(project);
+  assert.equal(Object.hasOwn(changedEvents.pendingInjection.sources, "grok"), false,
+    "unchanged chat must not conceal a rewritten event stream");
+  assert.match(fs.readFileSync(safeCheckpointPath(project, changedEvents.pendingInjection.deltaFile), "utf8"), /Grok: source was only partially readable/);
+
   for (const partial of [true, false]) {
     saveState(project, s);
     fs.writeFileSync(claudeTranscript, partial ? sourceBytes.toString() + "{broken\n" : "");

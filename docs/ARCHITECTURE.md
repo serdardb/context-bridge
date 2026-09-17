@@ -399,11 +399,11 @@ and an empty readable session is not called unavailable. Closing-word collection
 also declines a source that is not fully readable. Probing and extracting vendor
 sessions are separate operations, not an atomic snapshot of a concurrently
 changing vendor store; a probe cannot eliminate all read-time races.
-For references with a transcript file, collection compares device, inode, size,
-mtime and ctime before capturing the mark and after extracting activity. A change
+For references with transcript/event files, collection compares device, inode,
+size, mtime and ctime before capturing the mark and after extracting activity. A change
 makes the source partial and withholds its watermark, including ordinary appends
 that may therefore be repeated. This is bounded change detection, not an atomic
-read: secondary files and database-backed references are not covered by that
+read: other auxiliary files (such as Grok hunk records) and database-backed references are not covered by that
 stamp. Audit collection compares the same stamp against the conversation's and
 around its own read. Failed, partial or changed audit sources are disclosed in
 the delta and manifest, and withhold the source watermark. Error-only manifests
