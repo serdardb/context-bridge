@@ -5,11 +5,37 @@ import threading
 import time
 
 mode = sys.argv[1]
-pair = socket.socketpair() if mode in ("socket", "wakeup") else None
+pair = socket.socketpair() if mode in ("socket", "wakeup", "console") else None
 wakeup_pair = None
 monitor = None
 previous_wakeup = None
-if mode == "wakeup":
+console_handler = None
+console_finished = threading.Event()
+if mode == "console":
+    import _thread
+    import ctypes
+    from ctypes import wintypes
+
+    handler_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_handler = kernel.SetConsoleCtrlHandler
+    set_handler.argtypes = (handler_type, wintypes.BOOL)
+    set_handler.restype = wintypes.BOOL
+
+    @handler_type
+    def console_handler(event):
+        if event != 0:  # Leave CTRL_BREAK, close and logoff to existing handlers.
+            return False
+        try:
+            _thread.interrupt_main()
+            pair[0].shutdown(socket.SHUT_RDWR)
+        finally:
+            console_finished.set()
+        return True
+
+    if not set_handler(console_handler, True):
+        raise ctypes.WinError(ctypes.get_last_error())
+elif mode == "wakeup":
     wakeup_pair = socket.socketpair()
     wakeup_pair[1].setblocking(False)
     previous_wakeup = signal.set_wakeup_fd(wakeup_pair[1].fileno())
@@ -45,6 +71,9 @@ except KeyboardInterrupt:
     print(f"INTERRUPT_AFTER_MS={int((time.monotonic() - started) * 1000)}", flush=True)
     print("^C again to exit", flush=True)
 finally:
+    if console_handler:
+        assert set_handler(console_handler, False), "could not remove console handler"
+        assert console_finished.wait(2), "console callback did not finish"
     if wakeup_pair:
         signal.set_wakeup_fd(previous_wakeup)
         wakeup_pair[1].send(b"\x00")
