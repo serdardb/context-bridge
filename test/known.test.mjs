@@ -493,7 +493,14 @@ test("handoff dry-run previews the route without changing state or checkpoints",
 
 test("the CLI dry-run flag reaches the read-only handoff path", () => {
   const { project } = fixture();
-  const res = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "codex", "--from", "grok", "--dry-run"], {
+  const before = fs.readFileSync(statePath(project));
+  for (const extra of [["--dryrun"], ["--dry-run", "unexpected"], ["--summary"], ["--from="]]) {
+    const refused = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "codex", ...extra], { cwd: project, encoding: "utf8" });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stdout + refused.stderr, /no handoff was prepared|Unknown --from agent/);
+    assert.deepEqual(fs.readFileSync(statePath(project)), before);
+  }
+  const res = spawnSync(process.execPath, [BRIDGE_BIN, "handoff", "--from=grok", "codex", "--summary=Preserve the current decision.", "--dry-run"], {
     cwd: project,
     encoding: "utf8",
   });

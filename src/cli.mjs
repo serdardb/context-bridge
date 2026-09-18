@@ -728,7 +728,14 @@ export async function main(argv) {
     }
 
     case "handoff": {
-      const target = args[1];
+      let parsed;
+      try {
+        parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true,
+          options: { summary: { type: "string" }, decisions: { type: "string" }, next: { type: "string" },
+            from: { type: "string" }, adopt: { type: "boolean" }, "dry-run": { type: "boolean" } } });
+      } catch (cause) { throw new BridgeError("Invalid handoff options; no handoff was prepared.", { cause }); }
+      if (parsed.positionals.length !== 1) throw new BridgeError("Handoff requires exactly one target agent; no handoff was prepared.");
+      const target = parsed.positionals[0];
       // `--from` names the departing agent explicitly instead of inferring it.
       // The whole normal flow runs inside the departing agent, so it never needs
       // to say who it is. But when that agent has died — a quota 429, a crash —
@@ -737,13 +744,13 @@ export async function main(argv) {
       // any healthy terminal, `bridge handoff codex --from antigravity` rebuilds
       // the delta straight from the dead agent's transcript on disk, because the
       // agent being alive was never what the handoff actually needed.
-      const from = valueOf(argv, "--from") || null;
+      const from = parsed.values.from ?? null;
       const opts = {
-        summary: valueOf(argv, "--summary"),
-        decisions: valueOf(argv, "--decisions"),
-        next: valueOf(argv, "--next"),
-        adopt: flags.has("--adopt"),
-        dryRun: flags.has("--dry-run"),
+        summary: parsed.values.summary,
+        decisions: parsed.values.decisions,
+        next: parsed.values.next,
+        adopt: parsed.values.adopt ?? false,
+        dryRun: parsed.values["dry-run"] ?? false,
         from,
       };
       const usage =
@@ -754,7 +761,7 @@ export async function main(argv) {
         process.exitCode = 1;
         return;
       }
-      if (from && !AGENT_IDS.includes(from)) {
+      if (from !== null && !AGENT_IDS.includes(from)) {
         log(`${BAD} Unknown --from agent '${from}'. Known: ${AGENT_IDS.join(", ")}.`);
         process.exitCode = 1;
         return;
@@ -884,7 +891,12 @@ export async function main(argv) {
     }
 
     case "unlink": {
-      process.exitCode = runUnlink(projectDir, args[1]);
+      let parsed;
+      try {
+        parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true, options: {} });
+      } catch (cause) { throw new BridgeError("Invalid unlink options; no session was forgotten.", { cause }); }
+      if (parsed.positionals.length !== 1) throw new BridgeError("Unlink requires exactly one agent; no session was forgotten.");
+      process.exitCode = runUnlink(projectDir, parsed.positionals[0]);
       return;
     }
 

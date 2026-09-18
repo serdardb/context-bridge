@@ -695,6 +695,14 @@ test("bridge unlink clears one agent in the active lane and reports it", () => {
   const bogus = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "nope"], { cwd: project, encoding: "utf8" });
   assert.equal(bogus.status, 1, "an unknown agent is a usage error");
 
+  const before = fs.readFileSync(statePath(project));
+  for (const extra of [["--dry-run"], ["--dryrun"], ["claude"]]) {
+    const refused = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "codex", ...extra], { cwd: project, encoding: "utf8" });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /no session was forgotten/);
+    assert.deepEqual(fs.readFileSync(statePath(project)), before, "invalid unlink arguments must preserve linked sessions");
+  }
+
   const res = spawnSync(process.execPath, [BRIDGE_BIN, "unlink", "codex"], { cwd: project, encoding: "utf8" });
   assert.equal(res.status, 0);
   const after = loadState(project);
