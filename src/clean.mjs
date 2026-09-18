@@ -221,6 +221,8 @@ function pruneUnlocked(projectDir, opts) {
       const r = pruneLaneStaging(checkpointsDir(projectDir, lane), protectedStems, opts.dryRun);
       total.deletedStagingFiles += r.deleted;
       total.retainedStagingFiles += r.retained;
+      total.failedOperations += r.failedOperations;
+      if (r.failedOperations) break;
       continue;
     }
     const r = pruneLaneCheckpoints(checkpointsDir(projectDir, lane), protectedStems, opts);
@@ -240,9 +242,10 @@ function ownerIsGone(pid) {
 }
 
 function pruneLaneStaging(dir, protectedStems, dryRun) {
-  const result = { deleted: 0, retained: 0 };
+  const result = { deleted: 0, retained: 0, failedOperations: 0 };
   let names;
-  try { names = fs.readdirSync(dir); } catch { return result; }
+  try { names = fs.readdirSync(dir); }
+  catch (error) { if (error.code !== "ENOENT") result.failedOperations++; return result; }
   for (const name of names) {
     const match = /^\.(.+)\.tmp-([1-9]\d*)-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.exec(name);
     const stem = match && (match[1].match(GROUP_RE)?.[1] ?? preparationStemForName(match[1]));
@@ -250,7 +253,8 @@ function pruneLaneStaging(dir, protectedStems, dryRun) {
     const pid = Number(match[2]);
     const file = path.join(dir, name);
     let before;
-    try { before = fs.lstatSync(file); } catch { result.retained++; continue; }
+    try { before = fs.lstatSync(file); }
+    catch { result.retained++; result.failedOperations++; break; }
     if (!before.isFile() || protectedStems.has(stem) || !Number.isSafeInteger(pid) || !ownerIsGone(pid)) {
       result.retained++;
       continue;
@@ -264,7 +268,7 @@ function pruneLaneStaging(dir, protectedStems, dryRun) {
           continue;
         }
         fs.unlinkSync(file);
-      } catch { result.retained++; continue; }
+      } catch { result.retained++; result.failedOperations++; break; }
     }
     result.deleted++;
   }
@@ -408,12 +412,16 @@ export function supersedePending(projectDir, injection) {
 function removeFiles(paths) {
   let files = 0;
   let bytes = 0;
-  for (const p of paths) {
+  let failedOperations = 0;
+  for (const p of new Set(paths)) {
     try {
-      bytes += fs.statSync(p).size;
+      const size = fs.lstatSync(p).size;
       fs.rmSync(p);
       files++;
-    } catch {}
+      bytes += size;
+    } catch (error) {
+      if (error.code !== "ENOENT") { failedOperations++; break; }
+    }
   }
-  return { files, bytes };
+  return { files, bytes, failedOperations };
 }

@@ -779,6 +779,19 @@ test("journal staging from an abruptly exited real writer is cleaned only after 
       const preview = pruneCheckpoints(project, { staging: true, dryRun: true });
       assert.equal(preview.deletedStagingFiles, published ? 0 : 1);
       if (!published) assert.ok(fs.existsSync(path.join(dir, temporary)));
+      if (!published) {
+        const unlink = fs.unlinkSync;
+        fs.unlinkSync = (file, ...args) => {
+          if (file === path.join(dir, temporary)) throw Object.assign(new Error("denied"), { code: "EACCES" });
+          return unlink(file, ...args);
+        };
+        try {
+          const failed = pruneCheckpoints(project, { staging: true });
+          assert.equal(failed.failedOperations, 1);
+          assert.equal(failed.deletedStagingFiles, 0);
+          assert.ok(fs.existsSync(path.join(dir, temporary)));
+        } finally { fs.unlinkSync = unlink; }
+      }
       if (published) {
         assert.equal(pruneCheckpoints(project, { staging: true }).deletedStagingFiles, 0);
         recoverPreparations(project, "main");

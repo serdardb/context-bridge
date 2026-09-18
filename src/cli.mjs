@@ -847,7 +847,10 @@ export async function main(argv) {
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
       const scope = laneFlag ? ` in lane ${bold(laneFlag)}` : "";
       if (res.failedOperations) {
-        log(`${WARN} Cleanup incomplete${scope}: ${verb.toLowerCase()} ${res.deletedFiles} files; ${res.deletedGroups} checkpoint groups complete. An inspection or deletion failed; remaining groups were not processed. Inspect permissions and retry.`);
+        const progress = flags.has("--staging")
+          ? `${res.deletedStagingFiles} staging files; checkpoint groups were not pruned`
+          : `${res.deletedFiles} files; ${res.deletedGroups} checkpoint groups complete`;
+        log(`${WARN} Cleanup incomplete${scope}: ${verb.toLowerCase()} ${progress}. An inspection or deletion failed; remaining files were not processed. Inspect permissions and retry.`);
         process.exitCode = 1;
         return;
       }

@@ -173,6 +173,21 @@ test("supersedePending removes delta and full even if the disk is half-consumed"
   fs.writeFileSync(path.join(dir, `${stem}.md.consumed`), "delta");
   fs.writeFileSync(path.join(dir, `${stem}-full.md`), "full");
 
+  const rm = fs.rmSync;
+  fs.rmSync = (file, ...args) => {
+    if (file === path.join(dir, `${stem}-full.md`)) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    return rm(file, ...args);
+  };
+  try {
+    const partial = supersedePending(project, {
+      deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`),
+    });
+    assert.equal(partial.failedOperations, 1);
+    assert.equal(partial.bytes, partial.files * Buffer.byteLength("delta"), "failed removal must not claim freed bytes");
+    assert.equal(fs.readFileSync(path.join(dir, `${stem}-full.md`), "utf8"), "full");
+  } finally { fs.rmSync = rm; }
+  fs.writeFileSync(path.join(dir, `${stem}.md.consumed`), "delta");
+
   const res = supersedePending(project, {
     deltaFile: path.join(".bridge", "checkpoints", `${stem}.md`),
   });

@@ -797,7 +797,9 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
 
   if (previousInjection) {
     const dropped = supersedePending(projectDir, previousInjection);
-    if (dropped.files) {
+    if (dropped.failedOperations) {
+      lines.push(`${WARN} New handoff committed, but previous handoff cleanup was incomplete (${kb(dropped.bytes)} freed). Remaining files were retained; inspect permissions before running bridge clean.`);
+    } else if (dropped.files) {
       lines.push(`${OK} Replaced the previous undelivered handoff to ${targetAdapter.displayName} (${kb(dropped.bytes)} freed).`);
     }
   }
