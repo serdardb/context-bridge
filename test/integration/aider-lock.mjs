@@ -24,6 +24,11 @@ with m.session_lock(sys.argv[2]):
         open(sys.argv[3],'w').write('owned')
 `;
 const args = (mode, file = lock) => ["-I", "-B", "-c", program, module, file, mode];
+const nodeLock = () => spawnSync(process.execPath, ["--input-type=module", "-e", `
+  import { withKernelLockSync } from ${JSON.stringify(new URL("../../src/locking.mjs", import.meta.url).href)};
+  withKernelLockSync(${JSON.stringify(lock)}, () => {});
+`], { encoding: "utf8", timeout: 5000,
+  env: { ...process.env, CONTEXT_BRIDGE_LOCK_TIMEOUT_MS: "150" } });
 const holder = spawn(python, args("hold"), { stdio: ["pipe", "pipe", "pipe"] });
 const closed = once(holder, "close");
 const timer = setTimeout(() => holder.kill("SIGKILL"), 10000);
@@ -41,8 +46,13 @@ try {
   assert.notEqual(competing.status, 0);
   assert.match(competing.stderr, /already has a writer/);
   assert.equal(fs.existsSync(marker), false, "second writer must not execute its body");
+  const nodeBlocked = nodeLock();
+  assert.equal(nodeBlocked.status, 1, 'Node recovery must respect the Python writer lock');
+  assert.match(nodeBlocked.stderr, /BRIDGE_LOCK_TIMEOUT/);
   holder.kill("SIGKILL");
   await closed;
+  const nodeRecovered = nodeLock();
+  assert.equal(nodeRecovered.status, 0, nodeRecovered.stderr);
   const recovered = spawnSync(python, args(marker), { encoding: "utf8", timeout: 5000 });
   assert.equal(recovered.status, 0, recovered.stderr);
   assert.equal(fs.readFileSync(marker, "utf8"), "owned");
@@ -86,6 +96,7 @@ assert outside.read_bytes()==b'private unchanged','external file was modified'
 `, driver, root], { encoding: "utf8", timeout: 5000 });
   assert.equal(evidence.status, 0, evidence.stderr || evidence.error?.message);
   console.log(JSON.stringify({ platform: process.platform, concurrentWriterRefused: true,
+    crossLanguageExclusion: true, lateChildRefused: true,
     crashRecovery: true, stableLockFile: true, symlinkRefused: true, evidenceSwapRefused: true }));
 } finally {
   clearTimeout(timer);
