@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
@@ -69,7 +70,7 @@ async function verifyInstalledLock() {
   }
 }
 
-let client;
+let client, sharingServer, sharingClosed;
 try {
   assert.ok(run(empty, ["--version"]).includes(manifest.version));
   assert.ok(run(empty, ["--help"]).includes("artifact"));
@@ -104,6 +105,36 @@ try {
   const sharingPreview = JSON.parse(run(source, ["share", "send", sealed.sealedFile, "--endpoint", "https://unavailable.invalid", "--json"]));
   assert.equal(sharingPreview.applied, false);
   assert.equal(sharingPreview.hash, sealed.hash);
+  const shareStore = path.join(root, "share-store"), shareToken = path.join(root, "share-token");
+  fs.mkdirSync(shareStore, { mode: 0o700 });
+  fs.writeFileSync(shareToken, crypto.randomBytes(32).toString("hex"), { mode: 0o600 });
+  sharingServer = spawn(process.execPath, [cli, "share", "serve", "--dir", shareStore,
+    "--token-file", shareToken, "--json"], { cwd: empty, env, stdio: ["ignore", "pipe", "pipe"] });
+  sharingClosed = new Promise(resolve => sharingServer.once("close", resolve));
+  let serviceOutput = "", serviceError = "";
+  sharingServer.stderr.on("data", bytes => { serviceError += bytes; });
+  const endpoint = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Installed sharing server readiness deadline")), 5000);
+    sharingServer.once("error", error => { clearTimeout(timer); reject(error); });
+    sharingServer.once("close", () => { clearTimeout(timer); reject(new Error(serviceError || "Sharing server exited before readiness")); });
+    sharingServer.stdout.on("data", bytes => {
+      serviceOutput += bytes;
+      if (!serviceOutput.includes("\n")) return;
+      clearTimeout(timer);
+      try { resolve(JSON.parse(serviceOutput.split("\n")[0]).endpoint); } catch (error) { reject(error); }
+    });
+  });
+  const sharingArgs = ["--endpoint", endpoint, "--token-file", shareToken, "--allow-loopback-http", "--json"];
+  const upload = JSON.parse(run(empty, ["share", "send", sealed.sealedFile, ...sharingArgs, "--apply"]));
+  assert.equal(upload.hash, sealed.hash);
+  const downloaded = path.join(root, "downloaded.cbsealed");
+  run(empty, ["share", "fetch", upload.hash, ...sharingArgs, "--out", downloaded]);
+  assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(sealed.sealedFile));
+  run(empty, ["share", "remove", upload.hash, ...sharingArgs, "--apply"]);
+  assert.deepEqual(fs.readdirSync(shareStore), [".share.guard"]);
+  sharingServer.kill("SIGTERM");
+  const stopTimer = setTimeout(() => sharingServer.kill("SIGKILL"), 5000);
+  try { assert.equal(await sharingClosed, 0, serviceError); } finally { clearTimeout(stopTimer); }
   const opened = path.join(root, "opened.cbctx");
   run(target, ["artifact", "open", sealed.sealedFile, "--key-file", sealed.keyFile, "--out", opened]);
   assert.deepEqual(fs.readFileSync(opened), fs.readFileSync(artifact));
@@ -124,8 +155,11 @@ try {
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
     installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
     actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true, offlineSharingPreview: true,
+    installedSharingRoundtrip: true,
     credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {
+  if (sharingServer && sharingServer.exitCode === null && sharingServer.signalCode === null) sharingServer.kill("SIGKILL");
+  await sharingClosed;
   await client?.close();
   fs.rmSync(root, { recursive: true, force: true });
 }
