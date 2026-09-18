@@ -1438,9 +1438,16 @@ test("every direct state writer prepares global storage before choosing its writ
   }
 });
 
-test("migration refuses a live legacy launcher before registering or copying a project", () => {
+test("migration refuses live or uncertain legacy launchers before registering or copying a project", () => {
   const storageUrl = pathToFileURL(path.resolve("src/storage.mjs")).href;
-  for (const registration of [{ launcher: { pid: process.pid } }, { launchers: { [process.pid]: { lane: "main" } } }]) {
+  for (const registration of [
+    { launcher: { pid: process.pid } },
+    { launchers: { [process.pid]: { lane: "main" } } },
+    { launchers: { unknown: { pid: process.pid, lane: "main" } } },
+    { launchers: { [process.pid]: { pid: process.pid + 1 } } },
+    { launchers: [] },
+    { launcher: { pid: "unknown" } },
+  ]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-live-migrate-"));
     const project = path.join(root, "project");
     const home = path.join(root, "home");
@@ -1452,8 +1459,8 @@ test("migration refuses a live legacy launcher before registering or copying a p
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import assert from 'node:assert/strict';
         import { migrateLegacyStorage, planLegacyMigration } from ${JSON.stringify(storageUrl)};
-        assert.match(planLegacyMigration(${JSON.stringify(project)}).blockers.join(' '), /running launcher/);
-        assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}), /running launcher/);
+        assert.match(planLegacyMigration(${JSON.stringify(project)}).blockers.join(' '), /running launcher|Cannot verify legacy launcher/);
+        assert.throws(() => migrateLegacyStorage(${JSON.stringify(project)}), /running launcher|Cannot verify legacy launcher/);
       `], { encoding: "utf8", env: { ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_STORAGE: "" } });
       assert.equal(result.status, 0, result.stderr);
       assert.equal(fs.existsSync(home), false, "refusal must precede registry and backup creation");

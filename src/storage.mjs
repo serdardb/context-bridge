@@ -632,6 +632,19 @@ function assertLegacyInactive(legacy) {
     const text = readOwnedFile(stateFile, { encoding: "utf8", missing: true });
     if (text === null) return;
     state = JSON.parse(text);
+    // Unknown ownership is not evidence that an old writer has stopped.
+    if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("Invalid legacy state.");
+    if (state.launchers != null) {
+      if (typeof state.launchers !== "object" || Array.isArray(state.launchers)) throw new Error("Invalid launcher map.");
+      for (const [key, record] of Object.entries(state.launchers)) {
+        const pid = Number(key);
+        if (!Number.isSafeInteger(pid) || pid <= 0 || String(pid) !== key ||
+            !record || typeof record !== "object" || Array.isArray(record) ||
+            (record.pid !== undefined && record.pid !== pid)) throw new Error("Invalid launcher owner.");
+      }
+    }
+    if (state.launcher != null && (typeof state.launcher !== "object" || Array.isArray(state.launcher) ||
+        !Number.isSafeInteger(state.launcher.pid) || state.launcher.pid <= 0)) throw new Error("Invalid legacy launcher owner.");
   } catch (cause) {
     throw new BridgeError("Cannot verify legacy launcher state; repair or restore its evidence before migration.", {
       code: "BRIDGE_LEGACY_STATE_UNREADABLE", cause, nextCommand: "bridge storage plan",
