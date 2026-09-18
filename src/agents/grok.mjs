@@ -24,6 +24,7 @@ import {
   installedCopyStatus,
   BridgeError,
   transcriptStamp,
+  readRegularFile,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
 
@@ -279,7 +280,7 @@ function* readJsonl(p, required = false, readStatus = null) {
   let before;
   try {
     if (readStatus) before = transcriptStamp({ transcriptPath: p });
-    content = fs.readFileSync(p, "utf8");
+    content = readRegularFile(p);
     if (readStatus && !isDeepStrictEqual(before, transcriptStamp({ transcriptPath: p }))) readStatus.unreadable = true;
   } catch (cause) {
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {

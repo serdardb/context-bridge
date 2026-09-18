@@ -76,11 +76,18 @@ test("a missing transcript is distinct from an I/O failure", () => {
         import {probeJsonl} from ${JSON.stringify(path.resolve("src/probe.mjs"))};
         import {loadAdapterPlugins} from ${JSON.stringify(path.resolve("src/adapter-sdk.mjs"))};
         import {claudeMessagesSince} from ${JSON.stringify(path.resolve("src/delta.mjs"))};
+        import {adapterFor} from ${JSON.stringify(path.resolve("src/agents/index.mjs"))};
         const fifo=process.argv[1], leaf=fifo+'.regular';
         assert.throws(()=>readRegularFile(fifo), {code:'BRIDGE_UNSAFE_FILE'});
         assert.equal(probeJsonl(fifo,()=>true).status,'unreadable');
         await assert.rejects(loadAdapterPlugins(fifo), /cannot read/);
         assert.throws(()=>claudeMessagesSince(fifo,null), {code:'BRIDGE_TRANSCRIPT_UNREADABLE'});
+        for (const id of ['claude','codex','grok','antigravity']) {
+          const adapter=adapterFor(id), ref={transcriptPath:fifo,eventsPath:fifo};
+          assert.throws(()=>adapter.activitySince(ref,null), {code:'BRIDGE_TRANSCRIPT_UNREADABLE'});
+          assert.throws(()=>adapter.auditSince(ref,null), {code:'BRIDGE_TRANSCRIPT_UNREADABLE'});
+          adapter.observeAudit(ref);
+        }
         fs.writeFileSync(leaf,'normal');
         fs.symlinkSync(leaf, leaf+'.link');
         assert.equal(readRegularFile(leaf+'.link'), 'normal');

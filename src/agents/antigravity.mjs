@@ -12,7 +12,7 @@
 // of its objections changed this file; one of its claims did not survive checking.
 import fs from "node:fs";
 import path from "node:path";
-import { tryExec, fileExists, HOME, BridgeError } from "../util.mjs";
+import { tryExec, fileExists, readRegularFile, HOME, BridgeError } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -336,7 +336,7 @@ export function smokeCommand() {
 function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
-    content = fs.readFileSync(p, "utf8");
+    content = readRegularFile(p);
   } catch (cause) {
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,

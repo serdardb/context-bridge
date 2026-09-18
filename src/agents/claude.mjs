@@ -18,7 +18,7 @@ import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
 import { claudeMessagesSince } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
-import { nowIso, tryExec, fileExists, readJson, HOME, CLAUDE_DIR, BridgeError } from "../util.mjs";
+import { nowIso, tryExec, fileExists, readJson, readRegularFile, HOME, CLAUDE_DIR, BridgeError } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -206,7 +206,7 @@ export function observeAudit(ref) {
   let exitCode = false;
   let content;
   try {
-    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+    content = readRegularFile(ref?.transcriptPath);
   } catch {
     return { commandArgs: null, exitCode: null };
   }
@@ -253,7 +253,7 @@ export function auditSince(ref, sinceIso) {
   let sourceComplete = true;
   let content;
   try {
-    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+    content = readRegularFile(ref?.transcriptPath);
   } catch (cause) {
     throw new BridgeError("The audit transcript could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause });
   }

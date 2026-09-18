@@ -19,6 +19,7 @@ import {
   REPO_ROOT,
   sharedSkillPath,
   installedCopyStatus,
+  readRegularFile,
 } from "../util.mjs";
 
 export const id = "codex";
@@ -378,7 +379,7 @@ export function observeAudit(ref) {
   let duration = false;
   let content;
   try {
-    content = fs.readFileSync(ref?.transcriptPath, "utf8");
+    content = readRegularFile(ref?.transcriptPath);
   } catch {
     return { commandArgs: null, outcome: null, exitCode: null, duration: null };
   }

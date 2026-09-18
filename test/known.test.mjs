@@ -361,7 +361,7 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   let arriving = 0, out;
   fs.readFileSync = (file, ...args) => {
     const content = originalRead(file, ...args);
-    if (file === grokChat) fs.appendFileSync(grokChat,
+    if (file === grokChat || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(grokChat).ino)) fs.appendFileSync(grokChat,
       JSON.stringify({ type: "assistant", content: `Arrived during extraction ${++arriving}` }) + "\n");
     return content;
   };
@@ -450,7 +450,8 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   const eventBytes = fs.readFileSync(events);
   let eventReads = 0;
   fs.readFileSync = (file, ...args) => {
-    if (file === events && ++eventReads === 3) fs.writeFileSync(file, "");
+    const eventRead = file === events || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(events).ino);
+    if (eventRead && ++eventReads === 3) fs.writeFileSync(events, "");
     return originalRead(file, ...args);
   };
   try { handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
@@ -598,7 +599,8 @@ test("closing words move the packed mark, so they are delivered once and only on
     let changed = false;
     fs.readFileSync = (file, ...args) => {
       const content = originalRead(file, ...args);
-      if (file === grokChat && !changed) {
+      const chatRead = file === grokChat || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(grokChat).ino);
+      if (chatRead && !changed) {
         changed = true;
         fs.appendFileSync(changedFile, JSON.stringify(changedFile === grokChat
           ? { type: "assistant", content: "Arrived during closing extraction" }

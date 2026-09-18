@@ -92,10 +92,12 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
           const sourceRead = args[0] === file || (typeof args[0] === "number" && fs.existsSync(file) &&
             fs.fstatSync(args[0]).ino === fs.statSync(file).ino);
           if (sourceRead && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
-          if (args[0] === path.join(project, "hunk_records.jsonl") && mode === "hunk-denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
+          const hunkRead = args[0] === hunkFile || (typeof args[0] === "number" && fs.existsSync(hunkFile) &&
+            fs.fstatSync(args[0]).ino === fs.statSync(hunkFile).ino);
+          if (hunkRead && mode === "hunk-denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
           const content = read(...args);
-          if (args[0] === hunkFile && mode === "hunk-rewritten") fs.writeFileSync(hunkFile, "");
-          if (args[0] === hunkFile && mode === "hunk-removed") fs.unlinkSync(hunkFile);
+          if (hunkRead && mode === "hunk-rewritten") fs.writeFileSync(hunkFile, "");
+          if (hunkRead && mode === "hunk-removed") fs.unlinkSync(hunkFile);
           return content;
         };
         const m = buildManifest(project, { source: id, target: "opencode", sources: {
