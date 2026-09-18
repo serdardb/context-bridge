@@ -116,9 +116,9 @@ async function execute(restore = false, refuse = false, startNew = false, bridge
       fileURLToPath(new URL("../../src/agents/aider-entry.mjs", import.meta.url)),
       ...(startNew ? ["--new"] : ["--session", session.id]),
       "--prompt", fs.readFileSync(prompt, "utf8"), "--native-args", JSON.stringify(nativeArgs)];
-    const child = spawn(pty ? "/usr/bin/expect" : process.execPath, pty
-      ? [fileURLToPath(new URL("aider-native-pty.exp", import.meta.url)), process.execPath, ...argv] : argv, {
-      cwd: project, env: { ...process.env, TERM: "xterm-256color", BROWSER: browser, CONTEXT_BRIDGE_AIDER_PYTHON: python, PATH: bin, HOME: home, GIT_PYTHON_REFRESH: "quiet", AIDER_ANALYTICS: "false", LITELLM_LOCAL_MODEL_COST_MAP: "True" },
+    const child = spawn(pty && !windows ? "/usr/bin/expect" : process.execPath, pty
+      ? [fileURLToPath(new URL(windows ? "native-conpty.mjs" : "aider-native-pty.exp", import.meta.url)), process.execPath, ...argv] : argv, {
+      cwd: project, env: { ...process.env, TERM: "xterm-256color", BROWSER: browser, CONTEXT_BRIDGE_AIDER_PYTHON: python, PATH: bin, HOME: home, GIT_PYTHON_REFRESH: "quiet", AIDER_ANALYTICS: "false", LITELLM_LOCAL_MODEL_COST_MAP: "True", BRIDGE_TEST_PTY_FLOW: "aider" },
       detached: true, stdio: ["pipe", "pipe", "pipe"],
     });
     let signalSent = false, signalAt = null;

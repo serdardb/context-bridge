@@ -56,7 +56,7 @@ const flags = ["--print", "--provider", "fixture", "--model", "fixture", "--tool
 async function execute(args, interactive = false, executable = cli, extraEnv = {}) {
   return await new Promise((resolve, reject) => {
     const command = interactive && !windows ? "/usr/bin/expect" : process.execPath;
-    const commandArgs = interactive ? [fileURLToPath(new URL(windows ? "pi-native-conpty.mjs" : "pi-native-pty.exp", import.meta.url)), process.execPath, executable, ...args] : [executable, ...args];
+    const commandArgs = interactive ? [fileURLToPath(new URL(windows ? "native-conpty.mjs" : "pi-native-pty.exp", import.meta.url)), process.execPath, executable, ...args] : [executable, ...args];
     const child = spawn(command, commandArgs, { cwd: project,
       env: { ...process.env, TERM: "xterm-256color", PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", ...extraEnv }, stdio: [interactive ? "pipe" : "ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";
