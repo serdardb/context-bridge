@@ -39,7 +39,11 @@ terminal.onExit(({ exitCode }) => {
   clearTimeout(timer);
   clearTimeout(quitTimer);
   if (exitCode !== 0 || timedOut || !answered) {
-    console.error(`Native Pi ConPTY failed: exit=${exitCode}, timeout=${timedOut}, answered=${answered}\n${output}`);
-    process.exitCode = 1;
-  } else console.log("PI_NATIVE_RESPONSE_3");
+    process.stderr.write(`Native Pi ConPTY failed: exit=${exitCode}, timeout=${timedOut}, answered=${answered}\n${output}\n`,
+      () => process.exit(1));
+  } else {
+    // The native child has exited successfully. Do not retain node-pty's
+    // ConPTY worker handles in this single-purpose acceptance helper.
+    process.stdout.write("PI_NATIVE_RESPONSE_3\n", () => process.exit(0));
+  }
 });
