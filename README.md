@@ -188,14 +188,17 @@ created in a project by default.
 
 ## Requirements
 
-- macOS (verified on macOS; Linux is untested, Windows unsupported)
+- macOS, or Linux with the acceptance limits below. Windows remains unsupported
+  pending native verification.
 - Node.js ≥ 18.18
 - At least two of the supported agents, logged in:
   - [Claude Code](https://code.claude.com/docs/en/setup) ≥ 2.1.x, with your Claude subscription
   - [Codex CLI](https://developers.openai.com/codex) ≥ 0.143.0, with your ChatGPT subscription (`codex login`)
   - [Grok CLI](https://github.com/superagent-ai/grok-cli) ≥ 0.2.x, with your xAI key (`grok auth`)
   - [OpenCode](https://opencode.ai) ≥ 1.18.x, with a provider configured (a free model works; the bridge never makes the call itself). Reading a handoff snapshot or delivering into it also needs the `sqlite3` CLI, which macOS ships by default; `bridge doctor` says so if it is missing.
-- `git` (used for the work-delta; projects without git still work, with a thinner delta)
+- Git is optional. Project identity, storage, ordinary lanes and handoffs work
+  without Git installed. Git-derived work summaries and worktree operations
+  require it.
 
 OpenCode store access honors `OPENCODE_DB` (absolute path, or relative to its
 data directory) and `XDG_DATA_HOME`. `OPENCODE_HOME` remains a Bridge-specific
@@ -412,9 +415,15 @@ than leaving an empty column to be misread as nothing happened.
 
 ## Known limitations
 
-- Verified on **macOS only**; Linux paths exist but are untested; Windows is unsupported.
+- macOS and selected Linux arm64 scenarios are verified. Linux evidence includes
+  clean installed-package acceptance on Alpine/Node 18.18, plus native OpenCode
+  1.18.31 database snapshot, handoff preparation and closing checks on Node 24.
+  This is not acceptance of every Linux agent/provider/terminal combination.
+  Windows remains unsupported until native acceptance is complete.
 - One linked session per agent per lane. `bridge unlink <agent>` forgets just that agent, and every watermark that named it, so the next switch links it fresh — no more deleting the machine-local bridge store to relink everything at once. It is for a session you are done with, and refuses while a bridge launcher is running, so a live session's next hook cannot re-link the agent you just forgot.
-- Lanes isolate context, not the working tree: every lane shares one checkout, so they are parallel conversations, not parallel code. Editing the same files from two lanes collides as two plain agents would.
+- Ordinary lanes isolate context but share a checkout; concurrent edits can
+  collide. Explicit worktree lanes provide separate working directories through
+  `bridge lane new --worktree` (see below); this is not a process sandbox.
 - `bridge lane rm` refuses while any bridge launcher is running on the lane. Launcher records carry their lane, so unrelated lanes can remain active while the selected lane is removed.
 - Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
 - Codex runs hooks only after you review them once with `/hooks`, and that trust is not readable from outside. Until then a handoff falls back to the prompt path, and when a delta was routed to a hook that never fired the launcher says so and names the file it is still sitting in.
@@ -432,7 +441,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Roadmap
 
 - Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- Linux verification, Windows support
+- Complete Linux native-agent coverage and native Windows acceptance
 - Optional MCP quick-question mode (ask the other agent without switching)
 
 ### Isolated worktree lanes

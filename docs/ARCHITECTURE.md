@@ -436,11 +436,17 @@ its optional hunk record. Initial absence of that optional file is normal;
 disappearance or modification during its read marks the audit incomplete. These
 per-file checks still do not establish a single shared instant across files.
 OpenCode uses the optional adapter `snapshotSource(ref)` operation instead:
-handoff captures the mark first, then one export is held privately for that
-ref's probe, activity and audit reads. A later handoff creates a fresh ref and
-export. Idle detection and discovery still read live data. This prevents the
-bridge from mixing separate exports; it does not establish transaction isolation
-inside OpenCode's export implementation.
+handoff captures the mark first, then creates a consistent SQLite backup using
+a read-only source connection, including committed WAL pages. Native export runs
+with `OPENCODE_DB` pointing at that private copy; its bytes are shared by the
+ref's probe, activity and audit reads. A later handoff creates a fresh backup and
+export. Closing-word collection uses the same snapshot operation. Idle detection
+and discovery still read live data. This isolates Bridge's handoff export from
+later source writes without changing the vendor exporter's own transaction
+semantics. The whole-database copy costs temporary disk space and I/O. Normal
+cleanup removes it; abrupt process termination can leave the private directory.
+Backup failure reports unavailable evidence rather than falling back to live
+export. Nonstandard channel database names require explicit `OPENCODE_DB`.
 Delivery marks are captured before extraction, including closing-word collection.
 For append-only streams this favors possible repetition of concurrent arrivals
 over acknowledging a later row that the payload never read. It does not prove
@@ -771,8 +777,11 @@ opt-in Aider/Pi candidates.
 
 ## Known limits
 
-- Verified on macOS. The suite runs on Linux in CI, but the vendor directory
-  layouts there are unverified. Windows is unsupported.
+- Verified on macOS and in selected Linux arm64 acceptance environments,
+  including installed-package operation on Alpine/Node18.18 and native
+  OpenCode1.18.31 snapshot/handoff preparation on Node24. These results do not
+  establish every vendor/provider/terminal combination. Windows is unsupported
+  until native acceptance is complete; a configured CI job is not a passed gate.
 - One linked session per agent per lane. `bridge unlink <agent>` forgets just that
   one; deleting the machine-local project store still relinks everything at once and takes the saved
   launch flags with it, but is no longer needed to relink a single agent.
