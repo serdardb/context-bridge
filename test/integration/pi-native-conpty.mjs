@@ -12,6 +12,8 @@ assert.ok(executable && path.isAbsolute(executable));
 console.error("Pi ConPTY: starting native terminal");
 const terminal = spawn(executable, args, {
   name: "xterm-256color", cols: 120, rows: 40,
+  // Pin the terminal implementation as well as node-pty, not the runner's OS DLL.
+  useConpty: true, useConptyDll: true,
   cwd: process.cwd(), env: process.env,
 });
 console.error("Pi ConPTY: native terminal started");
@@ -28,10 +30,12 @@ terminal.onData((data) => {
   output += data;
   if (!answered && output.includes("PI_NATIVE_RESPONSE_3")) {
     answered = true;
+    console.error("Pi ConPTY: native response observed; requesting normal exit");
     quitTimer = setTimeout(() => terminal.write("\x04"), 500);
   }
 });
 terminal.onExit(({ exitCode }) => {
+  console.error(`Pi ConPTY: native exit ${exitCode}`);
   clearTimeout(timer);
   clearTimeout(quitTimer);
   if (exitCode !== 0 || timedOut || !answered) {
