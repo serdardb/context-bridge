@@ -210,6 +210,18 @@ test("the export parser keeps user and assistant text and drops everything else"
     "reasoning and tool parts and system messages are not conversation"
   );
   assert.equal(msgs[0].at, new Date(1000).toISOString(), "timestamps come through as ISO");
+  const revision = { messages: [{ info: { role: "assistant", time: { created: 1000 } },
+    parts: [{ type: "text", text: "prefix" }, { type: "tool", tool: "bash",
+      state: { status: "running", input: { command: "echo final" } } }] }] };
+  assert.equal(parseAudit(JSON.stringify(revision)).sourceComplete, false);
+  revision.messages[0].info.time.completed = 3000;
+  revision.messages[0].parts[0].text += " and conclusion";
+  revision.messages[0].parts[1].state.status = "completed";
+  const completed = JSON.stringify(revision);
+  assert.equal(parseExportMessages(completed)[0].at, new Date(3000).toISOString());
+  const audit = parseAudit(completed, new Date(2000).toISOString());
+  assert.equal(audit.commands.length, 1, "completion after the mark must not lose an older message's tool result");
+  assert.equal(audit.sourceComplete, true);
   assert.deepEqual(parseExportMessages("not json at all"), [], "garbage in, empty out, no throw");
   for (const invalid of ["not json", "{broken", "{}", '{"messages":[{}]}']) {
     assert.throws(() => parseExportMessages(invalid, { required: true }), { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
@@ -254,7 +266,7 @@ if (process.env.OPENCODE_DB !== ${JSON.stringify(database.db)}) {
 }
 const id = process.argv[3];
 const mismatch = fs.existsSync(file + '.mismatch') ? fs.readFileSync(file + '.mismatch', 'utf8') : '';
-const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:Date.now()}},parts:[
+const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:Date.now(),completed:Date.now()}},parts:[
 {sessionID:id,type:'text',text:'export-generation-'+n},
 {sessionID:id,type:'tool',tool:'bash',state:{status:'completed',input:{command:'echo export-generation-'+n},metadata:{exit:0}}}
 ]}]};
@@ -262,6 +274,7 @@ if (mismatch === 'session') document.info.id = 'ses_foreign';
 if (mismatch === 'message') document.messages[0].info.sessionID = 'ses_foreign';
 if (mismatch === 'part') document.messages[0].parts[0].sessionID = 'ses_foreign';
 if (mismatch === 'missing') delete document.info;
+if (mismatch === 'streaming') delete document.messages[0].info.time.completed;
 console.log(JSON.stringify(document));
 `, { mode: 0o755 });
   const oldPath = process.env.PATH;
@@ -288,6 +301,14 @@ console.log(JSON.stringify(document));
     const copies = fs.readFileSync(counter + '.copies', 'utf8').trim().split('\n');
     assert.equal(copies.length, 2, "each handoff must export a fresh private SQLite snapshot");
     assert.ok(copies.every(copy => !fs.existsSync(path.dirname(copy))), "private database copies must be cleaned");
+    fs.writeFileSync(counter + ".mismatch", "streaming");
+    handoff(project, "codex", { from: "opencode", checkTarget: () => {} });
+    assert.equal(loadState(project).pendingInjection.sources.opencode, undefined,
+      "a streamed prefix cannot acknowledge the still-growing source");
+    fs.unlinkSync(counter + ".mismatch");
+    handoff(project, "codex", { from: "opencode", checkTarget: () => {} });
+    assert.ok(loadState(project).pendingInjection.sources.opencode,
+      "a completed source must become eligible for acknowledgement again");
     for (const mismatch of ["session", "message", "part", "missing"]) {
       fs.writeFileSync(counter + ".mismatch", mismatch);
       assert.throws(() => activitySince({ id: "ses_snapshot" }, null),

@@ -461,6 +461,18 @@ function exportDocument(raw, expectedSessionId = null) {
   }
 }
 
+function messageTime(info) {
+  return Math.max(info?.time?.created || 0, info?.time?.completed || 0);
+}
+
+function incompleteSince(document, sinceIso) {
+  const since = sinceIso ? Date.parse(sinceIso) : 0;
+  return document.messages.some(({ info, parts }) =>
+    (!messageTime(info) || messageTime(info) > since) &&
+    ((info.role === "assistant" && !info.time?.completed) ||
+      parts.some(p => p.type === "tool" && ["pending", "running"].includes(p.state?.status))));
+}
+
 export function parseExportMessages(raw, { required = false } = {}) {
   let d;
   try {
@@ -479,7 +491,8 @@ export function parseExportMessages(raw, { required = false } = {}) {
     if (!textParts.length) continue;
     const text = textParts.map((p) => p.text).join("\n").trim();
     if (!text) continue;
-    const at = info.time?.created ? new Date(info.time.created).toISOString() : null;
+    // A streamed message can finish after a prior handoff read its prefix.
+    const at = messageTime(info) ? new Date(messageTime(info)).toISOString() : null;
     messages.push({ role: info.role === "user" ? "user" : "assistant", text, at });
   }
   return messages;
@@ -520,7 +533,8 @@ export function activitySince(ref, sinceIso) {
     const t = Date.parse(m.at);
     return !Number.isFinite(t) || t > since;
   }).filter((m) => !(m.role === "user" && isBridgeProtocolNoise(m.text)));
-  return { messages, patchedFiles: [], turnsCompleted: 0 };
+  return { messages, patchedFiles: [], turnsCompleted: 0,
+    sourceComplete: !incompleteSince(exportDocument(raw), sinceIso) };
 }
 
 /**
@@ -715,7 +729,7 @@ export function parseAudit(raw, sinceIso) {
 
   for (const m of d?.messages ?? []) {
     const info = m?.info;
-    const msgTime = info?.time?.created;
+    const msgTime = messageTime(info);
     if (since && msgTime && msgTime <= since) continue;
 
     for (const part of m?.parts ?? []) {
@@ -748,5 +762,6 @@ export function parseAudit(raw, sinceIso) {
     filesRead: [...filesRead],
     filesChanged: [...filesChanged],
     dropped: 0,
+    sourceComplete: !incompleteSince(d, sinceIso),
   };
 }
