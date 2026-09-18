@@ -13,7 +13,7 @@ Developers increasingly use multiple coding agents — but switching between the
 
 - It does **not** replace Claude Code, Codex, Grok, Antigravity or OpenCode.
 - It does **not** proxy their APIs.
-- It requires **no API keys** — it drives the subscription-authenticated CLIs you already have.
+- Bridge requires no separate model API credentials. Each agent uses its own configured authentication, provider and usage limits.
 
 **Supported today: Claude Code, Codex, Grok, Antigravity and OpenCode**, in any of the twenty directions.
 
@@ -52,7 +52,7 @@ Highlights:
 - **Chains keep their history**: hand Claude → Grok → Codex and Codex receives Grok's work *and* the Claude context Grok was given, labelled by who said it
 - Automatic context synchronization (delta-based, not full transcript copies)
 - No copy/paste · no session IDs · no manual resume commands
-- No API keys · no extra AI billing — your existing subscriptions
+- No Bridge model subscription; agent calls use your configured providers and may incur usage charges
 - No nested TUIs — a flat launcher owns exactly one agent at a time
 
 ## Why context-bridge
@@ -74,44 +74,7 @@ One direction already exists officially: OpenAI ships a Claude Code plugin and C
 | Antigravity | the opening prompt of the resumed session | it ships no hook mechanism to inject through |
 | OpenCode | written straight into its own session store | it keeps sessions in a local database and its interactive TUI cannot be handed an opening message, so the context is delivered but you open the turn |
 
-The knowledge is equal in all five. The session shape is not. Four of them also open the turn the delta needs, so the receiving agent begins on its own; OpenCode is the one exception, and it is a limit in OpenCode's own surface (no hook, and a TUI that will not accept a starting prompt) rather than something waiting to be built here. Everything else about it works: the delta reaches the session and the conversation is there when you land in it.
-
-## Alternatives
-
-Other tools solve adjacent problems. The differences are in *what* moves between
-agents, not in tool count.
-
-| | **context-bridge** | [can-bridge](https://github.com/ddoong10/can-bridge) | [ai-context-bridge](https://github.com/himanshuskukla/ai-context-bridge) |
-|---|---|---|---|
-| Agents | 5 — Claude Code, Codex, Grok, Antigravity, OpenCode | 2 — Claude Code, Codex CLI | 11 (resume-prompt targets) |
-| Directions | 20 | 2 (bidirectional pair) | n/a |
-| What moves | the delta the target is missing | the full session transcript, normalized | a generated resume prompt file |
-| Session on the target | the agent's own native session, resumed | injected into a native session | a new session, seeded by the prompt file |
-| Repeat switching | same sessions, delta only | re-extract and re-inject | prompt files regenerated |
-| Chains (A → B → C) | C receives B's work *and* the A context B was given, labelled by source | pair only | not modelled |
-| Trigger | `/bridge <agent>` | command | git commit / checkout / merge hook |
-| Tool calls | left in the source session | translated `tool_use` ↔ `function_call` | not applicable |
-| Language / deps | Node; one core runtime dependency for native locking; MCP installed separately | TypeScript | TypeScript, zero deps |
-| License | MIT | MIT | MIT |
-| Last commit | 2026-08-03 | 2026-06-03 | 2026-03-02 |
-
-Every tool here reads session formats that no vendor documents — `can-bridge`
-says so in its own README and pins the date it verified them. That makes the
-last-commit row a functional detail rather than a scoreboard: when an agent ships
-a format change, whichever bridge is still being maintained is the one that keeps
-working.
-
-**How to read this.** `ai-context-bridge` reaches more tools because it writes a
-markdown resume prompt for each one — the target starts a fresh session from that
-file. `can-bridge` moves a real transcript between two agents and translates tool
-calls at the adapter boundary. context-bridge keeps a *live* native session on
-every side and sends only what the target has not been told yet, which is what
-makes repeated switching and multi-agent chains cheap.
-
-Pick `can-bridge` if you want a faithful two-agent transcript copy with tool-call
-translation. Pick `ai-context-bridge` if commit-triggered context files across many
-tools fits your workflow. Pick context-bridge if you switch often, in more than two
-directions, and want the agent you return to to still be the session you left.
+The delivery format and capacity differ by route. A bounded preview can omit messages; it identifies omissions and points to retained full context. Delivery does not prove that the model read the whole record. Claude, Codex, Grok and Antigravity receive a turn-opening prompt; with the current OpenCode adapter, context is inserted into its session store and you type to begin the turn.
 
 ## How it works
 
@@ -128,7 +91,7 @@ global project store            ← machine-local state outside the repository:
 ```
 
 The physical store is `~/Library/Application Support/context-bridge` on macOS,
-`$XDG_STATE_HOME/context-bridge` on Linux and other Unix systems (falling back
+`$XDG_STATE_HOME/context-bridge` on other platforms, including Windows (falling back
 to `~/.local/state/context-bridge`), or `CONTEXT_BRIDGE_HOME` when explicitly
 configured for a managed/test environment. Checkpoint text keeps the historical
 logical `.bridge/...` name in handoff messages, but no `.bridge/` directory is
@@ -139,7 +102,7 @@ created in a project by default.
 - Later deltas also carry a **full-context checkpoint** in the machine-local project store. Delivered text names its directly readable filesystem path; internal state retains logical `.bridge/checkpoints/...` identifiers. The bounded summary keeps handoffs fast; exact wording remains available after delivery for recovery and audit until the checkpoint group is pruned. Canonical memory is each agent's native transcript plus the `knownBy` matrix.
 - **Interrupted closing additions are recoverable.** A pending-state journal freezes the exact additions before either checkpoint changes. Restart `bridge` to finish a verified partial addition without duplicating it. Delivery and replacement handoffs stay blocked until recovery completes; independently changed or unsafe evidence is retained for inspection. `status --json` reports `closing-recovery-required`. This does not establish power-loss durability or compatibility with older writers.
 - **Agent flags pass straight through.** `bridge claude --dangerously-skip-permissions --model claude-fable-5` forwards everything after the agent name to that agent verbatim, so any flag it supports (now or later) just works. The set applies to that launch. `--cb-save-args` writes it to this project's machine-local store, `--cb-clear-args` takes it back, and `bridge status` lists what is armed, because a saved permission bypass nobody can find is one nobody can undo. Flags that change what an agent may do without asking are announced on a plain line at every launch. The only args the bridge holds back are the ones that would break its own session link (`-c`, `--resume`, `--fork-session`, `--no-session-persistence` on Claude; `--last`, `--cd`, `--remote` on Codex), each dropped with a printed reason. `--cb-*` is reserved for the bridge itself.
-- **A handoff carries what the target missed, from everyone.** The bridge remembers, per pair, how far into each agent's own stream it has packed material for each other agent. So Claude → Grok → Codex works: Codex receives Grok's work *and* the Claude context Grok was given, each block labelled with who said it, instead of losing a hop's worth of history at every switch. Nothing is sent to an agent twice.
+- **A handoff carries what the target missed, from everyone.** The bridge remembers, per pair, how far into each agent's own stream it has packed material for each other agent. So Claude → Grok → Codex works: Codex receives Grok's work *and* the Claude context Grok was given, each block labelled with who said it, instead of losing a hop's worth of history at every switch. Watermarks avoid routine resends; interrupted acknowledgement or revised source history can require replay.
 - **Checkpoints are retained evidence.** A handoff to an agent that already has an undelivered one replaces it. The full-context checkpoint, delta and audit manifest share one retention policy: by default, a group is pruned only when it is both older than 7 days and outside its lane's newest 20 groups. Pending injections are protected. `bridge clean` (with `--dry-run`, `--keep N`, `--days N`, `--all`) also provides explicit cleanup. An inspection or deletion failure is reported with a nonzero exit; any earlier deletions are not rolled back. Automatic cleanup warns without undoing a prepared handoff. Canonical memory is each agent's native transcript plus the `knownBy` matrix, never these files.
 - **Evidence is local and sensitive.** Full-context checkpoints can contain the exact conversation; audit manifests can contain command arguments, file names and project paths. They live in the machine-local store, are not added to the repository or npm package, follow the same handoff-group retention policy, and should be inspected before sharing. The opt-in debug logger redacts content, tokens and personal paths, but checkpoints are intentionally preserved evidence rather than a redaction boundary.
 - **Interrupted evidence writes stay separate.** A checkpoint, audit or preparation journal is published only after its staging file is fully written. `bridge clean --staging --dry-run` previews abandoned staging files; omit `--dry-run` to remove them, optionally scoped by `--lane NAME`. This mode does not prune checkpoint groups. Live or uncertain process owners, symlinks, unknown filenames and pending/preparing groups are preserved. A published preparation journal must be resolved by handoff recovery before its leftover staging file can be removed.
@@ -147,7 +110,7 @@ created in a project by default.
 - **Handoffs can be previewed safely.** `bridge handoff <agent> --dry-run` reads the current state, sessions and git delta, then reports the selected delivery road and estimated payload without creating a checkpoint, changing pending state, pruning, or importing a vendor session.
 - **Portable context is explicit.** `bridge artifact export report.cbctx` writes a versioned, SHA-256 verified, redacted context artifact. `bridge artifact import report.cbctx` verifies it without changing the project; add `--apply` to stage it as an idempotent seed. Native vendor sessions are never claimed to be portable.
 - **Export redaction is not a secrecy guarantee.** Export masks the project/home paths, recognized credential assignments and headers, common GitHub/AWS/Slack tokens, JWTs and PEM private-key blocks. It applies to context sections and audit data without editing the local evidence. Unknown secret formats, encoded values and sensitive prose can remain; inspect the artifact before sharing it. Hashes and signatures do not encrypt its contents.
-- **Optional local encryption.** `bridge artifact seal report.cbctx --out /existing/parent/new-bundle` validates the artifact and creates a private new directory containing `context.cbsealed` and a separate `key.bin`. Share only the encrypted file; deliver the key through an independent trusted channel, never upload the whole bundle. `bridge artifact open context.cbsealed --key-file key.bin --out /existing/parent/new-report.cbctx` authenticates, decrypts and validates before publishing a new file; it does not import or initialize a project. Signed input still requires `--verify-key trusted-public.pem` at both steps. Version 1 uses a fresh random key and nonce per AES-256-GCM envelope, accepts up to 16 MiB of plaintext, and refuses overwrites. Parent directories must already exist. Encryption does not establish sender identity or revoke copies already received. These commands are local-only; network transfer requires a separate explicit `share` command. Native Windows durability acceptance remains outstanding.
+- **Optional local encryption.** `bridge artifact seal report.cbctx --out /existing/parent/new-bundle` validates the artifact and creates a private new directory containing `context.cbsealed` and a separate `key.bin`. Share only the encrypted file; deliver the key through an independent trusted channel, never upload the whole bundle. `bridge artifact open context.cbsealed --key-file key.bin --out /existing/parent/new-report.cbctx` authenticates, decrypts and validates before publishing a new file; it does not import or initialize a project. Signed input still requires `--verify-key trusted-public.pem` at both steps. Version 1 uses a fresh random key and nonce per AES-256-GCM envelope, accepts up to 16 MiB of plaintext, and refuses overwrites. Parent directories must already exist. Encryption does not establish sender identity or revoke copies already received. These commands are local-only; network transfer requires a separate explicit `share` command. Selected Windows publication-interruption checks run in CI; physical power-loss durability is not claimed.
 - **Opt-in remote sharing.** Separate `share` commands transfer only existing sealed envelopes to an operator-chosen endpoint. `share send` previews locally unless `--apply` is present. `share fetch` requires the exact ciphertext hash and writes a new encrypted file, never a decryption or automatic import. No normal handoff, artifact export or installation contacts the service. See [remote sharing](docs/SHARING.md) for authentication, TLS, retention and operating limits.
 - **Optional sender verification.** Export with `--sign-key private.pem` to sign the redacted artifact using an Ed25519 private key. Import with `--verify-key trusted-public.pem` (and optionally `--apply`) to require a signature matching that explicitly trusted key. Signed artifacts without a trusted key, unsigned artifacts when a key is required, wrong keys and altered payloads are rejected before target initialization. No embedded key is automatically trusted. Exchange the public key through an independent trusted channel; never share the private key. Ordinary unsigned import checks integrity only, not sender identity. Signatures do not encrypt the artifact, revoke keys or prevent a trusted signer from making incorrect claims.
 - **Content-addressed local cache.** `bridge artifact cache report.cbctx --json` validates and stores the exact file bytes under the central storage home's `artifacts/sha256/` directory, returning a `sha256:<hash>` reference. Use that reference in place of a filename with `bridge artifact import sha256:<hash> --apply`. Repeated identical files share one entry; changed bytes, even whitespace, have a different address. Every reference read verifies the address and artifact integrity; existing mismatched entries and symlinks are rejected, never overwritten. Signed cache operations and imports still require `--verify-key`. Cache references are local to this machine, not download links: transfer the `.cbctx` file to another machine and cache it there. Cache entries are explicitly retained, not removed by checkpoint pruning.
@@ -188,14 +151,19 @@ created in a project by default.
 
 ## Requirements
 
-- macOS, or Linux with the acceptance limits below. Windows remains unsupported
-  pending native verification.
+- macOS, with selected Linux and Windows acceptance described below. This is
+  not a claim that every agent/provider/terminal combination works on every OS.
 - Node.js ≥ 18.18
 - At least two of the supported agents, logged in:
   - [Claude Code](https://code.claude.com/docs/en/setup) ≥ 2.1.x, with your Claude subscription
   - [Codex CLI](https://developers.openai.com/codex) ≥ 0.143.0, with your ChatGPT subscription (`codex login`)
   - [Grok CLI](https://github.com/superagent-ai/grok-cli) ≥ 0.2.x, with your xAI key (`grok auth`)
   - [OpenCode](https://opencode.ai) ≥ 1.18.x, with a provider configured (a free model works; the bridge never makes the call itself). Reading a handoff snapshot or delivering into it also needs the `sqlite3` CLI, which macOS ships by default; `bridge doctor` says so if it is missing.
+  - Antigravity, with its native CLI authenticated and session history available
+    (see [adapter requirements](docs/ADAPTERS.md)).
+- Core installs Koffi for native locking and safe publication. Keep its platform
+  dependencies available; `bridge doctor` checks the backend. MCP is optional
+  and installed separately, as described below.
 - Git is optional. Project identity, storage, ordinary lanes and handoffs work
   without Git installed. Git-derived work summaries and worktree operations
   require it.
@@ -335,7 +303,7 @@ $bridge grok           # in Codex or Grok
 
 The departing agent records its decisions and open questions, the bridge packs everything the target has not seen yet, that agent's turn ends, and the launcher closes it and opens the target on the same project.
 
-The first switch to an agent links it: Claude → Codex uses the official OpenAI transfer, and every other pair opens a new session seeded with the full conversation. After that a switch is a resume plus a compact delta — no re-import, same sessions, prior context intact.
+The first switch to an agent links it: Claude → Codex uses the official OpenAI transfer, and other first switches seed a new session with bounded context and a retained full-context pointer. After that a switch is a resume plus a compact delta — no re-import, same sessions, prior context intact.
 
 Coming back is the same command in the other direction. Ask the agent *"where were we?"* and it knows, including what happened in an agent you never spoke to on this hop.
 
@@ -375,14 +343,14 @@ Full design details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · contributin
 
 ## Privacy and security
 
-- Everything is local. No SaaS, no accounts, no telemetry, no database server.
+- Ordinary handoffs and storage are local; Bridge has no required hosted service or telemetry. Explicit `share` commands contact your chosen endpoint. Agents contact their own providers, and live verification runs agent calls.
 - No API keys are read, requested, or stored. Auth detection checks *existence* only (e.g. Keychain entry name, `codex login status`) and never touches secret values.
 - Runtime state holds references, timestamps and bounded delta files outside the project tree. No `.gitignore` entry is needed, and Git is not required.
-- Context deltas travel only between the agent CLIs on your machine, inside their normal subscription-authenticated calls.
+- Delivered context becomes input to the receiving agent and may be sent to its configured provider. Artifact export and sharing are separate, explicit operations.
 
 ## Compatibility
 
-Verified against: **Claude Code 2.1.215**, **codex-cli 0.144.6** and **grok 0.2.106** on macOS (Node 23). Each vendor's session format is internal; the bridge parses them defensively, but a future CLI release could require an update — pin these versions if you need stability.
+Vendor session formats can change independently of Bridge. Run `bridge doctor` to check local installation and format compatibility, then `bridge verify` for live responses. Neither is a substitute for a native handoff test. See [platform acceptance](docs/DEVELOPMENT.md#release-checklist) and [adapter-specific requirements](docs/ADAPTERS.md) for test boundaries; a historical successful version is not a guarantee for later vendor releases.
 
 ## When something goes wrong
 
@@ -419,13 +387,16 @@ than leaving an empty column to be misread as nothing happened.
   clean installed-package acceptance on Alpine/Node 18.18, plus native OpenCode
   1.18.31 database snapshot, handoff preparation and closing checks on Node 24.
   This is not acceptance of every Linux agent/provider/terminal combination.
-  Windows remains unsupported until native acceptance is complete.
+  Windows installed-package, kernel-lock and selected native Pi/Aider transport,
+  migration and sharing scenarios have passed CI. Aider uses a fixture provider
+  there; this is not authenticated Aider acceptance or validation of every
+  built-in agent's Windows workflow. See the development guide for boundaries.
 - One linked session per agent per lane. `bridge unlink <agent>` forgets just that agent, and every watermark that named it, so the next switch links it fresh — no more deleting the machine-local bridge store to relink everything at once. It is for a session you are done with, and refuses while a bridge launcher is running, so a live session's next hook cannot re-link the agent you just forgot.
 - Ordinary lanes isolate context but share a checkout; concurrent edits can
   collide. Explicit worktree lanes provide separate working directories through
   `bridge lane new --worktree` (see below); this is not a process sandbox.
 - `bridge lane rm` refuses while any bridge launcher is running on the lane. Launcher records carry their lane, so unrelated lanes can remain active while the selected lane is removed.
-- Only Claude → Codex has an official first-switch import; other first switches seed a new session with the full conversation as its opening prompt.
+- Only Claude → Codex has an official first-switch import; other first switches seed a new session with bounded context and a retained full-context pointer, using the target adapter's delivery mechanism.
 - Codex runs hooks only after you review them once with `/hooks`, and that trust is not readable from outside. Until then a handoff falls back to the prompt path, and when a delta was routed to a hook that never fired the launcher says so and names the file it is still sitting in.
 - Grok cannot receive a delta through a hook at all: its hooks fire but their output is ignored for passive events, so Grok stays on prompt delivery.
 - OpenCode receives its context but does not open the turn for you. It exposes no hook and its interactive TUI cannot be handed a starting message, so the delta is written straight into its session database and you type once to begin. Every route through it was tried live (a prompt flag that only fills the input box, a run mode that is not the clean TUI, and driving its own HTTP server, which the free model would answer without acting on); the honest landing is that the context arrives and the turn is yours. The other four agents start on their own.
@@ -441,7 +412,7 @@ than leaving an empty column to be misread as nothing happened.
 ## Roadmap
 
 - Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- Complete Linux native-agent coverage and native Windows acceptance
+- Broader Linux and Windows native-agent/provider coverage beyond the selected acceptance scenarios
 - Optional MCP quick-question mode (ask the other agent without switching)
 
 ### Isolated worktree lanes
@@ -596,25 +567,24 @@ concurrent filesystem snapshot.
 
 ## Development status
 
-0.12.2 — developer preview. Round-trips across all five agents (repeatedly, without re-import) pass real end-to-end tests on macOS, and the bridge is developed with itself: Claude, Codex, Grok, Antigravity and OpenCode hand this repo's work back and forth through it daily, including review rounds where each one's findings reach the next. That is not a slogan about dogfooding. Antigravity's first act as the fourth agent was to read its own adapter and raise three objections, two of which changed the code before it was committed; OpenCode joined as the fifth and its whole delivery path, an authless write into its own session database, was built and hardened over a night of live switches through the bridge.
+This checkout prepares the 0.13.0 developer preview. Five built-in agents are
+supported; Aider and Pi remain opt-in experimental adapters. Authenticated Aider
+acceptance is not complete. No all-provider or all-platform guarantee is made.
 
-Since the first release:
+Core has one direct runtime dependency, Koffi, for native locking, publication
+and supported filesystem identity operations. A missing native backend blocks
+operations requiring it; diagnostic and eligible read-only paths remain
+available. The optional MCP companion owns its SDK, Zod and Hono compatibility
+dependencies. Neither package is dependency-free.
 
-- **Adopt flow** — sessions started outside the bridge can be linked mid-flight (deterministic via `CODEX_THREAD_ID`, confirmed when heuristic)
-- **Full-context checkpoints** — every delta ships with a retained un-truncated record, so long prose survives a handoff and recovery
-- **Five agents, twenty directions** — Grok, Antigravity and OpenCode joined behind the adapter contract, and a `knownBy` matrix keeps chains from dropping the hop before last
-- **Codex is hook-driven too** — it records its own session, receives deltas inside the conversation rather than in front of it, and reports the end of a turn instead of having it inferred from a 3MB transcript
-- **Per-agent launch flags** — typed when you want them, saved with `--cb-save-args` when you want them to stick, announced loudly when they change what an agent may do without asking
-- **Sessions the bridge starts are linked** — Codex and Grok used to be unreachable until they handed off once, so `bridge grok` refused to resume the session it had just created
-- **Doctor tells the truth** — `READY` became `CONFIGURED`, and two canaries check that this version of the bridge can still read what each agent writes and still find what each agent stores
-- **Regression suite + CI** — `node:test` coverage over parsers, discovery, adopt paths and hooks. The workflow targets ubuntu+macos × Node 18/20/22/24, plus separate clean installed-package acceptance on Node 18.18.0 and 24. Configuration alone is not proof of a successful run for the current commit.
-- **Checkpoint retention** — full-context files, deltas and audit manifests are pruned together by their checkpoint group policy
-- **A fourth agent, and what reaching it exposed** — Antigravity joined behind the same adapter contract, and getting a delta to it uncovered a first switch too large for a command line, a delta recorded as delivered before anything carried it, and an agent's identity read from a variable that outlives its session
-- **A fifth agent that keeps its sessions in a database** — OpenCode joined the same way, and reaching it added an authless write into its own session store (it exposes no hook and no promptable resume), a conflict-flag table folded back onto each adapter so every supported agent's unenforced flags finally bite, and a session-discovery path that no longer leaks a background server on every call
-- **Lanes** — a project can hold more than one line of work, each with its own agent links, history and checkpoints; `bridge lane new/switch/rm/list` manage them and two run in two terminals at once, `bridge <agent> --resume` opens one, `lane new --seed` starts one from another's decisions and git state, `clean`/`inspect` take `--lane`, and launchers are tracked per lane so `lane rm`/`unlink` guard precisely. The whole checkpoint-path boundary and every seed/unlink lifecycle edge were hardened behind containment guards and tombstones over a long review
-- **`bridge unlink <agent>`** — forgets one agent in a lane, and every watermark that named it in both directions, instead of deleting the whole machine-local store to relink one
+Automated coverage includes source tests, clean installed-package acceptance
+and selected native integration scenarios. A configured CI matrix is not a
+passed release gate. Publication requires fresh evidence for the exact commit
+and both tarballs, plus review of native handoff acceptance.
 
-What changed between versions: [CHANGELOG.md](CHANGELOG.md). Design details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); contributions are welcome via [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+See [CHANGELOG.md](CHANGELOG.md) for changes by release,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design, and
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for acceptance and release procedures.
 
 ## Written about
 

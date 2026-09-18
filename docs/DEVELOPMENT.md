@@ -441,7 +441,7 @@ Treat these as hard rules; changes that violate them should not merge:
 | Codex CLI | 0.144.x | `codex resume <id>` auto-submit, rollout format, `$skill` invocation, plugin transfer RPC, hooks with `additionalContext` (trusted once via `/hooks`) |
 | Grok CLI | 0.2.x | resume by id, per-project session directories, live `active_sessions.json`; hooks fire but ignore stdout for passive events |
 | OpenCode | 1.18.x | sessions in a SQLite database, authless delta insert via `preResume`, read-back via `opencode export`, discovery via `opencode session list --format json`; no hook and a resume that will not take an opening message, so no auto-start |
-| OS | macOS, selected Linux arm64 acceptance | Windows remains unverified/unsupported until its new installed-package CI gate passes and native vendor workflows are validated. A configured job is not a passed run. |
+| OS | macOS, selected Linux and Windows acceptance | Installed-package Windows checks and selected native Pi/Aider transport, migration and sharing scenarios have passed CI. This does not validate every built-in vendor/provider workflow. |
 | Node | ≥ 18.18 | clean package and MCP stdio must work at the minimum version |
 
 Every CLI's session format is vendor-internal. When a new CLI release changes behavior, re-run the end-to-end handoff test above before assuming compatibility.
@@ -452,13 +452,18 @@ dependencies, then exercises Git-absent CLI reads, artifact export/import, MCP
 stdio, and the installed native lock backend. A separate owner process must
 exclude a contender; forcefully terminating that owner must allow reacquisition
 without replacing the guard file. No source-tree dependencies are borrowed.
-These checks do not validate Windows vendor layouts, interactive terminals,
-network filesystems or power-loss durability, even after the job passes.
+Installed-package checks alone do not validate native vendor layouts or terminals.
+Separate Windows jobs exercise actual Pi and Aider processes, including selected
+terminal and migration paths, and sharing/publication interruption scenarios.
+Aider model responses use a local fixture, not authenticated provider acceptance.
+Neither layer establishes network-filesystem or physical power-loss durability.
+The last pre-release implementation run was [CI 35405385709](https://github.com/SerdarDB/context-bridge/actions/runs/35405385709)
+at `f9d7e3e793b518f3c98567607cc1d4f65ca57ec1`; the release candidate must pass its own exact-commit gate.
 
 ## Release checklist
 
 1. Identify the previous release tag first: `git describe --tags --abbrev=0`.
-2. Write the changelog only from the actual implementation diff: `git diff --stat <previous-tag>..HEAD -- src bin plugin codex package.json package-lock.json .github`. Do not turn a session summary, roadmap or cumulative feature list into the current release notes. Every entry must be attributable to a changed file or be explicitly marked as documentation/CI/release work.
+2. Write the changelog only from the actual implementation diff: `git diff --stat <previous-tag>..HEAD -- src bin plugin codex packages docs package.json package-lock.json .github`. Do not turn a session summary, roadmap or cumulative feature list into the current release notes. Every entry must be attributable to a changed file or be explicitly marked as documentation/CI/release work.
 3. On the final clean, committed candidate, run `node bin/bridge.mjs release-prepare` before starting npm authentication (`bridge release-prepare` is equivalent only when linked to that checkout). It runs the full tests, syntax, deterministic eval, clean installed-package acceptance, npm audit, `release-check --ci --json`, `verify --all --json`, and `eval --live codex --json`. Any failure stops preparation and leaves no success receipt. GitHub authentication, successful exact-HEAD CI and all supported agents are still required at this stage; live steps use configured providers and may incur usage. Preparation disables custom adapter manifests so they cannot substitute for supported-agent checks.
    The private receipt lives in the machine-local store's `release-evidence/` directory, outside the repository and tarball. It binds the exact commit and actual tarball SHA-256, package version, Node/npm versions, platform and architecture. The candidate is packed before and after the checks and must match. `prepublishOnly` now runs only `release-check --evidence --json`: it repacks locally and checks the receipt, without calling agents or GitHub. Missing/incomplete evidence, dirty state, different bytes/toolchain or evidence older than **24 hours from preparation start** refuses publication. This is an explicit freshness policy, not a guarantee that providers remain available. `prepack`, `prepare` and `postpack` lifecycle scripts are refused because they could rewrite bytes after verification; build before preparing acceptance.
    The receipt is trusted local evidence, not a cryptographic attestation against its owner. Keep the tree unchanged between acceptance and publish. Do not bypass the lifecycle with `--ignore-scripts`. This does not replace the native handoff exercise below: smoke checks verify responses and route configuration, not actual transfers. No command publishes or authorizes a release automatically.

@@ -11,7 +11,7 @@
     {
       "name": "bridge",
       "source": "./plugin",
-      "description": "Bidirectional session bridge between Claude Code and Codex (/bridge codex)"
+      "description": "Hand Claude Code sessions to other supported coding agents with /bridge"
     }
   ]
 }

@@ -10,15 +10,18 @@ working on it see [DEVELOPMENT.md](./DEVELOPMENT.md).
 1. **Native sessions are preserved, never replaced.** Claude keeps its own
    session, Codex its own thread, Grok and Antigravity their own session
    directories. The bridge orchestrates them and re-implements none of them.
-   Delete the bridge and all four still work with their own CLIs.
+   OpenCode keeps its native session database. Removing Bridge does not remove
+   these five agents' native sessions.
 2. **Official mechanisms wherever one exists.** Import, resume, hooks, plugins
    and skills are all vendor-supported surfaces. The bridge adds only what no
    vendor ships: the mapping between sessions, the way back, and switching
    repeatedly without starting over.
 3. **Deltas, not transcript copies.** Every agent already holds its own history.
    A switch carries only what the target has not seen.
-4. **No API keys, no extra billing.** Every CLI runs under the subscription the
-   user already has. The bridge never reads or stores credentials.
+4. **No separate model credentials.** Agents use their own configured provider
+   authentication and billing. Bridge does not proxy model requests. Explicit
+   artifact signing, encryption and sharing commands read operator-supplied key
+   or token files; that is separate from agent authentication.
 5. **Nothing important is silent.** A dropped input, a deletion, a delta that
    never arrived, a parser that no longer understands a file: each of these is
    reported. Most of this document's odder decisions come from this one rule.
@@ -48,7 +51,7 @@ shell
 | Claude plugin (`plugin/`) | `/bridge` skill and the `SessionStart` / `Stop` / `UserPromptSubmit` hooks |
 | Codex hooks (`~/.codex/hooks.json`) | the same three events, installed by `doctor --fix`, merged into whatever is already there |
 | Shared skill (`codex/SKILL.md`) | `$bridge <agent>` for Codex, Grok, Antigravity and OpenCode |
-| `machine-local state.json` | links, watermarks and pending markers. References, never content; Git is optional |
+| `machine-local state.json` | links, watermarks, pending markers and recovery journals, which can contain closing text; Git is optional |
 | `machine-local checkpoints` | Deltas, full context and audit manifests retained by handoff group |
 | `.cbctx` artifact | Explicit redacted context package with schema and integrity hash; never native session state |
 
@@ -269,8 +272,8 @@ The backends are macOS `renamex_np(RENAME_EXCL)`, Linux
 copy fallback. On Linux arm64/x64, older libc builds lacking the `renameat2`
 wrapper use the same kernel syscall directly, retaining `RENAME_NOREPLACE`.
 Other platforms or unavailable native operations fail closed;
-there is no hardlink fallback. The Windows backend still requires native
-acceptance testing. The diagnostic lock probe also exercises exclusive
+there is no hardlink fallback. Installed-package Windows acceptance exercises
+native locking and publication. The diagnostic lock probe also exercises exclusive
 publication and collision preservation.
 A write/content-flush failure leaves the previous destination intact
 and cleans only the temporary file owned by that invocation. A subsequent
@@ -539,8 +542,8 @@ call or critical-section work; independent, non-nested lock scopes have separate
 budgets. It is not an end-to-end command deadline.
 
 Koffi provides the native binding, loaded only when a mutation needs a lock.
-POSIX uses `flock`; Windows uses `CreateFileW` and `LockFileEx` (the Windows
-branch still requires native platform acceptance before release). A missing
+POSIX uses `flock`; Windows uses `CreateFileW` and `LockFileEx`, exercised by
+installed-package native lock acceptance. A missing
 platform binary refuses mutation rather than falling back to unsafe PID-only
 recovery. Local-filesystem verification does not establish network-filesystem
 locking guarantees. Installations must retain the platform optional dependency.
@@ -604,8 +607,9 @@ These are selection rules, not an atomic snapshot of the project directory.
 Registration rechecks identity around registry ownership and optional probes;
 an unrelated writer can still replace a path after the last check. Runtime
 locks serialize cooperating bridge processes, not arbitrary filesystem writers.
-Native Windows and untested filesystem/provider combinations remain acceptance
-requirements, not implied support from the format of a fingerprint.
+Untested filesystem/provider combinations remain acceptance requirements,
+not implied support from the format of a fingerprint. Selected Windows
+relocation and migration scenarios are exercised separately in CI.
 
 `launchers` records each live launcher by pid and the lane it opened. It exists
 because a launcher started before an upgrade cannot read a newer state file — it
@@ -920,8 +924,10 @@ are input admission constraints, separate from the delta delivery byte budget.
 - Verified on macOS and in selected Linux arm64 acceptance environments,
   including installed-package operation on Alpine/Node18.18 and native
   OpenCode1.18.31 snapshot/handoff preparation on Node24. These results do not
-  establish every vendor/provider/terminal combination. Windows is unsupported
-  until native acceptance is complete; a configured CI job is not a passed gate.
+  establish every vendor/provider/terminal combination. Windows installed-package
+  and selected native Pi/Aider transport, migration and sharing checks have
+  passed CI; authenticated Aider and all built-in Windows workflows are not
+  established by those checks. See DEVELOPMENT.md for the evidence boundary.
 - One linked session per agent per lane. `bridge unlink <agent>` forgets just that
   one; deleting the machine-local project store still relinks everything at once and takes the saved
   launch flags with it, but is no longer needed to relink a single agent.

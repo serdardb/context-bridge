@@ -13,9 +13,9 @@ half.
 - **Runtime state moves out of your project.** Bridge now uses a machine-local
   store with registered project identities instead of requiring `.bridge/` in
   each repository: `~/Library/Application Support/context-bridge` on macOS,
-  the local application-data directory on Windows, and
   `$XDG_STATE_HOME/context-bridge` (default `~/.local/state/context-bridge`) on
-  Linux. Existing project-local state is migrated on mutating use,
+  other platforms, including Windows. `CONTEXT_BRIDGE_HOME` overrides the root.
+  Existing project-local state is migrated on mutating use,
   with verified backups and retained recovery evidence. Run `bridge storage plan`
   for a read-only preview, `bridge storage migrate` for explicit migration, and
   `bridge storage cleanup-ignore` to remove an obsolete ignore entry after

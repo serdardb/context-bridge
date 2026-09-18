@@ -1,6 +1,6 @@
 # Optional Remote Sharing
 
-Local operation needs no server, account or network. These explicit commands
+Local artifact operations need no server, account or network. These explicit commands
 layer over `artifact seal/open`; they do not change normal handoff behavior.
 The server stores ciphertext, never a decryption key. Encryption does not
 establish sender identity: keep using an independently trusted Ed25519 public
@@ -78,6 +78,8 @@ Existing local destinations are never overwritten.
 
 The storage operator can see size, timing and object hashes, and can delete or
 withhold data. Private staging can remain after a crash; inspect it locally
-before removal. Parent-path attacks, physical power loss, remote TLS deployment
-and native Windows require separate operational acceptance. Successful loopback
-tests are not proof of those conditions.
+before removal. Selected native Windows interruption tests and a synthetic public
+HTTPS transfer run separately in CI. Neither establishes physical power-loss
+durability, resistance to every parent-path attack, or the safety of your deployed
+TLS proxy and operator configuration. Successful loopback tests alone are not
+proof of those conditions.

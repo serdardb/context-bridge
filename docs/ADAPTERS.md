@@ -253,7 +253,7 @@ retain the existing project identity; Git is not required.
 macOS and Linux process acceptance verify that a concurrent writer is refused and a
 SIGKILL releases ownership without deleting/replacing the lock file. The lock
 is advisory: it does not prevent an unrelated program from modifying history.
-Windows locking has an implementation but still requires native verification.
+Windows native acceptance also exercises session locking and forced-owner termination.
 The packaged `src/agents/aider_driver.py` now verifies identity and prior
 history/evidence under that lock before opening the SDK. It records completion
 only after an observed response finishes, fsyncs each evidence append, and
@@ -275,7 +275,8 @@ Loopback networking must be available. The handshake is not a security boundary
 against another process running as the same user. Abrupt shutdown may leave an
 incomplete evidence row, which fails closed rather than being accepted as a
 receipt; it cannot make native file edits atomic or guarantee cleanup of every
-shell-command descendant. Windows behavior still needs native acceptance.
+shell-command descendant. Windows acceptance uses forced entry termination;
+it does not imply POSIX signal forwarding semantics or authenticated-provider coverage.
 The candidate currently forces no Git/auto-commit/gitignore writes; do not
 assume native Aider defaults apply. The actual bridge launcher has been
 exercised through the manifest: provider refusal leaves delivery pending, a
