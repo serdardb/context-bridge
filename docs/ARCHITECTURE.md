@@ -532,11 +532,17 @@ come — and because knowing which lane a launcher holds lets `lane rm` and
 Checkpoint files are packages in transit, not memory. The canonical record is
 each agent's native transcript plus `knownBy`.
 
-So retention follows the delivery lifecycle rather than a clock: an un-truncated
-full-context checkpoint is retained with the delta and audit manifest, then
-pruned by the checkpoint group's retention policy. A pending injection is never
-deleted under any flag. Re-issuing a handoff
-supersedes the previous undelivered one instead of leaving it on disk forever.
+The full-context checkpoint, delta and audit manifest share a group policy:
+default pruning requires both age beyond seven days and a position outside the
+lane's newest twenty groups. Pending injections are protected under every cleanup
+flag. Re-issuing a handoff supersedes the previous undelivered one after the new
+handoff commits.
+
+Preflight refuses cleanup when ownership or directory inspection is uncertain.
+Later I/O failures can leave partial deletion: counts reflect successful removals,
+not attempted groups, and explicit cleanup exits nonzero. Automatic retention
+and superseded-handoff cleanup report warnings without rolling back the new
+handoff. Cleanup is not an atomic multi-file deletion transaction.
 
 ## Session linking
 
