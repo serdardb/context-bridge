@@ -560,6 +560,22 @@ test("bridge lane rm deletes the lane directory only after --yes, and never main
   assert.equal(refused.status, 1, "rm without --yes refuses");
   assert.ok(fs.existsSync(laneDir), "and deletes nothing");
 
+  const physicalLane = path.dirname(laneDir);
+  const preservedLane = `${physicalLane}-preserved`;
+  const beforeUnsafe = fs.readFileSync(statePath(project));
+  fs.renameSync(physicalLane, preservedLane);
+  fs.symlinkSync(preservedLane, physicalLane, "dir");
+  try {
+    const unsafe = run("rm", "feature", "--yes");
+    assert.equal(unsafe.status, 1);
+    assert.match(unsafe.stdout + unsafe.stderr, /Unsafe lane directory/);
+    assert.deepEqual(fs.readFileSync(statePath(project)), beforeUnsafe, "refusal must preserve the lane record");
+    assert.ok(fs.existsSync(path.join(preservedLane, "checkpoints", "2026-01-01T00-00-00-000Z-claude-to-codex.md")));
+  } finally {
+    fs.unlinkSync(physicalLane);
+    fs.renameSync(preservedLane, physicalLane);
+  }
+
   const removed = spawnSync(process.execPath, ["--input-type=module", "-e", `
     import assert from 'node:assert/strict';
     import fs from 'node:fs';

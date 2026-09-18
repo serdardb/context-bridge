@@ -940,13 +940,24 @@ function mutateProjectLocked(projectDir, fn) {
 export function removeLane(projectDir, name) {
   assertLaneName(name);
   return withStateLock(projectDir, () => {
+    const root = bridgeDir(projectDir);
+    const dir = path.join(root, "lanes", name);
+    if (!isInsideDir(dir, root)) throw new BridgeError("Unsafe lane directory; lane and files were not removed.");
+    for (const entry of [path.join(root, "lanes"), dir]) {
+      let stat;
+      try { stat = fs.lstatSync(entry); }
+      catch (cause) {
+        if (cause.code === "ENOENT") break;
+        throw new BridgeError("Lane directory could not be inspected; lane and files were not removed.", { cause });
+      }
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new BridgeError("Unsafe lane directory; lane and files were not removed.");
+      }
+    }
     mutateProjectLocked(projectDir, (disk) => {
       if (laneHasLiveLauncher(disk, name)) throw new Error(`A bridge launcher is running on lane '${name}'.`);
       removeLaneFromState(disk, name);
     });
-    const root = bridgeDir(projectDir);
-    const dir = path.join(root, "lanes", name);
-    if (!isInsideDir(dir, root)) return { filesRemoved: false, reason: "unsafe lane directory" };
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       return { filesRemoved: true };
