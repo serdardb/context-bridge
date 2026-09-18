@@ -31,6 +31,10 @@ test("Aider native Markdown preserves headings, quotes and role-looking code wit
   const link = path.join(root, "alias.md");
   fs.symlinkSync(file, link);
   assert.throws(() => readAiderHistory(link), /refusing/);
+  const hardlink = path.join(root, "shared.md");
+  fs.linkSync(file, hardlink);
+  assert.throws(() => readAiderHistory(file), /refusing/, 'direct rereads must reject a multiply linked evidence leaf');
+  fs.unlinkSync(hardlink);
   fs.writeFileSync(file, "unrecognised format\n");
   assert.throws(() => readAiderHistory(file), /refusing/);
 });

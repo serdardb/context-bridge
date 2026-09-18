@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { readOwnedFile } from "../util.mjs";
 import { createHash } from "node:crypto";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -7,21 +7,12 @@ const decode = (bytes) => new TextDecoder("utf-8", { fatal: true, ignoreBOM: tru
 
 /** Aider's Markdown is evidence, not an unambiguous role-delimited protocol. */
 function readStableBytes(file) {
-  let fd;
   try {
-    const before = fs.lstatSync(file);
-    if (!before.isFile() || before.isSymbolicLink()) throw invalid();
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw invalid();
-    const bytes = fs.readFileSync(fd);
-    const after = fs.fstatSync(fd);
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || bytes.length !== opened.size) throw invalid();
-    return bytes;
+    return readOwnedFile(file);
   } catch (error) {
     if (error.code === "ENOENT") throw error;
     throw invalid();
-  } finally { if (fd !== undefined) fs.closeSync(fd); }
+  }
 }
 
 export function readAiderHistory(file, { allowEmpty = false } = {}) {
