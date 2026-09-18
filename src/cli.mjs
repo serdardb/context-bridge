@@ -227,6 +227,22 @@ export async function main(argv) {
       return;
 
     case "project": {
+      let projectOptions;
+      try {
+        projectOptions = parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true,
+          options: { apply: { type: "boolean" }, confirm: { type: "string" }, json: { type: "boolean" } } });
+      } catch (cause) {
+        throw new BridgeError("Invalid project options. Use bridge --help; no project operation was performed.", { cause });
+      }
+      const action = projectOptions.positionals[0];
+      const allowed = { list: ["json"], inspect: ["json"], adopt: ["json"],
+        recover: ["apply", "json"], retire: ["apply", "json"], restore: ["apply", "json"],
+        purge: ["apply", "confirm", "json"] };
+      if (!Object.hasOwn(allowed, action ?? "") ||
+          projectOptions.positionals.length !== (action === "list" ? 1 : 2) ||
+          Object.keys(projectOptions.values).some(key => !allowed[action].includes(key))) {
+        throw new BridgeError("Invalid project action or options. Use bridge --help; no project operation was performed.");
+      }
       if (args[1] === "purge") {
         const parsed = parseArgs({ args: argv.slice(2), allowPositionals: true, strict: true,
           options: { apply: { type: "boolean" }, confirm: { type: "string" }, json: { type: "boolean" } } });

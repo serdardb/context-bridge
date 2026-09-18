@@ -642,6 +642,13 @@ test("project retirement and restoration preserve evidence through real process 
         [${JSON.stringify(path.resolve("bin/bridge.mjs"))}, 'project', action, id, '--json', ...(apply ? ['--apply'] : [])],
         { encoding: 'utf8', timeout: 5000, env: process.env });
       const registry = fs.readFileSync(path.join(home, 'projects.json'));
+      const invalid = spawnSync(process.execPath,
+        [${JSON.stringify(path.resolve("bin/bridge.mjs"))}, 'project', 'retire', id, '--apply', '--dry-run'],
+        { encoding: 'utf8', timeout: 5000, env: process.env });
+      assert.equal(invalid.status, 1, 'unsupported options must refuse before applying retirement');
+      assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
+      assert.equal(fs.existsSync(store), true);
+      assert.equal(fs.existsSync(archive), false);
       assert.equal(cli('retire').status, 0);
       assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
       const stateFile = path.join(store, 'state.json');
