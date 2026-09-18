@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { ensureProjectStore, projectStoreDir, projectIdentity } from "../storage.mjs";
+import { ensureProjectStore, projectStoreDir, projectIdentity, withProjectRuntimeLock } from "../storage.mjs";
 import { writeFileExclusive, readOwnedFile } from "../util.mjs";
 import { resolveAiderRuntime, AIDER_SDK_VERSION } from "./aider-runtime.mjs";
 import { readAiderHistory, readAiderEvidence } from "./aider-records.mjs";
@@ -16,6 +16,12 @@ function directory(file, create = false) {
 }
 
 export function aiderSessionsDirectory(projectDir, { create = false } = {}) {
+  return create
+    ? withProjectRuntimeLock(projectDir, () => sessionsDirectory(projectDir, true))
+    : sessionsDirectory(projectDir, false);
+}
+
+function sessionsDirectory(projectDir, create) {
   const store = create ? ensureProjectStore(projectDir) : projectStoreDir(projectDir);
   let dir = store;
   for (const name of ["agents", "aider"]) {
@@ -69,6 +75,10 @@ export function aiderSessionRef(projectDir, id) {
 export function createAiderSession(projectDir, { env = process.env } = {}) {
   // Refuse an incompatible interpreter before touching project storage.
   const runtime = resolveAiderRuntime({ env, cwd: projectDir });
+  return withProjectRuntimeLock(projectDir, () => createSessionOwned(projectDir, runtime));
+}
+
+function createSessionOwned(projectDir, runtime) {
   const parent = aiderSessionsDirectory(projectDir, { create: true });
   const id = randomUUID(), projectId = projectIdentity(projectDir).id;
   const stage = path.join(parent, `.creating-${id}`), destination = path.join(parent, id);
