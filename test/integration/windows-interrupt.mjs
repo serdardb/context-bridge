@@ -16,7 +16,8 @@ for (const [name, command] of [
   ["direct-python", [python, "-I", probe, "sleep"]],
   ["node-wrapper", [process.execPath, "-e", wrapper, python, "-I", probe, "sleep"]],
   ["blocked-socket", [python, "-I", probe, "socket"]],
-  ["console-handler-socket", [python, "-I", probe, "console"]],
+  ...(process.argv.includes("--console")
+    ? [["console-handler-socket", [python, "-I", probe, "console"]]] : []),
   // Exploratory primitive, not an established Windows capability.
   ...(process.argv.includes("--wakeup")
     ? [["signal-wakeup-socket", [python, "-I", probe, "wakeup"]]] : []),
