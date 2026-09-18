@@ -222,10 +222,23 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
   }
 }
 
+export function auditErrorsByAgent(readerErrors = []) {
+  const errors = new Map();
+  for (const error of readerErrors) {
+    const previous = errors.get(error.agent);
+    if (!previous || (!previous.code && error.code) || error.code === "BRIDGE_SOURCE_CHANGED") {
+      errors.set(error.agent, error);
+    }
+  }
+  return errors;
+}
+
 function discloseAuditLimits(manifest, warnings, packed = {}) {
-  for (const agent of new Set((manifest.readerErrors ?? []).map((error) => error.agent))) {
+  const errors = auditErrorsByAgent(manifest.readerErrors ?? []);
+  for (const [agent, error] of errors) {
     delete packed[agent];
-    warnings.push(`${adapterFor(agent).displayName}: audit evidence is incomplete or changed during collection. Its delivery watermark was not advanced.`);
+    const code = error.code ? ` (${error.code})` : "";
+    warnings.push(`${adapterFor(agent).displayName}: audit evidence is incomplete or changed during collection${code}. Its delivery watermark was not advanced.`);
   }
 }
 

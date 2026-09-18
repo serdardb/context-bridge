@@ -191,7 +191,7 @@ test("health, evidence and probe reports reject incompatible shapes without inve
     content: [{ type: "tool_use", id: "tool", name: "Bash", input: { command: "private command" } }],
   } }));
   const manifest = buildManifest(dir, { source: "claude", target: "codex", sources: { claude: { transcriptPath: transcript } } });
-  assert.deepEqual(manifest.readerErrors, [{ agent: "claude", reason: "audit reader failed" }]);
+  assert.deepEqual(manifest.readerErrors, [{ agent: "claude", reason: "audit reader failed", code: "UNKNOWN" }]);
   assert.deepEqual(manifest.agents, {});
   assert.match(renderManifest(manifest), /INCOMPLETE.*claude/);
   assert.doesNotMatch(JSON.stringify(manifest), /private command/);

@@ -20,7 +20,7 @@ import { adapterFor } from "./agents/index.mjs";
 import { writeCheckpoint, latestCheckpoint, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
 import { gitMetadata } from "./storage.mjs";
 import { assertCheckpointName } from "./checkpoint-kinds.mjs";
-import { BridgeError, transcriptStamp } from "./util.mjs";
+import { BridgeError, debugLog, transcriptStamp } from "./util.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -29,6 +29,30 @@ const SHOWN_PER_AGENT = 15;
 
 /** Reads are context, not consequence, so they are capped lower than changes. */
 const SHOWN_READS = 10;
+
+// Audit diagnostics cross the handoff boundary. Keep only codes that the
+// bridge owns and documents; vendor/library error codes must never become a
+// public protocol or leak arbitrary data from an adapter.
+const PUBLIC_AUDIT_CODES = new Set([
+  "BRIDGE_SOURCE_CHANGED",
+  "BRIDGE_TRANSCRIPT_UNREADABLE",
+  "BRIDGE_TRANSCRIPT_TOO_LARGE",
+  "BRIDGE_FILE_TOO_LARGE",
+  "BRIDGE_UNSAFE_FILE",
+]);
+
+function auditErrorCode(error) {
+  const codes = [];
+  let hops = 0;
+  for (let current = error; current && hops < 8; current = current.cause, hops++) {
+    if (PUBLIC_AUDIT_CODES.has(current.code)) codes.push(current.code);
+  }
+  // A source mutation is the most actionable diagnosis even when an adapter
+  // wraps it in its general transcript-unreadable error.
+  if (codes.includes("BRIDGE_SOURCE_CHANGED")) return "BRIDGE_SOURCE_CHANGED";
+  if (codes.length) return codes[0];
+  return "UNKNOWN";
+}
 
 /**
  * Build the manifest for one handoff, from every agent the target has not caught
@@ -46,12 +70,19 @@ export function buildManifest(projectDir, { source, target, via = null, sources 
       audit = adapter.auditSince(ref, marks[id] ?? null);
       if (!isDeepStrictEqual(before, transcriptStamp(ref)) ||
           (Object.hasOwn(sourceStamps, id) && !isDeepStrictEqual(before, sourceStamps[id]))) {
-        readerErrors.push({ agent: id, reason: "audit source changed during collection" });
+        readerErrors.push({ agent: id, reason: "audit source changed during collection", code: "BRIDGE_SOURCE_CHANGED" });
       }
-    } catch {
+    } catch (error) {
       // A reader that throws must not take the handoff down with it. The delta
       // is the product; the manifest is a convenience beside it.
-      readerErrors.push({ agent: id, reason: "audit reader failed" });
+      const code = auditErrorCode(error);
+      debugLog("audit.reader.failed", {
+        agent: id,
+        code,
+        outerCode: error?.code,
+        causeCode: error?.cause?.code,
+      });
+      readerErrors.push({ agent: id, reason: "audit reader failed", code });
       continue;
     }
     if (!audit) continue;
@@ -126,7 +157,10 @@ export function latestManifest(projectDir, lane = DEFAULT_LANE) {
 export function renderManifest(manifest) {
   const lines = [];
   lines.push(`audit  ${manifest.source} → ${manifest.target}`);
-  for (const error of manifest.readerErrors ?? []) lines.push(`  INCOMPLETE  ${error.agent}: ${error.reason}`);
+  for (const error of manifest.readerErrors ?? []) {
+    const code = error.code ? ` (${error.code})` : "";
+    lines.push(`  INCOMPLETE  ${error.agent}: ${error.reason}${code}`);
+  }
   for (const [id, a] of Object.entries(manifest.agents ?? {})) {
     const failed = a.commands.filter((c) => c.ok === false);
     const unknown = a.commands.filter((c) => c.ok === null);

@@ -14,11 +14,16 @@ import { prepareSeed } from "../src/seed.mjs";
 const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 function setup(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-worktree-")));
-  const saved = { home: process.env.CONTEXT_BRIDGE_HOME, mode: process.env.CONTEXT_BRIDGE_STORAGE };
+  const saved = {
+    home: process.env.CONTEXT_BRIDGE_HOME,
+    mode: process.env.CONTEXT_BRIDGE_STORAGE,
+    lane: process.env.CONTEXT_BRIDGE_LANE,
+  };
   process.env.CONTEXT_BRIDGE_HOME = path.join(dir, "runtime");
   delete process.env.CONTEXT_BRIDGE_STORAGE;
+  delete process.env.CONTEXT_BRIDGE_LANE;
   t.after(() => {
-    for (const [key, value] of [["CONTEXT_BRIDGE_HOME", saved.home], ["CONTEXT_BRIDGE_STORAGE", saved.mode]]) {
+    for (const [key, value] of [["CONTEXT_BRIDGE_HOME", saved.home], ["CONTEXT_BRIDGE_STORAGE", saved.mode], ["CONTEXT_BRIDGE_LANE", saved.lane]]) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
     fs.rmSync(dir, { recursive: true, force: true });

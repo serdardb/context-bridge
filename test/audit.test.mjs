@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildManifest, renderManifest, latestManifest, writeManifest } from "../src/audit.mjs";
-import { handoff } from "../src/handoff.mjs";
+import { auditErrorsByAgent, handoff } from "../src/handoff.mjs";
 import { defaultState, saveState, loadState, ensureState, checkpointsDir, safeCheckpointPath } from "../src/state.mjs";
 import { AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
 import { fileURLToPath } from "node:url";
@@ -118,6 +118,48 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
     fs.readSync = read;
     fs.rmSync(project, { recursive: true, force: true });
   }
+});
+
+test("audit manifests preserve only owned reader failure codes", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "audit-codes-"));
+  const source = path.join(project, "claude.jsonl");
+  fs.copyFileSync(path.join(FIXTURES, "claude.jsonl"), source);
+  const originalRead = fs.readSync;
+  let changed = false;
+  fs.readSync = (file, ...args) => {
+    const result = originalRead(file, ...args);
+    if (!changed && typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(source).ino) {
+      changed = true;
+      fs.appendFileSync(source, "\n");
+    }
+    return result;
+  };
+  try {
+    const manifest = buildManifest(project, {
+      source: "claude", target: "codex", sources: { claude: { transcriptPath: source } },
+    });
+    assert.equal(manifest.readerErrors?.[0]?.code, "BRIDGE_SOURCE_CHANGED");
+  } finally { fs.readSync = originalRead; }
+
+  fs.writeFileSync(source, "x".repeat(17 * 1024 * 1024));
+  const oversized = buildManifest(project, {
+    source: "claude", target: "codex", sources: { claude: { transcriptPath: source } },
+  });
+  assert.equal(oversized.readerErrors?.[0]?.code, "BRIDGE_TRANSCRIPT_TOO_LARGE");
+
+  const grokOversized = buildManifest(project, {
+    source: "grok", target: "codex", sources: { grok: { transcriptPath: source, eventsPath: source } },
+  });
+  assert.equal(grokOversized.readerErrors?.[0]?.code, "BRIDGE_TRANSCRIPT_TOO_LARGE",
+    "the outer public code must win over the nested BRIDGE_FILE_TOO_LARGE cause");
+});
+
+test("audit warning aggregation keeps a coded source mutation over a later partial marker", () => {
+  const errors = auditErrorsByAgent([
+    { agent: "claude", reason: "audit source changed during collection", code: "BRIDGE_SOURCE_CHANGED" },
+    { agent: "claude", reason: "audit source was only partially readable" },
+  ]);
+  assert.equal(errors.get("claude")?.code, "BRIDGE_SOURCE_CHANGED");
 });
 
 // Ordering by usefulness rather than by completeness. One real session produced
