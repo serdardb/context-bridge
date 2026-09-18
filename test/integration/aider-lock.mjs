@@ -5,14 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const python = process.argv[2];
 assert.ok(python && path.isAbsolute(python), "supply an absolute trusted Python interpreter");
+const packageRoot = process.argv[3] || fileURLToPath(new URL("../../", import.meta.url));
+assert.ok(path.isAbsolute(packageRoot), "package root must be absolute");
+const lockingUrl = pathToFileURL(path.join(packageRoot, "src/locking.mjs")).href;
+const { withKernelLockSync } = await import(lockingUrl);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-aider-lock-"));
 const lock = path.join(root, "session.lock");
 const marker = path.join(root, "writer-started");
-const module = fileURLToPath(new URL("../../src/agents/aider_lock.py", import.meta.url));
+const module = path.join(packageRoot, "src/agents/aider_lock.py");
 const program = `import importlib.util,sys
 s=importlib.util.spec_from_file_location('locks',sys.argv[1])
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
@@ -25,7 +29,7 @@ with m.session_lock(sys.argv[2]):
 `;
 const args = (mode, file = lock) => ["-I", "-B", "-c", program, module, file, mode];
 const nodeLock = () => spawnSync(process.execPath, ["--input-type=module", "-e", `
-  import { withKernelLockSync } from ${JSON.stringify(new URL("../../src/locking.mjs", import.meta.url).href)};
+  import { withKernelLockSync } from ${JSON.stringify(lockingUrl)};
   withKernelLockSync(${JSON.stringify(lock)}, () => {});
 `], { encoding: "utf8", timeout: 5000,
   env: { ...process.env, CONTEXT_BRIDGE_LOCK_TIMEOUT_MS: "150" } });
@@ -56,13 +60,22 @@ try {
   const recovered = spawnSync(python, args(marker), { encoding: "utf8", timeout: 5000 });
   assert.equal(recovered.status, 0, recovered.stderr);
   assert.equal(fs.readFileSync(marker, "utf8"), "owned");
+  fs.unlinkSync(marker);
+  withKernelLockSync(lock, () => {
+    const pythonBlocked = spawnSync(python, args(marker), { encoding: "utf8", timeout: 5000 });
+    assert.notEqual(pythonBlocked.status, 0);
+    assert.match(pythonBlocked.stderr, /already has a writer/);
+    assert.equal(fs.existsSync(marker), false, "Python must respect a Node-owned lock");
+  });
+  const afterNode = spawnSync(python, args(marker), { encoding: "utf8", timeout: 5000 });
+  assert.equal(afterNode.status, 0, afterNode.stderr);
   assert.equal(fs.statSync(lock).ino, inode, "recovery must not replace the stable lock inode");
   const link = path.join(root, "linked.lock");
   fs.symlinkSync(marker, link);
   const unsafe = spawnSync(python, args(marker, link), { encoding: "utf8", timeout: 5000 });
   assert.notEqual(unsafe.status, 0);
   assert.equal(fs.readFileSync(marker, "utf8"), "owned");
-  const driver = fileURLToPath(new URL("../../src/agents/aider_driver.py", import.meta.url));
+  const driver = path.join(packageRoot, "src/agents/aider_driver.py");
   const evidence = spawnSync(python, ["-I", "-B", "-c", `
 import importlib.util,json,os,sys
 from pathlib import Path
@@ -96,7 +109,7 @@ assert outside.read_bytes()==b'private unchanged','external file was modified'
 `, driver, root], { encoding: "utf8", timeout: 5000 });
   assert.equal(evidence.status, 0, evidence.stderr || evidence.error?.message);
   console.log(JSON.stringify({ platform: process.platform, concurrentWriterRefused: true,
-    crossLanguageExclusion: true, lateChildRefused: true,
+    crossLanguageExclusion: true, nodeBlocksPython: true, lateChildRefused: true,
     crashRecovery: true, stableLockFile: true, symlinkRefused: true, evidenceSwapRefused: true }));
 } finally {
   clearTimeout(timer);

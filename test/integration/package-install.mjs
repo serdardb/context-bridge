@@ -30,6 +30,10 @@ try {
   const installed = path.join(prefix, "node_modules", "@serdardb", "context-bridge");
   const acceptance = run([path.join(root, "test", "integration", "installed-package.mjs"), installed], temporary, 120000);
   process.stdout.write(acceptance);
+  if (process.env.BRIDGE_ACCEPTANCE_PYTHON) {
+    process.stdout.write(run([path.join(root, "test", "integration", "aider-lock.mjs"),
+      process.env.BRIDGE_ACCEPTANCE_PYTHON, installed], temporary, 30000));
+  }
   console.log(JSON.stringify({ cleanInstall: true, engineStrict: true, files: pack.entryCount,
     integrity: pack.integrity, node: process.version, platform: process.platform }));
 } finally {

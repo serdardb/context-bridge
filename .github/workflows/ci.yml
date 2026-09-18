@@ -42,5 +42,12 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # Intentionally no npm ci: acceptance must not borrow checkout dependencies.
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        id: python
+        with:
+          python-version: "3.12"
       - name: Clean tarball installation and runtime acceptance
+        env:
+          BRIDGE_ACCEPTANCE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: npm run test:package
