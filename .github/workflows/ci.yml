@@ -6,6 +6,25 @@ on:
   pull_request:
 
 jobs:
+  public-tls-acceptance:
+    name: synthetic public TLS sharing acceptance
+    if: github.ref == 'refs/heads/work/global-runtime-hardening'
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Install bridge dependencies
+        run: npm ci --ignore-scripts --engine-strict
+      - name: Download and verify the pinned disposable tunnel helper
+        run: |
+          curl --fail --location --max-time 60 --output "$RUNNER_TEMP/cloudflared" https://github.com/cloudflare/cloudflared/releases/download/2026.9.1/cloudflared-linux-amd64
+          printf '%s  %s\n' '03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc' "$RUNNER_TEMP/cloudflared" | sha256sum --check --strict
+          chmod 700 "$RUNNER_TEMP/cloudflared"
+      - name: Real HTTPS send fetch and remove using synthetic ciphertext only
+        run: node test/integration/public-tls.mjs "$RUNNER_TEMP/cloudflared"
   test:
     name: node ${{ matrix.node }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
