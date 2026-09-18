@@ -1,4 +1,4 @@
-import { readRegularFile } from "../util.mjs";
+import { readRegularFile, recordPrefixHash } from "../util.mjs";
 
 const invalid = () => new Error("Unsupported or damaged Pi session; refusing to treat it as empty activity.");
 const instant = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -39,7 +39,8 @@ export function readPiSession(file) {
 }
 
 export function piMark(session) {
-  return { version: 1, sessionId: session.header.id, entryId: session.records.at(-1)?.id ?? null };
+  return { version: 1, sessionId: session.header.id, entryId: session.records.at(-1)?.id ?? null,
+    rows: session.records.length, prefixHash: recordPrefixHash(session.records) };
 }
 
 function textContent(content) {
@@ -51,11 +52,21 @@ function textContent(content) {
   }).join("\n");
 }
 
-export function piActivity(session, mark = null) {
+function selection(session, mark) {
   if (mark !== null && (mark.version !== 1 || mark.sessionId !== session.header.id ||
       (mark.entryId !== null && typeof mark.entryId !== "string"))) throw invalid();
+  if (mark && (Object.hasOwn(mark, "rows") || Object.hasOwn(mark, "prefixHash")) &&
+      (!Number.isSafeInteger(mark.rows) || mark.rows < 0 ||
+       typeof mark.prefixHash !== "string" || !/^[a-f0-9]{64}$/.test(mark.prefixHash))) throw invalid();
   const index = mark?.entryId ? session.branch.findIndex((entry) => entry.id === mark.entryId) : -1;
   const branchChanged = Boolean(mark?.entryId && index === -1);
+  const sourceRewritten = branchChanged || Boolean(mark?.prefixHash &&
+    (session.records.length < mark.rows || recordPrefixHash(session.records.slice(0, mark.rows)) !== mark.prefixHash));
+  return { index: sourceRewritten ? -1 : index, branchChanged, sourceRewritten };
+}
+
+export function piActivity(session, mark = null) {
+  const { index, branchChanged, sourceRewritten } = selection(session, mark);
   const entries = session.branch.slice(index + 1);
   const messages = [];
   let turnsCompleted = 0;
@@ -72,14 +83,14 @@ export function piActivity(session, mark = null) {
       if (message.role === "assistant" && ["stop", "length"].includes(message.stopReason)) turnsCompleted++;
     }
   }
-  return { messages, patchedFiles: [], turnsCompleted, branchChanged, incompleteTail: session.incompleteTail,
+  return { messages, patchedFiles: [], turnsCompleted, branchChanged, sourceRewritten, incompleteTail: session.incompleteTail,
     sourceComplete: !session.incompleteTail };
 }
 
 export function piAudit(session, mark = null) {
   // Validate the opaque mark with the same branch-reset policy as conversation.
   piActivity(session, mark);
-  const index = mark?.entryId ? session.branch.findIndex((entry) => entry.id === mark.entryId) : -1;
+  const { index, sourceRewritten } = selection(session, mark);
   const calls = new Map();
   const changed = new Set();
   const filesRead = new Set(), filesChanged = new Set();
@@ -108,5 +119,5 @@ export function piAudit(session, mark = null) {
     }
   }
   return { commands: [...calls].filter(([id]) => changed.has(id)).map(([, call]) => call),
-    filesRead: [...filesRead], filesChanged: [...filesChanged], dropped: 0, sourceComplete: !session.incompleteTail };
+    filesRead: [...filesRead], filesChanged: [...filesChanged], dropped: 0, sourceRewritten, sourceComplete: !session.incompleteTail };
 }

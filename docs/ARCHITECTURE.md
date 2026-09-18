@@ -472,6 +472,14 @@ reporting unchanged old calls again. Legacy ISO marks still filter by timestamp
 and cannot detect older-stamped revisions. An official import whose rollout path
 is not yet discoverable retains that legacy starting mark. Completion/idleness
 checks still use their separate requested-at timestamp, not the transcript mark.
+Pi's v3 tree marks now retain a parsed-record count and prefix hash beside the
+native leaf ID. Same-ID edits and shortened history replay the readable active
+branch in both conversation and audit. Branch switches are also flagged as
+replay, so old assistant messages cannot alone acknowledge a new delivery.
+Legacy leaf-only marks remain readable but cannot detect same-ID content edits.
+The hash covers parsed records, not original JSON whitespace; removed history
+cannot be reconstructed and separate native reads are not an atomic snapshot.
+
 Grok's new compound marks also hash the parsed chat prefix. If that prefix is
 rewritten between handoffs, or the chat shrinks below the saved row count, the
 adapter replays the current readable conversation and handoff labels the replay.

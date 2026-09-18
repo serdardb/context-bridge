@@ -24,7 +24,32 @@ test("Pi reader follows the persisted branch and resends its context when a mark
     assert.equal(activity.branchChanged, true);
     assert.deepEqual(activity.messages.map((entry) => entry.text), ["original request", "new direction", "current answer"]);
     assert.equal(activity.turnsCompleted, 1);
+    assert.equal(activity.sourceRewritten, true, 'replayed branch history is not a new delivery receipt');
     assert.deepEqual(piActivity(session, piMark(session)).messages, []);
+    const mark = piMark(session);
+    rows.at(-1).message.content[0].text = 'corrected answer with the same id';
+    write();
+    const revised = readPiSession(file);
+    assert.equal(piActivity(revised, mark).sourceRewritten, true);
+    assert.equal(piActivity(revised, mark).messages.at(-1).text, 'corrected answer with the same id');
+    const legacy = { version: 1, sessionId: header.id, entryId: 'd' };
+    assert.deepEqual(piActivity(revised, legacy).messages, [], 'legacy id-only marks remain supported but cannot attest content');
+    rows.push({ ...message('tool', 'd', 'assistant', ''), message: { role: 'assistant',
+      content: [{ type: 'toolCall', id: 'call', name: 'edit', arguments: { path: 'file.txt' } }] } },
+    { ...message('result', 'tool', 'assistant', ''), message: { role: 'toolResult', toolCallId: 'call', isError: false } });
+    write();
+    const auditMark = piMark(readPiSession(file));
+    rows.at(-1).message.isError = true;
+    write();
+    const correctedAudit = piAudit(readPiSession(file), auditMark);
+    assert.equal(correctedAudit.sourceRewritten, true);
+    assert.equal(correctedAudit.commands[0].ok, false);
+    assert.deepEqual(correctedAudit.filesChanged, []);
+    rows.splice(-2);
+    write();
+    assert.equal(piActivity(readPiSession(file), auditMark).sourceRewritten, true, 'shortened history is not empty activity');
+    rows.at(-1).message.content[0].text = 'current answer';
+    write();
     fs.appendFileSync(file, '{"type":"message"');
     assert.equal(readPiSession(file).incompleteTail, true);
     assert.equal(piActivity(readPiSession(file)).sourceComplete, false);
