@@ -863,6 +863,10 @@ opt-in Aider/Pi candidates.
   notice. This is defense in depth, not a prompt-injection sandbox or proof that
   a receiving model will ignore malicious content. Current user authorization
   and the receiving agent's own security controls remain necessary.
+  Pending deltas composed by an older version did not reserve this frame; near
+  the limit they may be trimmed once at delivery, with a trim notice and the
+  full-context pointer retained. Linked checkpoint contents remain historical
+  records even when opened separately from the framed delivery.
 - Local-first: ordinary state, handoff and artifact operations need no Bridge
   service or account. There is no automatic telemetry or upload. MCP uses stdio;
   the separate, explicitly started sharing service opens a loopback listener.

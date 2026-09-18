@@ -62,7 +62,7 @@ export function parseProbe(ref) {
     return { status: evidence.incompleteTail ? "partial" : "readable", rows: evidence.rows.length + 1,
       known: evidence.rows.length + 1, malformed: evidence.incompleteTail ? 1 : 0,
       messages: aiderActivity(history, evidence).messages.length };
-  } catch (error) { return { status: error.code === "ENOENT" ? "missing" : "mismatch", rows: 0, known: 0, malformed: 0 }; }
+  } catch (error) { return { status: error.code === "ENOENT" ? "missing" : error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE" ? "unreadable" : "mismatch", rows: 0, known: 0, malformed: 0 }; }
 }
 export function discoveryProbe(projectDir = process.cwd()) {
   const sessions = aiderSessionsForProject(projectDir);

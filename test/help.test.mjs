@@ -31,6 +31,15 @@ test("invalid CLI options fail cleanly before reads, fixes or mutations", () => 
     ["eval", "--scenario", "decision"], ["status", "unexpected-positional"],
   ];
   try {
+    for (const command of [["status"], ["adapters"], ["inspect"], ["storage", "plan"]]) {
+      const run = args => spawnSync(process.execPath, [bin, ...args], { cwd: project, encoding: "utf8",
+        timeout: 15000, env: { ...process.env, CONTEXT_BRIDGE_HOME: home, PATH: "" } });
+      const normal = run([...command, "--json"]), flagFirst = run(["--json", ...command]);
+      assert.equal(normal.status, 0, normal.stderr);
+      assert.equal(flagFirst.status, 0, flagFirst.stderr);
+      assert.equal(flagFirst.stdout, normal.stdout, "existing flag-first syntax must retain its meaning");
+      if (command.length === 2) assert.equal(run([command[0], "--json", command[1]]).stdout, normal.stdout);
+    }
     for (const args of invalid) {
       const result = spawnSync(process.execPath, [bin, ...args], {
         cwd: project, encoding: "utf8", timeout: 15000,

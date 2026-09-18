@@ -89,8 +89,8 @@ export function probeWithActivity(adapter, ref, shape) {
     if (activity.sourceComplete === false) return { ...shape, status: "partial", messages: activity.messages.length };
     return { ...shape, messages: activity.messages.length };
   } catch (err) {
-    if (err.code === "BRIDGE_TRANSCRIPT_UNREADABLE") {
-      const code = err.cause?.code;
+    if (["BRIDGE_TRANSCRIPT_UNREADABLE", "BRIDGE_TRANSCRIPT_TOO_LARGE"].includes(err.code)) {
+      const code = err.code === "BRIDGE_TRANSCRIPT_TOO_LARGE" ? err.code : err.cause?.code;
       return { ...shape, status: "unreadable", messages: null,
         errorCode: /^[A-Z][A-Z0-9_]*$/.test(code ?? "") ? code : "READ_FAILED" };
     }

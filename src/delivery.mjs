@@ -114,7 +114,8 @@ export function promptBody(delta, fullContextRel) {
 export function pendingDeliveryStatus(projectDir, injection) {
   if (!injection) return null;
   const via = ["hook", "prompt"].includes(injection.via) ? injection.via : null;
-  const budgetBytes = via === "hook" ? HOOK_DELTA_BYTES : via === "prompt" ? PROMPT_DELTA_BYTES : null;
+  const rawClaude = via === "hook" && injection.agent === "claude";
+  const budgetBytes = rawClaude ? null : via === "hook" ? HOOK_DELTA_BYTES : via === "prompt" ? PROMPT_DELTA_BYTES : null;
   const result = { via, budgetBytes, deltaStatus: "missing", deltaBytes: null,
     deliveredBytes: null, wouldTrim: null, fullContextAvailable: false };
   if (injection.closing) return { ...result, deltaStatus: "closing-recovery-required" };
@@ -131,8 +132,8 @@ export function pendingDeliveryStatus(projectDir, injection) {
     result.deltaStatus = "pending";
     result.deltaBytes = Buffer.byteLength(delta);
     if (via) {
-      result.deliveredBytes = Buffer.byteLength(via === "hook" ? hookBody(delta, full) : promptBody(delta, full));
-      result.wouldTrim = result.deltaBytes + FRAME_BYTES + Buffer.byteLength(untrimmedPointer(full)) > budgetBytes;
+      result.deliveredBytes = Buffer.byteLength(rawClaude ? frameHandoffRecords(delta) : via === "hook" ? hookBody(delta, full) : promptBody(delta, full));
+      result.wouldTrim = rawClaude ? false : result.deltaBytes + FRAME_BYTES + Buffer.byteLength(untrimmedPointer(full)) > budgetBytes;
     }
     return result;
   } catch (error) {

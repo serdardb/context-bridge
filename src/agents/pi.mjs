@@ -81,7 +81,7 @@ export function parseProbe(ref) {
     const activity = piActivity(session);
     return { status: session.incompleteTail ? "partial" : "readable", rows: session.records.length + 1,
       known: session.records.length + 1, malformed: session.incompleteTail ? 1 : 0, messages: activity.messages.length };
-  } catch (error) { return { status: error.code === "ENOENT" ? "missing" : "mismatch", rows: 0, known: 0, malformed: 0 }; }
+  } catch (error) { return { status: error.code === "ENOENT" ? "missing" : error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE" ? "unreadable" : "mismatch", rows: 0, known: 0, malformed: 0 }; }
 }
 export function discoveryProbe(projectDir = process.cwd()) {
   const { sessions, examined } = piSessionsForProject(projectDir);

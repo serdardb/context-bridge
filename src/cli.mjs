@@ -178,6 +178,7 @@ export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
   const cmd = args[0];
+  const commandOptions = argv.filter((_, index) => index !== argv.indexOf(cmd));
   const projectDir = process.cwd();
 
   // --help and --version belong to the bridge only until an agent is named.
@@ -216,7 +217,7 @@ export async function main(argv) {
       return;
     }
     case "adapters": {
-      parseArgs({ args: argv.slice(1), allowPositionals: false, options: { json: { type: "boolean" } } });
+      parseArgs({ args: commandOptions, allowPositionals: false, options: { json: { type: "boolean" } } });
       const descriptors = AGENT_IDS.map((id) => adapterDescriptor(adapterFor(id)));
       if (flags.has("--json")) log(JSON.stringify({ apiVersion: ADAPTER_API_VERSION, adapters: descriptors }, null, 2));
       else for (const entry of descriptors) log(`${entry.id}: ${entry.displayName} (${entry.injection}, API ${entry.apiVersion})`);
@@ -228,7 +229,7 @@ export async function main(argv) {
       return;
 
     case "doctor":
-      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+      parseArgs({ args: commandOptions, allowPositionals: false, options: {
         fix: { type: "boolean" }, json: { type: "boolean" }, deep: { type: "boolean" },
       } });
       process.exitCode = await runDoctor(projectDir, {
@@ -239,7 +240,7 @@ export async function main(argv) {
       return;
 
     case "verify":
-      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+      parseArgs({ args: commandOptions, allowPositionals: false, options: {
         json: { type: "boolean" }, all: { type: "boolean" },
       } });
       process.exitCode = await runVerify(projectDir, { json: flags.has("--json"), all: flags.has("--all") });
@@ -318,6 +319,7 @@ export async function main(argv) {
     }
 
     case "storage": {
+      const storageOptions = commandOptions.filter((_, index) => index !== commandOptions.indexOf(args[1]));
       if (args[1] === "migrate") {
         const { values } = parseArgs({ args: argv.slice(2), allowPositionals: false, options: {
           "retirement-dir": { type: "string" }, json: { type: "boolean" },
@@ -333,7 +335,7 @@ export async function main(argv) {
         return;
       }
       if (args[1] === "cleanup-ignore" && args.length === 2) {
-        parseArgs({ args: argv.slice(2), allowPositionals: false, options: {
+        parseArgs({ args: storageOptions, allowPositionals: false, options: {
           apply: { type: "boolean" }, json: { type: "boolean" },
         } });
         const result = cleanupLegacyIgnore(projectDir, { apply: flags.has("--apply") });
@@ -347,7 +349,7 @@ export async function main(argv) {
         return;
       }
       if (args[1] !== "plan" || args.length !== 2) throw new BridgeError("Usage: bridge storage plan [--json]");
-      parseArgs({ args: argv.slice(2), allowPositionals: false, options: { json: { type: "boolean" } } });
+      parseArgs({ args: storageOptions, allowPositionals: false, options: { json: { type: "boolean" } } });
       const plan = planLegacyMigration(projectDir);
       if (flags.has("--json")) log(JSON.stringify(plan, null, 2));
       else {
@@ -529,7 +531,7 @@ export async function main(argv) {
     }
 
     case "status": {
-      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+      parseArgs({ args: commandOptions, allowPositionals: false, options: {
         json: { type: "boolean" }, debug: { type: "boolean" },
       } });
       if (flags.has("--json")) {
@@ -713,7 +715,7 @@ export async function main(argv) {
     }
 
     case "inspect": {
-      const parsed = parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+      const parsed = parseArgs({ args: commandOptions, allowPositionals: false, options: {
         json: { type: "boolean" }, lane: { type: "string" },
       } });
       const { latestManifest, renderManifest } = await import("./audit.mjs");

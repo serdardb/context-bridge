@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { adapterFor } from "./agents/index.mjs";
 import { composeDelta } from "./delta.mjs";
-import { promptBody, PROMPT_DELTA_BYTES } from "./delivery.mjs";
+import { promptBody, PROMPT_DELTA_BYTES, deliverableBudget } from "./delivery.mjs";
 import { liveDecisionFixture } from "./decision-eval.mjs";
 import { readOwnedFile } from "./util.mjs";
 
@@ -17,7 +17,7 @@ export function liveRecallFixture() {
   const delta = composeDelta({ fromAgent: "claude", summary,
     conversation: [{ role: "user", text: `Superseded option code: ${value()}. Do not use that option.` }],
     decisions: [], work: [], next: [],
-  }, PROMPT_DELTA_BYTES);
+  }, deliverableBudget(PROMPT_DELTA_BYTES, null));
   const body = promptBody(delta);
   const prompt = "This is a synthetic context-recall evaluation, not a coding task. Do not use tools.\n" +
     body + "\nReturn only one JSON object with keys project, decision, reason, next, owner. " +

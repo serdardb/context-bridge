@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultState, saveState, loadState, writeCheckpoint, safeCheckpointPath, checkpointsDir, ensureState, statePath } from "../src/state.mjs";
-import { hookBody, fullContextFor, frameHandoffRecords } from "../src/delivery.mjs";
+import { hookBody, fullContextFor, frameHandoffRecords, pendingDeliveryStatus } from "../src/delivery.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE_BIN = path.join(ROOT, "bin", "bridge.mjs");
@@ -65,6 +65,9 @@ test("production hooks link, deliver and finish turns without Git or project-loc
         assert.equal(hook("session-start", null), "");
       }
       const expected = agent === "codex" ? hookBody(content, fullContextFor(project, deltaRel)) : frameHandoffRecords(content);
+      const diagnosis = pendingDeliveryStatus(project, linked.pendingInjection);
+      assert.equal(diagnosis.deliveredBytes, Buffer.byteLength(expected));
+      assert.equal(diagnosis.wouldTrim, agent === "codex", "Claude's raw hook must not report a phantom Codex trim");
       const pendingBeforeFailure = loadState(project).pendingInjection;
       for (const failure of ["output", "state"]) {
         const result = spawnSync(process.execPath, ["--input-type=module", "-e", `

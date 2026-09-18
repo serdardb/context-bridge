@@ -297,7 +297,7 @@ function probeSession(projectDir, agentId, state) {
     try {
       return { ...adapter.parseProbe(ref), linked };
     } catch (err) {
-      return { status: "mismatch", linked, detail: err.message };
+      return { status: err.code === "BRIDGE_TRANSCRIPT_TOO_LARGE" ? "unreadable" : "mismatch", linked, detail: err.message };
     }
   }
   if (!ref?.transcriptPath) return linked ? { status: "missing", linked, detail: "the linked session is gone" } : { status: "none", linked: false };

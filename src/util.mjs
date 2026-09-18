@@ -201,7 +201,10 @@ export function readTranscriptFile(file, { owned = false, encoding = "utf8" } = 
     return owned ? readOwnedFile(file, { encoding, maxBytes }) : readRegularFile(file, encoding, { maxBytes });
   } catch (cause) {
     if (cause.code !== "BRIDGE_FILE_TOO_LARGE") throw cause;
-    throw new BridgeError(`Source transcript exceeds this process's ${maxBytes}-byte read budget (maximum ${MAX_TRANSCRIPT_BYTES}). No context was truncated. Preserve the original and start a smaller source session before retrying.`, {
+    const recovery = maxBytes < MAX_TRANSCRIPT_BYTES
+      ? "Available process heap reduced this budget. Preserve the original; retry in a fresh process with adequate memory before considering a smaller source session."
+      : "Preserve the original and start a smaller source session before retrying.";
+    throw new BridgeError(`Source transcript exceeds this process's ${maxBytes}-byte read budget (maximum ${MAX_TRANSCRIPT_BYTES}). No context was truncated. ${recovery}`, {
       code: "BRIDGE_TRANSCRIPT_TOO_LARGE", cause,
     });
   }
