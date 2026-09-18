@@ -599,6 +599,21 @@ test("closing words move the packed mark, so they are delivered once and only on
     assert.deepEqual(fs.readFileSync(deltaFile), deltaBefore);
     assert.deepEqual(fs.readFileSync(fullFile), fullBefore);
   }
+  const stale = loadState(project);
+  const pendingFile = safeCheckpointPath(project, stale.pendingInjection.deltaFile);
+  const pendingFull = pendingFile.replace(/\.md$/, "-full.md");
+  const beforeDelta = fs.readFileSync(pendingFile), beforeFull = fs.readFileSync(pendingFull);
+  const delivered = loadState(project);
+  commitKnown(delivered, delivered.pendingInjection);
+  delivered.pendingInjection = null;
+  saveState(project, delivered);
+  const acknowledged = loadState(project);
+  appendFinalWords(project, stale, "grok");
+  assert.deepEqual(loadState(project), acknowledged, "a stale launcher must not advance an acknowledged handoff");
+  assert.deepEqual(fs.readFileSync(pendingFile), beforeDelta);
+  assert.deepEqual(fs.readFileSync(pendingFull), beforeFull);
+  // Restore the fixture's pending delivery for the stable-source success path.
+  saveState(project, stale);
   appendFinalWords(project, loadState(project), "grok");
 
   const withClosing = loadState(project);

@@ -645,7 +645,21 @@ function commitDeliveryOwned(projectDir, inj) {
 export function appendFinalWords(projectDir, s, agent) {
   const inj = s.pendingInjection;
   if (!inj || inj.agent === agent) return;
-  return withProjectRuntimeLock(projectDir, () => appendFinalWordsOwned(projectDir, s, agent));
+  return withProjectRuntimeLock(projectDir, () => {
+    // The caller read state before taking ownership. Delivery or a replacement
+    // handoff may have won in between; never append or acknowledge that old view.
+    const current = loadPinned(projectDir);
+    const source = state => {
+      const slot = agentSlot(state, agent);
+      return { id: slot.id, transcriptPath: slot.transcriptPath, mark: slot.mark };
+    };
+    if (!current || !isDeepStrictEqual(current.pendingInjection, inj) ||
+        !isDeepStrictEqual(source(current), source(s))) {
+      log(`${WARN} Pending handoff changed before closing words could be added; nothing was appended.`);
+      return;
+    }
+    return appendFinalWordsOwned(projectDir, current, agent);
+  });
 }
 
 function appendExistingCheckpoint(file, contentForSize) {
