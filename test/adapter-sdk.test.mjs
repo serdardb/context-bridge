@@ -79,6 +79,11 @@ test("plugin loading refuses implicit paths, incompatible manifests and reserved
   assert.notEqual(reserved.status, 0);
   assert.match(reserved.stderr, /reserved agent name/);
   assert.equal(fs.existsSync(marker), true, "an explicitly trusted module executes before its exports can be checked");
+  fs.writeFileSync(plugin, "export default {apiVersion:1, adapter:{id:'example'}};");
+  const malformed = run([cli, "adapters"], dir, { CONTEXT_BRIDGE_ADAPTERS: manifest });
+  assert.equal(malformed.status, 1);
+  assert.match(malformed.stderr, /Adapter plugins: module exports an invalid adapter contract/);
+  assert.doesNotMatch(malformed.stderr, /\bat .*\.mjs|TypeError:|file:\/\//);
   const relative = run([cli, "adapters"], dir, { CONTEXT_BRIDGE_ADAPTERS: "plugins.json" });
   assert.match(relative.stderr, /absolute manifest path/);
 });

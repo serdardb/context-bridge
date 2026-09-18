@@ -19,8 +19,8 @@ const RESERVED = new Set(["doctor", "verify", "eval", "release", "storage", "pro
 // discover plugins from a project, package dependency or remote URL implicitly.
 export async function loadAdapterPlugins(manifestPath, existingIds = []) {
   if (!manifestPath) return [];
-  const fail = (message) => {
-    const error = new Error(`Adapter plugins: ${message}`);
+  const fail = (message, cause) => {
+    const error = new Error(`Adapter plugins: ${message}`, { cause });
     error.expected = true;
     throw error;
   };
@@ -51,7 +51,9 @@ export async function loadAdapterPlugins(manifestPath, existingIds = []) {
     try { plugin = (await import(pathToFileURL(file).href)).default; }
     catch { fail("module failed to load; inspect the trusted plugin implementation"); }
     if (!plugin || plugin.apiVersion !== ADAPTER_API_VERSION) fail("module must default-export defineAdapter(adapter) for API v1");
-    const adapter = validateAdapter(plugin.adapter, plugin.apiVersion);
+    let adapter;
+    try { adapter = validateAdapter(plugin.adapter, plugin.apiVersion); }
+    catch (error) { fail("module exports an invalid adapter contract; inspect the trusted plugin implementation", error); }
     if (ids.has(adapter.id) || RESERVED.has(adapter.id)) fail(`duplicate or reserved agent name '${adapter.id}'`);
     ids.add(adapter.id);
     adapters.push(adapter);
