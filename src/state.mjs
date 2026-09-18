@@ -1080,12 +1080,20 @@ export function knownMark(s, target, source) {
   return s.knownBy?.[target]?.[source] ?? null;
 }
 
+/** An unfinished append plan must survive delivery and session changes. */
+export function requireClosingComplete(injection) {
+  if (injection?.closing) throw new BridgeError("Closing evidence is unfinished. Restart bridge to recover it before delivery or another handoff.", {
+    code: "BRIDGE_CLOSING_PENDING", nextCommand: "bridge",
+  });
+}
+
 /**
  * Commit what a finalised delta contained into the matrix. Called wherever a
  * delta becomes final — after closing words are appended, or when it is
  * consumed — and idempotent, so calling it twice is harmless.
  */
 export function commitKnown(s, injection) {
+  requireClosingComplete(injection);
   if (!injection?.agent || !injection.sources) return false;
   if (!s.knownBy) s.knownBy = {};
   const target = (s.knownBy[injection.agent] ??= {});
@@ -1110,6 +1118,7 @@ export function commitKnown(s, injection) {
  * changed, false if the agent was not linked here.
  */
 export function unlinkAgent(s, agentId) {
+  requireClosingComplete(s.pendingInjection);
   let changed = false;
   const slot = s.agents?.[agentId];
   // Reset on ANY agent-owned metadata, not just id/transcriptPath/mark. A slot also

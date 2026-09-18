@@ -6,10 +6,10 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { handoff } from "../src/handoff.mjs";
-import { appendFinalWords } from "../src/launcher.mjs";
+import { appendFinalWords, buildCommand } from "../src/launcher.mjs";
 import { publication } from "../src/publication.mjs";
 import { recoverPreparations } from "../src/preparation.mjs";
-import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject, safeCheckpointPath, checkpointsDir } from "../src/state.mjs";
+import { defaultState, saveState, loadState, knownMark, commitKnown, ensureState, bridgeDir, statePath, mutateState, mutateProject, safeCheckpointPath, checkpointsDir, unlinkAgent } from "../src/state.mjs";
 
 const BRIDGE_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
 
@@ -627,6 +627,76 @@ test("closing words move the packed mark, so they are delivered once and only on
   handoff(project, "codex", { from: "grok", checkTarget: () => {} });
   const second = fs.readFileSync(safeCheckpointPath(project, loadState(project).pendingInjection.deltaFile), "utf8");
   assert.doesNotMatch(second, /grok's closing verdict/, "the matrix moved with the closing words");
+});
+
+test("closing recovery completes interrupted append prefixes without duplicate evidence", () => {
+  for (const stage of ["planned", "partial", "full", "delta", "committed"]) {
+    const { project, grokChat } = fixture();
+    handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+    const pending = loadState(project);
+    pending.pendingInjection.via = "hook";
+    saveState(project, pending);
+    const delta = safeCheckpointPath(project, pending.pendingInjection.deltaFile);
+    const full = delta.replace(/\.md$/, "-full.md");
+    const marker = "RECOVER_CLOSING_ONCE";
+    fs.appendFileSync(grokChat, JSON.stringify({ type: "assistant", content: marker }) + "\n");
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      import { appendFinalWords } from ${JSON.stringify(new URL("../src/launcher.mjs", import.meta.url).href)};
+      import { loadState } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+      const stage = ${JSON.stringify(stage)};
+      const append = fs.appendFileSync, rename = fs.renameSync;
+      let appends = 0, states = 0;
+      fs.appendFileSync = (fd, bytes) => {
+        appends++;
+        if (stage === 'partial' && appends === 1) { append(fd, bytes.subarray(0, 7)); process.exit(79); }
+        append(fd, bytes);
+        if ((stage === 'full' && appends === 1) || (stage === 'delta' && appends === 2)) process.exit(79);
+      };
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (to === ${JSON.stringify(statePath(project))}) {
+          states++;
+          if ((stage === 'planned' && states === 1) || (stage === 'committed' && states === 2)) process.exit(79);
+        }
+      };
+      appendFinalWords(${JSON.stringify(project)}, loadState(${JSON.stringify(project)}), 'grok');
+    `], { encoding: "utf8", env: process.env, timeout: 10000 });
+    assert.equal(child.status, 79, child.stderr);
+    const interrupted = loadState(project);
+    if (stage !== "committed") {
+      assert.ok(interrupted.pendingInjection.closing);
+      assert.throws(() => commitKnown(interrupted, interrupted.pendingInjection), { code: "BRIDGE_CLOSING_PENDING" });
+      assert.throws(() => unlinkAgent(interrupted, "grok"), { code: "BRIDGE_CLOSING_PENDING" });
+      assert.throws(() => buildCommand(project, interrupted, "codex"), { code: "BRIDGE_CLOSING_PENDING" });
+      assert.throws(() => handoff(project, "codex", { from: "grok", checkTarget: () => {} }), { code: "BRIDGE_CLOSING_PENDING" });
+      const hook = spawnSync(process.execPath, [BRIDGE_BIN, "internal-hook", "session-start", "--agent", "codex"], {
+        cwd: project, encoding: "utf8", env: { ...process.env, CLAUDECODE: "", CONTEXT_BRIDGE_AGENT: "codex" },
+        input: JSON.stringify({ cwd: project, source: "resume", session_id: interrupted.agents.codex.id }), timeout: 10000,
+      });
+      assert.equal(hook.status, 1, hook.stderr);
+      assert.equal(hook.stdout, "");
+      assert.deepEqual(loadState(project), interrupted);
+      const retained = [delta, full].map(file => fs.readFileSync(file));
+      const clean = spawnSync(process.execPath, [BRIDGE_BIN, "clean", "--all"], {
+        cwd: project, encoding: "utf8", env: { ...process.env, PATH: "" }, timeout: 10000,
+      });
+      assert.equal(clean.status, 0, clean.stderr);
+      assert.deepEqual(loadState(project), interrupted);
+      [delta, full].forEach((file, i) => assert.deepEqual(fs.readFileSync(file), retained[i]));
+      if (stage === "partial") {
+        const bytes = fs.readFileSync(full);
+        fs.appendFileSync(full, "UNPLANNED_CHANGE");
+        assert.throws(() => appendFinalWords(project, loadState(project), "grok"), { code: "BRIDGE_CHECKPOINT_APPEND_FAILED" });
+        assert.deepEqual(loadState(project), interrupted);
+        assert.ok(fs.readFileSync(full, "utf8").endsWith("UNPLANNED_CHANGE"));
+        fs.writeFileSync(full, bytes);
+      }
+    }
+    appendFinalWords(project, loadState(project), "grok");
+    assert.equal(loadState(project).pendingInjection.closing, undefined);
+    for (const file of [delta, full]) assert.equal(fs.readFileSync(file, "utf8").split(marker).length - 1, 1, stage);
+  }
 });
 
 test("the official import seeds the matrix, so the return does not hand Claude its own words", async () => {

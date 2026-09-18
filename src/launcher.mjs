@@ -27,6 +27,7 @@ import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive, readOwnedFile, tra
 import { messageBlock } from "./delta.mjs";
 import { laneWorkspace } from "./worktree.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
+import { appendClosing, recoverClosing, requireClosingComplete } from "./closing.mjs";
 
 const POLL_MS = 500;
 const IDLE_DEBOUNCE_MS = 1000;
@@ -104,6 +105,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
   for (;;) {
     s = ensureState(projectDir);
     s.activeLane = launcherLane; // this launcher drives its own lane, not the on-disk default
+    if (s.pendingInjection?.closing) { recoverClosing(projectDir, launcherLane); s = loadPinned(projectDir); }
     // A `lane new --seed` leaves an unbound seed injection for whichever agent opens
     // the lane first. Bind it to this agent under the lock (bindSeed re-checks inside
     // it, so two launchers racing one seeded lane give the seed to exactly one). If
@@ -486,6 +488,7 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   const slot = agentSlot(s, agent);
   const inj = s.pendingInjection;
   const seeding = !slot.id && inj?.agent === agent && inj.id == null;
+  requireClosingComplete(inj);
   if (!slot.id && !seeding && adapter.injection === "prompt") {
     // Nothing to resume and no context waiting: starting blind would silently
     // drop the user into an empty session that the bridge does not track.
@@ -622,6 +625,7 @@ function commitDelivery(projectDir, inj) {
 }
 
 function commitDeliveryOwned(projectDir, inj) {
+  requireClosingComplete(loadPinned(projectDir)?.pendingInjection);
   const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
   if (!deltaPath) return; // a deltaFile that escapes .bridge is never renamed
   try {
@@ -649,6 +653,10 @@ export function appendFinalWords(projectDir, s, agent) {
     // The caller read state before taking ownership. Delivery or a replacement
     // handoff may have won in between; never append or acknowledge that old view.
     const current = loadPinned(projectDir);
+    if (current?.pendingInjection?.closing) {
+      recoverClosing(projectDir, launcherLane);
+      return;
+    }
     const source = state => {
       const slot = agentSlot(state, agent);
       return { id: slot.id, transcriptPath: slot.transcriptPath, mark: slot.mark };
@@ -660,27 +668,6 @@ export function appendFinalWords(projectDir, s, agent) {
     }
     return appendFinalWordsOwned(projectDir, current, agent);
   });
-}
-
-function appendExistingCheckpoint(file, contentForSize) {
-  let fd;
-  try {
-    const before = fs.lstatSync(file);
-    if (!before.isFile() || before.nlink !== 1) throw new Error("Unsafe checkpoint leaf");
-    fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) {
-      throw new Error("Checkpoint changed before append");
-    }
-    fs.appendFileSync(fd, contentForSize(opened.size));
-    // State publication below is durable; flush these bytes before it can
-    // acknowledge them. A failed flush may still leave appended bytes behind.
-    fs.fsyncSync(fd);
-  } catch (cause) {
-    throw new BridgeError("Closing words could not be added safely. Checkpoints may contain partially completed additions; inspect them before retrying. Delivery progress was not advanced.", {
-      code: "BRIDGE_CHECKPOINT_APPEND_FAILED", operation: "append closing words", cause,
-    });
-  } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
 function appendFinalWordsOwned(projectDir, s, agent) {
@@ -721,7 +708,6 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   // last answer is the substantive one often enough that appending it at all was
   // a deliberate fix, and clipping it undid most of that fix in silence.
   const verbatim = tail.messages.map((m) => messageBlock(m, adapter.displayName)).join("\n\n");
-  const fullPath = deltaPath.replace(new RegExp(`${CHECKPOINT_KINDS.delta.replace(".", "\\.")}$`), CHECKPOINT_KINDS.fullContext);
 
   // The full context checkpoint takes them first and always, because it has no
   // budget over it and because the delta may not be able to hold them.
@@ -733,7 +719,6 @@ function appendFinalWordsOwned(projectDir, s, agent) {
       code: "BRIDGE_CHECKPOINT_APPEND_FAILED", operation: "append closing words", cause,
     });
   }
-  appendExistingCheckpoint(fullPath, () => `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`);
 
   // Whether the delta can hold them is a real question and was never asked.
   //
@@ -757,15 +742,9 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   // Guaranteed to fit: the handoff reserved exactly this string before it
   // composed anything, using the same function.
   const pointer = closingWordsNotice(adapter.displayName);
-  appendExistingCheckpoint(deltaPath, used => used + Buffer.byteLength(block) <= road ? block : pointer);
-  // The closing words are now part of the delta destined for the other agent,
-  // so the packed mark has to move with them: committing the pre-handoff mark
-  // would either resend them later or, worse, skip them entirely.
-  mutateState(projectDir, launcherLane, (st) => {
-    agentSlot(st, agent).set({ mark: finalMark });
-    const stInj = st.pendingInjection;
-    if (stInj?.sources) stInj.sources[agent] = finalMark;
-  });
+  appendClosing(projectDir, launcherLane, s, agent, finalMark,
+    `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`,
+    used => used + Buffer.byteLength(block) <= road ? block : pointer);
   log(dim(`→ Added ${tail.messages.length} closing message(s) from ${agent} to the handoff.`));
 }
 

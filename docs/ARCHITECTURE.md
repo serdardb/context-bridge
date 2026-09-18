@@ -394,11 +394,22 @@ Checkpoint content readers in hooks, prompt construction and search reject
 linked/shared leaves using descriptor-verified reads in addition to directory
 containment. Closing words append through a verified descriptor to existing
 single-link regular files; missing full evidence is not recreated as a fragment.
-An append failure stops the switch with an actionable error and leaves progress
-unadvanced. Full-context and delta appends are not a multi-file transaction:
-interruption after the first append can repeat closing words on retry. These
-checks do not lock unrelated filesystem writers or prove hostile parent-swap
-resistance.
+Before either append, the pending injection stores a private closing plan in
+the same atomic state publication: original byte lengths/hashes, exact additions,
+source identity and old/new marks. Recovery accepts only the verified original,
+the complete result or an exact prefix of its planned addition. It completes the
+remaining bytes and flushes both descriptors before clearing the plan and
+advancing the mark in one state write. It never reconstructs a failed addition
+from a newer vendor transcript. Missing, linked or independently modified evidence
+is retained with an error, not repaired speculatively.
+
+An unfinished plan blocks hook/prompt delivery, replacement handoffs and unlink;
+ordinary pending-group retention protects its files. Restarting the launcher
+recovers the plan before starting an agent. `status --json` reports
+`closing-recovery-required` without exposing the journal's conversation text.
+Real process-exit acceptance covers plan publication, partial/full appends and
+mark commit. This is recovery among cooperating writers, not protection against
+old binaries, hostile parent swaps or proof of physical power-loss durability.
 
 Handoff collection distinguishes unavailable, partial and readable source sessions
 using each adapter's parser probe. Source limitations appear in the preview,

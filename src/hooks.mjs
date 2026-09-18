@@ -6,6 +6,7 @@ import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeChe
 import { fileExists, nowIso, BridgeError, readOwnedFile } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
 import { hookBody, fullContextFor } from "./delivery.mjs";
+import { requireClosingComplete } from "./closing.mjs";
 
 /**
  * Is this hook running inside an agent that is not Claude?
@@ -217,6 +218,7 @@ function hookSessionStart(projectDir, s, input) {
  * consumers do not acknowledge receipt, so exactly-once is not a valid promise.
  */
 function consumeForHook(projectDir, s, inj, { raw = false } = {}) {
+  requireClosingComplete(inj);
   const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
   if (!deltaPath) return null; // a deltaFile that escapes .bridge is never ours to deliver
   let delta, alreadyRenamed = false;

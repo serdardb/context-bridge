@@ -30,6 +30,7 @@ import {
 import { pruneCheckpoints, supersedePending } from "./clean.mjs";
 import { hookDeliveryEligible, deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { buildManifest, writeManifest } from "./audit.mjs";
+import { requireClosingComplete } from "./closing.mjs";
 import { beginPreparation, finishPreparation, recoverPreparations } from "./preparation.mjs";
 import { nowIso, tryExec, OK, WARN, BridgeError, fileExists, processAlive, log, debugLog, transcriptStamp } from "./util.mjs";
 
@@ -491,6 +492,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
       ? process.env.CONTEXT_BRIDGE_LANE
       : s.activeLane;
   s.activeLane = lane;
+  requireClosingComplete(s.pendingInjection);
   const originalLane = structuredClone(s.lanes[lane]);
   const lines = [];
   const sourceId = from ?? detectSource(s, target);

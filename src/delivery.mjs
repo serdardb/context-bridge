@@ -100,6 +100,7 @@ export function pendingDeliveryStatus(projectDir, injection) {
   const budgetBytes = via === "hook" ? HOOK_DELTA_BYTES : via === "prompt" ? PROMPT_DELTA_BYTES : null;
   const result = { via, budgetBytes, deltaStatus: "missing", deltaBytes: null,
     deliveredBytes: null, wouldTrim: null, fullContextAvailable: false };
+  if (injection.closing) return { ...result, deltaStatus: "closing-recovery-required" };
   if (!injection.deltaFile) return result;
   const file = safeCheckpointPath(projectDir, injection.deltaFile);
   if (!file) return { ...result, deltaStatus: "unsafe" };

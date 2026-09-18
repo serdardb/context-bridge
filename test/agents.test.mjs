@@ -575,7 +575,11 @@ test("closing words written after the handoff still reach the other agent", asyn
     try { assert.throws(() => appendFinalWords(project, loadState(project), "grok"), { code: "BRIDGE_CHECKPOINT_APPEND_FAILED" }); }
     finally { fs.fsyncSync = originalSync; }
     assert.equal(reached, true, "both evidence files must flush before acknowledgement");
-    assert.deepEqual(loadState(project), before);
+    const failed = loadState(project);
+    assert.ok(failed.pendingInjection.closing, "failed flush retains the recovery plan");
+    delete failed.pendingInjection.closing;
+    failed.updatedAt = before.updatedAt;
+    assert.deepEqual(failed, before, "only recovery bookkeeping may change, not delivery progress");
     if (target === fullFile) assert.deepEqual(fs.readFileSync(deltaFile), deltaBytes);
     // A flush error does not undo bytes already appended. Reset only the fixture.
     fs.writeFileSync(deltaFile, deltaBytes);
