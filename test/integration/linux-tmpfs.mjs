@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -30,6 +30,23 @@ const run = (...args) => {
 let client;
 try {
   fs.mkdirSync(project);
+  const actualBirthtime = fs.statSync(project, { bigint: true }).birthtimeNs;
+  const simulatedMissingBirthtime = process.argv.includes("--simulate-missing-birthtime");
+  if (simulatedMissingBirthtime) {
+    // New kernels supply tmpfs birthtime. Hide only that metadata in this fixture;
+    // the fallback's native filesystem/handle calls still run without mocks.
+    const preload = path.join(root, "missing-birthtime.mjs");
+    fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path';
+const original = fs.statSync, root = ${JSON.stringify(root)};
+fs.statSync = (file, ...args) => {
+  const info = original(file, ...args), resolved = path.resolve(String(file));
+  if (args[0]?.bigint && info.isDirectory() && (resolved === root || resolved.startsWith(root + path.sep))) info.birthtimeNs = 0n;
+  return info;
+};\n`);
+    const url = pathToFileURL(preload).href;
+    await import(url);
+    process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ""} --import=${url}`.trim();
+  }
   assert.equal(fs.statSync(project, { bigint: true }).birthtimeNs, 0n);
   assert.match(directoryIdentity(project), /^v3:linux-tmpfs:/);
   assert.equal(JSON.parse(run("status", "--json")).state, "absent");
@@ -89,7 +106,8 @@ try {
   assert.equal(loadState(copied).tmpfsSecret, "retained original only");
   assert.deepEqual(fs.readdirSync(copied), []);
   console.log(JSON.stringify({ passed: true, platform: process.platform, uid: process.getuid(),
-    birthtime: false, cli: true, mcp: true, watch: true, replacementRefused: true,
+    birthtime: false, actualBirthtimeAvailable: actualBirthtime > 0n, simulatedMissingBirthtime,
+    cli: true, mcp: true, watch: true, replacementRefused: true,
     identityRaceRefused: true, crossFilesystemAdoption: true, exclusivePublication: true,
     gitRequired: false, nativeAgents: false, node: process.version, arch: process.arch }));
 } finally {

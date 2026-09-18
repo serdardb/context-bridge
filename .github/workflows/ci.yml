@@ -25,9 +25,9 @@ jobs:
         run: npm run check
       - name: Tests
         run: npm test
-      - name: Native Linux tmpfs identity and adoption
+      - name: Native Linux tmpfs fallback with missing-metadata simulation
         if: runner.os == 'Linux' && matrix.node == 24
-        run: node test/integration/linux-tmpfs.mjs
+        run: node test/integration/linux-tmpfs.mjs --simulate-missing-birthtime
       - name: Package hygiene (tarball allow-list)
         run: npm pack --dry-run
 
