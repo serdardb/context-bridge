@@ -106,6 +106,15 @@ For a container without OpenSSL, an optional absolute fixture directory argument
 may supply synthetic `cert.pem` and `key.pem` (SAN IP 127.0.0.1). Never use real
 service keys. This is local TLS behavior, not public deployment or load testing.
 
+Run `node test/integration/remote-store.mjs` for cross-process sharing quota and
+server interruption acceptance. Two real servers share one private store; a
+barrier before temporary-file creation forces observable kernel contention.
+Only one of two objects fits the quota. Separate workers then exit at four
+write/flush/publication boundaries; restart must never serve a partial object
+or renew an already-published object's expiry. This uses synthetic local data,
+no provider or Git, and runs outside `npm test`. It does not establish distributed
+quota, physical power-loss durability or protection against hostile parent swaps.
+
 New fixtures should register their project before creating checkpoint files,
 use `checkpointsDir` / `safeCheckpointPath` for physical storage, and retain
 logical checkpoint references in state. Explicit migration and hostile legacy
