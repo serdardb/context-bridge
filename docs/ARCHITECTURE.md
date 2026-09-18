@@ -705,8 +705,11 @@ unavailability. No repair is attempted and private filesystem errors are not
 included in the public message. Worktree status separately marks unavailable
 child workspaces rather than claiming their state was read.
 It emits snapshot/change/unavailable/recovered JSON events and pins the
-selected directory's creation fingerprint through the shared identity helper. MCP applies the
-same creation-instance check before each tool call. A recreated directory is
+selected directory's creation fingerprint through the shared identity helper.
+Both watch and MCP check before and after reading, withholding the candidate
+response when the identity changed during the read. This is bounded observation,
+not an atomic snapshot: a swap restored between checks or a change after the last
+check is not excluded. A recreated directory is
 not accepted merely because its inode was recycled. Both long-lived readers
 refuse startup without a supported identity; the Linux tmpfs fallback is shared
 with storage. Ordinary one-shot absent-state inspection remains available.
@@ -719,6 +722,10 @@ Ordinary lanes separate context, not working files. Optional worktree-backed
 lanes use Git worktrees for file isolation, starting from committed HEAD;
 uncommitted changes are not copied. Attached worktrees have independent
 runtime stores. Removing a lane does not delete its worktree or source files.
+Only an absent workspace-link field denotes an ordinary lane. A present but
+malformed link refuses launcher/handoff routing rather than falling back to the
+parent project. Status marks it unavailable. Seed preparation refuses parent
+workspace placeholders; seed inside the actual worktree, where its evidence lives.
 Only this opt-in workflow requires Git, not ordinary bridge operation.
 
 ## Read-Only MCP
@@ -738,10 +745,13 @@ opt-in Aider/Pi candidates.
 
 ## Security and privacy
 
-- Local only: no bridge SaaS, accounts or telemetry. The optional MCP server
-  uses stdio, not a network listener.
-- No API keys read, requested or stored. Auth checks test for existence and
-  never print secret values.
+- Local-first: ordinary state, handoff and artifact operations need no Bridge
+  service or account. There is no automatic telemetry or upload. MCP uses stdio;
+  the separate, explicitly started sharing service opens a loopback listener.
+- Vendor credentials are not requested or copied by handoff. Optional sharing
+  explicitly reads an operator-supplied bearer-token file; encryption commands
+  create or read separate local key files. These secrets are not printed in
+  receipts or included in the transmitted ciphertext envelope.
 - State holds references, timestamps and bounded delta files. Transcripts stay
   where the vendors put them.
 - Full-context checkpoints and audit manifests are local evidence, not canonical
@@ -754,7 +764,9 @@ opt-in Aider/Pi candidates.
   personal paths and project data. The bridge's opt-in debug logger redacts these
   classes, but stored handoff artifacts preserve the evidence needed for local
   recovery and are not a redaction boundary.
-- Deltas travel only inside the CLIs' own subscription-authenticated calls.
+- Ordinary agent delivery uses the agents' native context paths. Explicit
+  `share send --apply` separately transmits a sealed portable artifact to the
+  selected endpoint; it never automatically sends a live handoff or decryption key.
 - Global CLI configuration is never mutated without confirmation.
 
 ## Known limits
@@ -796,7 +808,9 @@ physical power-loss acceptance are not implied by POSIX focused tests.
 The encryption key never appears in the envelope or receipt (only its file path
 does). Senders must not share the bundle as a whole. Separate-channel key transfer,
 recipient trust and access to an already decrypted copy remain user concerns.
-No remote store, revocation service or automatic import is implemented here.
+Sealing itself creates no remote store, revocation service or automatic import.
+The separate transport below can store ciphertext; deletion there cannot revoke
+copies already downloaded or decrypted by a recipient.
 
 ## Remote Artifact Transport
 
