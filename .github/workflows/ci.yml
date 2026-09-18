@@ -25,6 +25,9 @@ jobs:
         run: npm run check
       - name: Tests
         run: npm test
+      - name: Native Linux tmpfs identity and adoption
+        if: runner.os == 'Linux' && matrix.node == 24
+        run: node test/integration/linux-tmpfs.mjs
       - name: Package hygiene (tarball allow-list)
         run: npm pack --dry-run
 
