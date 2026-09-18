@@ -575,6 +575,30 @@ test("closing words move the packed mark, so they are delivered once and only on
   handoff(project, "codex", { from: "grok", checkTarget: () => {} });
   // The turn ends after the handoff, exactly as it does in real use.
   fs.appendFileSync(grokChat, JSON.stringify({ type: "assistant", content: "grok's closing verdict" }) + "\n");
+  for (const changedFile of [grokChat, path.join(path.dirname(grokChat), "events.jsonl")]) {
+    const pending = loadState(project);
+    const deltaFile = safeCheckpointPath(project, pending.pendingInjection.deltaFile);
+    const fullFile = deltaFile.replace(/\.md$/, "-full.md");
+    const deltaBefore = fs.readFileSync(deltaFile), fullBefore = fs.readFileSync(fullFile);
+    const originalRead = fs.readFileSync;
+    let changed = false;
+    fs.readFileSync = (file, ...args) => {
+      const content = originalRead(file, ...args);
+      if (file === grokChat && !changed) {
+        changed = true;
+        fs.appendFileSync(changedFile, JSON.stringify(changedFile === grokChat
+          ? { type: "assistant", content: "Arrived during closing extraction" }
+          : { type: "turn_ended", ts: "2026-07-20T11:00:00.000Z" }) + "\n");
+      }
+      return content;
+    };
+    try { appendFinalWords(project, pending, "grok"); }
+    finally { fs.readFileSync = originalRead; }
+    assert.equal(changed, true);
+    assert.deepEqual(loadState(project), pending, "changing closing sources must not advance delivery progress");
+    assert.deepEqual(fs.readFileSync(deltaFile), deltaBefore);
+    assert.deepEqual(fs.readFileSync(fullFile), fullBefore);
+  }
   appendFinalWords(project, loadState(project), "grok");
 
   const withClosing = loadState(project);

@@ -6,6 +6,7 @@
 // user instead of terminating.
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
 import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, recordLauncher, liveLaunchers, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
@@ -22,7 +23,7 @@ import {
   PROMPT_DELTA_BYTES,
 } from "./delivery.mjs";
 import { bindSeed, unbindSeed } from "./seed.mjs";
-import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive, readOwnedFile, BridgeError } from "./util.mjs";
+import { log, dim, bold, OK, WARN, BAD, nowIso, processAlive, readOwnedFile, transcriptStamp, BridgeError } from "./util.mjs";
 import { messageBlock } from "./delta.mjs";
 import { laneWorkspace } from "./worktree.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
@@ -671,17 +672,22 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   const slot = agentSlot(s, agent);
   if (!adapter || !slot.id) return;
 
-  const ref = adapter.hydrate(projectDir, slot);
+  let ref = adapter.hydrate(projectDir, slot);
   if (!ref) return;
   let tail, finalMark;
   try {
+    const before = transcriptStamp(ref);
     finalMark = adapter.currentMark(ref);
+    if (adapter.snapshotSource) ref = adapter.snapshotSource(ref);
+    if (!ref) throw new Error("Closing source snapshot unavailable");
     if (adapter.parseProbe(ref).status !== "readable") {
       log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
       return;
     }
     tail = adapter.activitySince(ref, slot.mark);
-    if (tail.sourceComplete === false) {
+    // The final mark must describe the same source that supplied the words,
+    // including a separate event stream. Changed sources can be retried later.
+    if (tail.sourceComplete === false || !isDeepStrictEqual(before, transcriptStamp(ref))) {
       log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
       return;
     }
