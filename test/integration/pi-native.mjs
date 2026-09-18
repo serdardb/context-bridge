@@ -13,9 +13,12 @@ if (!cli || !path.isAbsolute(cli) || !fs.statSync(cli).isFile()) throw new Error
 const relocationRoot = process.argv.includes("--cross-device") ? "/dev/shm" : null;
 const bridgeRequested = process.argv.includes("--bridge") || process.argv.includes("--migrate") || Boolean(relocationRoot);
 const interactiveRequested = process.argv.includes("--interactive") || bridgeRequested;
-if (interactiveRequested && (!["darwin", "linux"].includes(process.platform) || !fs.existsSync("/usr/bin/expect"))) {
-  throw new Error("PTY acceptance requires macOS or Linux with /usr/bin/expect; use the default mode for CLI transport only.");
+const windows = process.platform === "win32";
+if (interactiveRequested && (windows ? !process.env.BRIDGE_TEST_PTY_MODULE :
+  !["darwin", "linux"].includes(process.platform) || !fs.existsSync("/usr/bin/expect"))) {
+  throw new Error("PTY acceptance requires expect on POSIX or an isolated BRIDGE_TEST_PTY_MODULE on Windows.");
 }
+if (windows && bridgeRequested) throw new Error("Windows launcher acceptance is separate from native ConPTY continuity.");
 const version = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 15000 });
 assert.equal(version.status, 0, "the supplied native CLI must start");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pi-native-"));
@@ -53,8 +56,8 @@ const sessionFile = path.join(sessionDir, "native-session.jsonl");
 const flags = ["--print", "--provider", "fixture", "--model", "fixture", "--tools", "read", "--no-extensions", "--no-context-files", "--offline"];
 async function execute(args, interactive = false, executable = cli, extraEnv = {}) {
   return await new Promise((resolve, reject) => {
-    const command = interactive ? "/usr/bin/expect" : process.execPath;
-    const commandArgs = interactive ? [fileURLToPath(new URL("pi-native-pty.exp", import.meta.url)), process.execPath, executable, ...args] : [executable, ...args];
+    const command = interactive && !windows ? "/usr/bin/expect" : process.execPath;
+    const commandArgs = interactive ? [fileURLToPath(new URL(windows ? "pi-native-conpty.mjs" : "pi-native-pty.exp", import.meta.url)), process.execPath, executable, ...args] : [executable, ...args];
     const child = spawn(command, commandArgs, { cwd: project,
       env: { ...process.env, TERM: "xterm-256color", PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", ...extraEnv }, stdio: [interactive ? "pipe" : "ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "";

@@ -68,8 +68,12 @@ jobs:
         run: npm ci --ignore-scripts --engine-strict
       - name: Install pinned experimental vendor in a disposable prefix
         run: npm install --prefix "$env:RUNNER_TEMP/bridge-native-pi" --ignore-scripts --engine-strict --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
-      - name: Actual native CLI session continuity with a local fixture provider
-        run: node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+      - name: Install pinned test-only ConPTY driver outside the product
+        run: npm install --prefix "$env:RUNNER_TEMP/bridge-test-pty" --no-audit --no-fund node-pty@1.1.0
+      - name: Actual native CLI and terminal continuity with a local fixture provider
+        run: |
+          $env:BRIDGE_TEST_PTY_MODULE = "$env:RUNNER_TEMP/bridge-test-pty/node_modules/node-pty/lib/index.js"
+          node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" --interactive
 
   native-aider-windows:
     name: native Aider 0.86.2 acceptance · windows-latest
