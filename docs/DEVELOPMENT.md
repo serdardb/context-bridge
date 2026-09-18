@@ -86,6 +86,15 @@ preservation and an idempotent second retry. It does not run in `npm test` and
 does not prove power-loss durability, arbitrary partial writes or all concurrent
 writer schedules. The core suite separately covers process-exit boundaries.
 
+Run `node test/integration/sealed-crash.mjs` for the optional encrypted-artifact
+interruption matrix. Independent child processes exit after every observed
+write, flush and exclusive publication call in seal/open. A visible bundle must
+contain both ciphertext and its matching key; opening must return exact original
+artifact bytes. Retrying never replaces an existing key or output. Interrupted
+staging stays private and only the fixture's temporary root is removed. This
+uses no provider or Git and runs outside `npm test`. It proves process-exit
+behavior, not physical power loss, partial syscalls or hostile parent swaps.
+
 New fixtures should register their project before creating checkpoint files,
 use `checkpointsDir` / `safeCheckpointPath` for physical storage, and retain
 logical checkpoint references in state. Explicit migration and hostile legacy
