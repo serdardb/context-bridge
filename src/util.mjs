@@ -290,7 +290,7 @@ export function truncateMiddle(s, maxBytes) {
   return `${sliceUtf8Start(s, headBudget)}${marker}${sliceUtf8End(s, tailBudget)}`;
 }
 
-function sliceUtf8Start(s, maxBytes) {
+export function sliceUtf8Start(s, maxBytes) {
   let out = "";
   let used = 0;
   for (const ch of s) {

@@ -454,6 +454,14 @@ test("a delta too large for a command line is trimmed, not handed to spawn whole
   assert.ok(Buffer.byteLength(body) <= PROMPT_DELTA_BYTES);
   assert.match(body, /x-full\.md/, "what was cut has to stay reachable");
   assert.equal(spawnSync("/bin/echo", [body]).error, undefined, "and the result has to be spawnable");
+  const boundary = promptBody("x".repeat(PROMPT_DELTA_BYTES), null);
+  assert.equal(Buffer.byteLength(boundary), PROMPT_DELTA_BYTES);
+  assert.equal(spawnSync("/bin/echo", [boundary]).error, undefined, "the exact ceiling must include room for argv NUL");
+  for (const character of ["\u00fc", "\u20ac", "\u{1f600}"]) {
+    const multibyte = promptBody(character.repeat(PROMPT_DELTA_BYTES), ".bridge/checkpoints/x-full.md");
+    assert.ok(Buffer.byteLength(multibyte) <= PROMPT_DELTA_BYTES, "UTF-8 truncation must not inflate the byte budget");
+    assert.ok(!multibyte.includes("\ufffd"), "truncation must not create a replacement character");
+  }
 });
 
 // fullContextFor and deltaWasConsumed both derive a path from a state-provided

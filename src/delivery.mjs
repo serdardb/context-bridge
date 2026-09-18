@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, safeCheckpointPath, checkpointReference } from "./state.mjs";
 import { adapterFor } from "./agents/index.mjs";
-import { readOwnedFile } from "./util.mjs";
+import { readOwnedFile, sliceUtf8Start } from "./util.mjs";
 
 // Metadata-only checks never follow links and distinguish absence from refusal.
 function ownedLeafExists(file) {
@@ -50,11 +50,12 @@ export const HOOK_DELTA_BYTES = 8 * 1024;
  * measured, and `spawn` refused it outright with E2BIG. The agent never started,
  * so the failure arrived as a launch error rather than as anything about context.
  *
- * 128KB is far below the limit even with a large environment, and far above the
- * bounded delta an ordinary switch produces. Whatever does not fit stays in the
- * full context checkpoint, whose path travels with the text.
+ * Linux with 4KiB pages also limits each argument to 128KiB INCLUDING its NUL
+ * terminator. Reserve that byte even on platforms with a larger allowance.
+ * This does not guarantee room in an arbitrarily large inherited environment.
+ * Whatever does not fit stays in the full context checkpoint.
  */
-export const PROMPT_DELTA_BYTES = 128 * 1024;
+export const PROMPT_DELTA_BYTES = 128 * 1024 - 1;
 
 /** Roughly a month. A stamp older than this says nothing about today. */
 const HOOK_SEEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -182,7 +183,7 @@ function fit(delta, fullContextRel, limit, markerText) {
   const marker = `\n\n${markerText}`;
   const budget = limit - Buffer.byteLength(pointer) - Buffer.byteLength(marker);
   // Cut on a line boundary so the text does not end mid-sentence.
-  let cut = Buffer.from(delta).subarray(0, budget).toString("utf8");
+  let cut = sliceUtf8Start(delta, budget);
   const lastBreak = cut.lastIndexOf("\n");
   if (lastBreak > budget / 2) cut = cut.slice(0, lastBreak);
   return `${cut}${marker}${pointer}`;
