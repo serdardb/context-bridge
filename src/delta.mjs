@@ -109,12 +109,13 @@ export function codexActivitySince(rolloutPath, sinceIso) {
 
 /** True when the rollout contains a task_complete event after sinceIso (idle signal). */
 export function rolloutIdleAfter(rolloutPath, sinceIso) {
+  let idle = false;
   try {
-    for (const r of readJsonl(rolloutPath)) {
-      if (r.timestamp > sinceIso && r.type === "event_msg" && r.payload?.type === "task_complete") return true;
+    for (const r of readJsonl(rolloutPath, true)) {
+      if (r.timestamp > sinceIso && r.type === "event_msg" && r.payload?.type === "task_complete") idle = true;
     }
-  } catch {}
-  return false;
+  } catch { return false; }
+  return idle;
 }
 
 /** Git work truth for the project. */

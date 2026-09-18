@@ -56,6 +56,20 @@ test("large JSONL sources stream without losing marks, late outcomes or read fai
     reader.next();
     fs.appendFileSync(file, "{}\n");
     assert.throws(() => reader.next(), { code: "BRIDGE_SOURCE_CHANGED" });
+    fs.writeFileSync(file, JSON.stringify({ timestamp: "2026-01-02", type: "event_msg", payload: { type: "task_complete" } }) + "\n");
+    const read = fs.readSync;
+    let changed = false;
+    fs.readSync = (...args) => {
+      const count = read(...args);
+      if (!changed && count && fs.fstatSync(args[0]).ino === fs.statSync(file).ino) {
+        changed = true;
+        fs.appendFileSync(file, "{}\n");
+      }
+      return count;
+    };
+    try {
+      assert.equal(rolloutIdleAfter(file, "2026-01-01"), false, "a completion row cannot bypass final source verification");
+    } finally { fs.readSync = read; }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -61,7 +61,7 @@ export function probeJsonl(filePath, isKnownRow) {
     }
   } } catch (error) {
     if (error.code === "ENOENT" && rows === 0) return gone;
-    return { ...gone, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
+    return { ...gone, rows, known, malformed, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
   }
 
   // An empty file is a session that has not spoken yet, not a broken parser.

@@ -203,7 +203,7 @@ export function transcriptRetentionBudget() {
   let bytes = 0;
   return (value) => {
     bytes += Buffer.byteLength(JSON.stringify(value));
-    if (bytes > limit) throw new BridgeError("Extracted transcript context exceeds the retained-context memory budget. No context was truncated.", {
+    if (bytes > limit) throw new BridgeError("Extracted transcript context exceeds this extractor's retained-data byte budget. No context was truncated.", {
       code: "BRIDGE_TRANSCRIPT_TOO_LARGE",
     });
   };
@@ -223,7 +223,10 @@ export function* readTranscriptLines(file) {
     let parts = [], length = 0;
     const append = (part) => {
       length += part.length;
-      if (length > limit) throw new BridgeError(`A transcript record exceeds this process's ${limit}-byte read budget. No context was truncated.`, { code: "BRIDGE_TRANSCRIPT_TOO_LARGE" });
+      if (length > limit) throw new BridgeError(`A transcript record exceeds this process's ${limit}-byte read budget. No context was truncated. ` +
+        (limit < MAX_TRANSCRIPT_BYTES
+          ? "Available process heap reduced this budget. Preserve the original and retry in a fresh process with adequate memory."
+          : "Preserve the original; this reader cannot safely parse that record."), { code: "BRIDGE_TRANSCRIPT_TOO_LARGE" });
       if (part.length) parts.push(Buffer.from(part));
     };
     while (remaining > 0n) {

@@ -896,8 +896,9 @@ opt-in Aider/Pi candidates.
 Claude/Codex JSONL extraction, marks, audit observation and JSONL shape probes
 stream regular files in bounded chunks. Each record is admitted before parsing,
 at most 16 MiB and at most one sixty-fourth of the available V8 heap. Retained
-conversation/audit inputs have a separate 16 MiB maximum (also reduced for heap
-headroom). Parsed-prefix hashes retain their existing format; attested extraction
+conversation/audit inputs have a separate per-extractor 16 MiB wire-byte maximum
+(also reduced for heap headroom), not a shared per-handoff heap allocation limit.
+Parsed-prefix hashes retain their existing format; attested extraction
 verifies the prefix and rechecks the parsed source across its two passes.
 Source changes refuse reliable extraction rather than advancing a watermark.
 Other whole-file native readers retain the 16 MiB file admission limit. JSON
