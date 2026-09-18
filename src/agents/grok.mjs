@@ -198,7 +198,7 @@ export function adoptStartedSession(projectDir, { startedAt, childPid } = {}) {
   const want = path.resolve(projectDir);
   let entries = [];
   try {
-    entries = JSON.parse(fs.readFileSync(path.join(grokHome(), "active_sessions.json"), "utf8"));
+    entries = JSON.parse(readRegularFile(path.join(grokHome(), "active_sessions.json")));
   } catch {
     entries = [];
   }

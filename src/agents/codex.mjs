@@ -20,6 +20,7 @@ import {
   sharedSkillPath,
   installedCopyStatus,
   readRegularFile,
+  readOwnedFile,
 } from "../util.mjs";
 
 export const id = "codex";
@@ -31,7 +32,7 @@ export function installedAllowRule() {
   try {
     const stat = fs.lstatSync(file);
     return stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 &&
-      fs.readFileSync(file, "utf8").trim() === BRIDGE_ALLOW_RULE.trim();
+      readRegularFile(file).trim() === BRIDGE_ALLOW_RULE.trim();
   } catch { return false; }
 }
 export const injection = "prompt";
@@ -195,7 +196,7 @@ function readHooksForInstall() {
     const stat = fs.lstatSync(hooksPath());
     found = true;
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("unsafe configuration path");
-    const file = JSON.parse(fs.readFileSync(hooksPath(), "utf8"));
+    const file = JSON.parse(readOwnedFile(hooksPath(), { encoding: "utf8" }));
     const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
     if (!object(file) || (file.hooks !== undefined && !object(file.hooks))) throw new Error("invalid hooks object");
     for (const event of HOOK_EVENTS) {

@@ -140,7 +140,7 @@ export function fileExists(p) {
 
 export function readJson(p, fallback = null) {
   try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
+    return JSON.parse(readRegularFile(p));
   } catch {
     return fallback;
   }
@@ -330,12 +330,12 @@ export function oneLine(s, max = 200) {
 export function installedCopyStatus(installedPath, sourcePath) {
   let installed;
   try {
-    installed = fs.readFileSync(installedPath, "utf8");
+    installed = readRegularFile(installedPath);
   } catch {
     return "missing";
   }
   try {
-    return installed === fs.readFileSync(sourcePath, "utf8") ? "current" : "stale";
+    return installed === readRegularFile(sourcePath) ? "current" : "stale";
   } catch {
     return "current"; // no source to compare against: not the user's problem
   }
