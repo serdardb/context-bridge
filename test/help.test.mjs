@@ -29,6 +29,9 @@ test("invalid CLI options fail cleanly before reads, fixes or mutations", () => 
     ["eval", "--bogus=PRIVATE_ARGUMENT"], ["clean", "--dryrun"],
     ["artifact", "seal"], ["share", "serve"], ["storage", "nonsense"],
     ["eval", "--scenario", "decision"], ["status", "unexpected-positional"],
+    ["search", "   "], ["search", "needle", "--branch="],
+    ["search", "needle", "--since=yesterday"], ["search", "needle", "--since=2026-02-30"],
+    ["search", "needle", "--since=2026-09-17", "--until=2026-09-16"],
   ];
   try {
     for (const command of [["status"], ["adapters"], ["inspect"], ["storage", "plan"]]) {

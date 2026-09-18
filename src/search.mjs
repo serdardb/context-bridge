@@ -24,9 +24,9 @@ function kindFor(name) {
 
 function dateBoundary(value, end = false) {
   if (value === null) return end ? Infinity : -Infinity;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("Search dates must use YYYY-MM-DD (UTC).");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new BridgeError("Search dates must use YYYY-MM-DD (UTC).");
   const time = Date.parse(`${value}T00:00:00.000Z`);
-  if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== value) throw new Error(`Invalid search date '${value}'.`);
+  if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== value) throw new BridgeError(`Invalid search date '${value}'.`);
   return time + (end ? 86400000 - 1 : 0);
 }
 
@@ -50,12 +50,12 @@ function matches(text, needle) {
 }
 
 export function searchProject(projectDir, query, { lane = null, agent = null, branch = null, since = null, until = null } = {}) {
-  if (typeof query !== "string" || !query.trim()) throw new Error("Search needs a non-empty query.");
+  if (typeof query !== "string" || !query.trim()) throw new BridgeError("Search needs a non-empty query.");
   if (agent !== null && !AGENT_IDS.includes(agent)) throw new BridgeError(`Unknown search agent '${agent}'.`);
-  if (branch !== null && (typeof branch !== "string" || !branch.trim())) throw new Error("Search branch must not be empty.");
+  if (branch !== null && (typeof branch !== "string" || !branch.trim())) throw new BridgeError("Search branch must not be empty.");
   const lower = dateBoundary(since);
   const upper = dateBoundary(until, true);
-  if (lower > upper) throw new Error("Search --since must not be after --until.");
+  if (lower > upper) throw new BridgeError("Search --since must not be after --until.");
   const results = [];
   const issues = [];
   for (const currentLane of lanesFor(projectDir, lane, issues)) {
