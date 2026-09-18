@@ -68,6 +68,12 @@ test("release evidence binds actual package bytes and commit, expires and reject
     assert.deepEqual(executed, RELEASE_GATES.map(([name]) => name));
     assert.equal(verifyReleaseEvidence(root).binding.packageSha256, prepared.binding.packageSha256);
     const file = releaseEvidencePath(root), original = fs.readFileSync(file);
+    const linkedReceipt = file + ".linked";
+    fs.linkSync(file, linkedReceipt);
+    try {
+      assert.throws(() => verifyReleaseEvidence(root), { code: "BRIDGE_RELEASE_EVIDENCE" },
+        "a shared receipt leaf must not authorize publication");
+    } finally { fs.unlinkSync(linkedReceipt); }
     for (const change of [
       (r) => { r.gates.pop(); },
       (r) => { r.startedAt = new Date(Date.now() - 25 * 3600000).toISOString(); },

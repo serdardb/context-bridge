@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { storageHome } from "./storage.mjs";
-import { BridgeError, writeJsonAtomic } from "./util.mjs";
+import { BridgeError, readOwnedFile, writeJsonAtomic } from "./util.mjs";
 
 // A local acceptance receipt, not a signature or a substitute for human review.
 export const RELEASE_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -26,7 +26,7 @@ function refusal(message) {
 }
 
 function command(root, executable, args) {
-  return execFileSync(executable, args, { cwd: root, encoding: "utf8", timeout: 120000,
+  return execFileSync(executable, args, { cwd: root, encoding: "utf8", timeout: 120000, killSignal: "SIGKILL",
     maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
@@ -59,7 +59,7 @@ function fingerprint(root) {
 
 function runGate(root, [, [executable, ...args]]) {
   execFileSync(executable === "node" ? process.execPath : executable, args, {
-    cwd: root, stdio: "inherit", timeout: 20 * 60 * 1000,
+    cwd: root, stdio: "inherit", timeout: 20 * 60 * 1000, killSignal: "SIGKILL",
     env: { ...process.env, CONTEXT_BRIDGE_ADAPTERS: "" },
   });
 }
@@ -95,9 +95,7 @@ export function verifyReleaseEvidence(root) {
   const file = releaseEvidencePath(root);
   let receipt;
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("not a regular receipt");
-    receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+    receipt = JSON.parse(readOwnedFile(file, { encoding: "utf8" }));
   } catch { throw refusal("No readable release acceptance receipt. Run bridge release-prepare on the final committed candidate."); }
   const start = Date.parse(receipt.startedAt), end = Date.parse(receipt.completedAt), now = Date.now();
   if (receipt.schema !== 1 || receipt.root !== root || !Number.isFinite(start) || !Number.isFinite(end) ||
