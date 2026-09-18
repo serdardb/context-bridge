@@ -79,7 +79,7 @@ function pruneUnlocked(projectDir, opts) {
     // first, rather than guess in the one direction that loses a handoff.
     return refuse("skippedCorruptState");
   }
-  // `.bridge` itself must resolve inside the project, not outside via symlink.
+  // The runtime root must resolve inside its configured storage base.
   // If `.bridge` is a symlink pointing at `/evil/dir`, every lane under it
   // resolves there too, and the containment check below passes — we would then
   // delete files the project does not own. Refuse entirely.
@@ -96,8 +96,8 @@ function pruneUnlocked(projectDir, opts) {
     if (fs.lstatSync(path.join(bridge, "lanes")).isSymbolicLink()) {
       return refuse("skippedEscapingBridge");
     }
-  } catch {
-    // no lanes dir at all is normal
+  } catch (error) {
+    if (error.code !== "ENOENT") return refuse("skippedUnreadableStore");
   }
 
   // A lane name becomes a directory, so a name from state that could not have
@@ -120,20 +120,25 @@ function pruneUnlocked(projectDir, opts) {
   let physicalRoot;
   try {
     physicalRoot = fs.realpathSync(storageBase);
-  } catch {
+  } catch (error) {
+    if (error.code !== "ENOENT") return refuse("skippedUnreadableStore");
     physicalRoot = path.resolve(storageBase);
   }
   const expectedDir = (lane) => path.join(physicalRoot,
     path.relative(path.resolve(storageBase), path.resolve(checkpointsDir(projectDir, lane))));
 
-  const candidates = [...new Set([DEFAULT_LANE, ...stateLanes, ...laneDirsOnDisk(projectDir)])].filter(isValidLaneName);
+  let unavailable = false;
+  const diskLanes = laneDirsOnDisk(projectDir, { onUnavailable: () => { unavailable = true; } });
+  if (unavailable) return refuse("skippedUnreadableStore");
+  const candidates = [...new Set([DEFAULT_LANE, ...stateLanes, ...diskLanes])].filter(isValidLaneName);
   const laneNames = [];
   for (const lane of candidates) {
     const cpDir = checkpointsDir(projectDir, lane);
     let resolved;
     try {
       resolved = fs.realpathSync(cpDir);
-    } catch {
+    } catch (error) {
+      if (error.code !== "ENOENT") return refuse("skippedUnreadableStore");
       laneNames.push(lane); // does not exist: nothing to delete, nothing to escape
       continue;
     }

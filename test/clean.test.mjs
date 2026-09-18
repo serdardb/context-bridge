@@ -723,6 +723,19 @@ test("clean --lane deletes only the named lane's checkpoints and leaves the othe
   assert.match(preview.stdout, /Would delete 1 checkpoint groups/);
   assert.ok(fs.existsSync(ff), "equals-form preview must retain the evidence");
 
+  const lanesRoot = path.dirname(path.dirname(featureDir)), readdir = fs.readdirSync;
+  fs.readdirSync = (dir, ...args) => {
+    if (dir === lanesRoot) throw Object.assign(new Error("cannot enumerate lanes"), { code: "EACCES" });
+    return readdir(dir, ...args);
+  };
+  try {
+    const refused = pruneCheckpoints(project, { all: true });
+    assert.equal(refused.skippedUnreadableStore, true);
+    assert.equal(refused.deletedFiles, 0);
+    assert.ok(fs.existsSync(ff));
+    assert.equal(remainingGroups(project), 2, "unreadable lane discovery must not permit pruning known lanes");
+  } finally { fs.readdirSync = readdir; }
+
   const res = pruneCheckpoints(project, { all: true, lane: "feature" });
   assert.ok(!fs.existsSync(ff), "feature's old group was pruned");
   assert.equal(remainingGroups(project), 2, "main's groups were left alone (the prune was scoped to feature)");

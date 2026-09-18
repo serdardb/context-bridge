@@ -818,6 +818,7 @@ export async function main(argv) {
       if (
         res.skippedCorruptState ||
         res.skippedNoState ||
+        res.skippedUnreadableStore ||
         res.skippedEscapingBridge ||
         res.skippedMalformedPending ||
         res.skippedInvalidPreparation ||
@@ -825,8 +826,10 @@ export async function main(argv) {
       ) {
         const why = res.skippedCorruptState
           ? "bridge state could not be read"
+          : res.skippedUnreadableStore
+            ? "the runtime directory tree could not be inspected completely"
           : res.skippedEscapingBridge
-            ? ".bridge resolves outside the project (symlink escape)"
+            ? "the runtime tree contains a symlink escape"
             : res.skippedInvalidPreparation
               ? "a handoff preparation journal could not be identified safely"
             : res.skippedInvalidLane
