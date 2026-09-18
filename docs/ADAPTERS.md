@@ -228,10 +228,12 @@ interpreter in a trusted environment containing `aider-chat==0.86.2` and Python
 The experimental Windows driver additionally requires `httpcore==1.0.9` for
 its scoped interruptible read integration. During a model send, ordinary
 HTTPcore socket reads yield periodically to Python signal handling while
-preserving the caller's total read timeout and existing client/proxy/TLS setup.
+preserving each underlying read/recv timeout, not a whole HTTP request deadline.
+Client construction, proxy selection and TLS contexts remain unchanged.
 TLS-in-TLS reads poll only the underlying receive operation; outgoing TLS BIO
-data is not drained or sent a second time. Native Windows acceptance of that
-nested TLS path is still required before treating this candidate as supported.
+data is not drained or sent a second time. Native Windows acceptance covers
+local TLS/nested-TLS bytes, timeouts and Ctrl-C followed by same-process
+continuation; it does not verify authenticated providers or deployed proxies.
 The configured path is invoked unchanged: resolving a virtualenv's Python
 symlink to its base executable can silently select the wrong environment.
 Probe and driver use Python isolated mode (`-I`), excluding cwd, `PYTHONPATH`
