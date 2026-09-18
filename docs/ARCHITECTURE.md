@@ -27,7 +27,7 @@ working on it see [DEVELOPMENT.md](./DEVELOPMENT.md).
 
 ```
 shell
-└── bridge                       launcher, zero-dependency Node CLI
+└── bridge                       launcher, Node CLI with native locking
     └── exactly one agent at a time
 
    claude ⇄ codex ⇄ grok ⇄ antigravity ⇄ opencode    twenty directed routes
@@ -52,6 +52,15 @@ shell
 | `machine-local checkpoints` | Deltas, full context and audit manifests retained by handoff group |
 | `.cbctx` artifact | Explicit redacted context package with schema and integrity hash; never native session state |
 
+The package is not dependency-free. `package.json` declares Koffi for native
+locking/publication and the Linux tmpfs identity fallback, the MCP SDK and Zod
+for the opt-in MCP interface, and an explicit `@hono/node-server` compatibility
+pin for the SDK dependency graph. The latter is not a Bridge HTTP-server import.
+These dependencies are installed even when MCP is unused. A missing native
+backend refuses operations that require it; it is not replaced by PID-only
+locking. Doctor reports that failure rather than treating installation as
+evidence that mutations work.
+
 ## The adapter contract
 
 Adding an agent used to mean touching a dozen files. It is now one module in
@@ -66,14 +75,20 @@ rehydrating a reference, the resume and start commands, parsing activity since a
 watermark, the idle signal, flags that would break the session link, health, a
 harmless headless probe, and the two parser canaries below.
 
-Three of its methods are optional, present only where an agent needs them.
-`kickoffArgs` returns a one-line opening prompt for a hook-injecting agent, whose
-hook delivers context but not a turn (see Delivery below). `preResume` returns a
-command the launcher runs before the interactive session opens, for an agent that
-takes its delta neither on the command line nor through a hook: OpenCode keeps its
-sessions in a SQLite database and the delta is written straight in, authless,
-because the alternative was a paid, authenticated model call. An adapter that does
-not implement one of these is simply never asked for it.
+The authoritative method lists and result validation are in
+`src/adapter-contract.mjs`; the extension guide is [ADAPTERS.md](ADAPTERS.md).
+Optional operations include native session preparation, explicit session lookup,
+evaluation and source snapshots. Delivery arguments are conditional requirements:
+a hook adapter must supply `kickoffArgs`, while a prompt adapter must supply
+`promptArgs`. A hook delivers context, not a turn, so kickoff opens the turn
+(see Delivery below).
+
+`preResume` supplies a command to run before the interactive session opens.
+OpenCode uses this to insert context into its native SQLite store without a model
+call. Its `snapshotSource` separately provides a consistent private source
+snapshot for handoff extraction; this does not make every vendor transcript an
+atomic snapshot. `evaluationUsage` requires `evaluationCommand`. Optional methods
+are detected through the contract rather than a fixed count in caller code.
 
 ### Watermarks are opaque
 

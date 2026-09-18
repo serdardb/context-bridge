@@ -2,9 +2,9 @@
 //
 // Every bridged agent is described by one module implementing the contract below,
 // so adding an agent means writing one file instead of touching eleven.
-// This is deliberately narrow: it covers the four behaviours that are genuinely
-// per-vendor. Handoff composition, checkpointing and doctor still live outside,
-// and are generalised in a later round.
+// This covers vendor-specific behavior. Shared handoff composition,
+// checkpointing and doctor consume the registry and live outside the adapters.
+// adapter-contract.mjs defines the current API and validates operation results.
 //
 // @typedef {Object} SessionRef
 //   id             native session/thread id, the thing we resume by
