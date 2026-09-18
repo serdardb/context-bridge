@@ -10,6 +10,7 @@ const { spawn } = createRequire(import.meta.url)(modulePath);
 const [executable, ...args] = process.argv.slice(2);
 assert.ok(executable && path.isAbsolute(executable));
 const aider = process.env.BRIDGE_TEST_PTY_FLOW === "aider";
+const relocation = !aider && process.env.PI_NATIVE_ACCEPT_RELOCATION;
 const label = aider ? "Aider" : "Pi";
 const response = aider ? "PTY_NATIVE_COMPLETED_5368" : "PI_NATIVE_RESPONSE_3";
 console.error(`${label} ConPTY: starting native terminal`);
@@ -20,7 +21,8 @@ const terminal = spawn(executable, args, {
   cwd: process.cwd(), env: process.env,
 });
 console.error(`${label} ConPTY: native terminal started`);
-let output = "", answered = false, timedOut = false, quitTimer, followTimer;
+let output = "", answered = false, timedOut = false, quitTimer, followTimer, relocationTimer;
+let relocationHandled = false;
 let interrupted = false, followed = false;
 const timer = setTimeout(() => {
   timedOut = true;
@@ -32,6 +34,12 @@ const timer = setTimeout(() => {
 }, 30000);
 terminal.onData((data) => {
   output += data;
+  if (relocation && !relocationHandled && output.includes("continue in current cwd")) {
+    relocationHandled = true;
+    // Match the existing POSIX acceptance: select Cancel first, then Continue
+    // on a separate invocation. Never bypass Pi's own relocation confirmation.
+    relocationTimer = setTimeout(() => terminal.write(relocation === "cancel" ? "\x1b[B\r" : "\r"), 300);
+  }
   if (aider && !interrupted && output.includes("INTERRUPTED_STREAM_8741")) {
     interrupted = true;
     const win32Input = output.lastIndexOf("\x1b[?9001h") > output.lastIndexOf("\x1b[?9001l");
@@ -57,12 +65,14 @@ terminal.onExit(({ exitCode }) => {
   clearTimeout(timer);
   clearTimeout(quitTimer);
   clearTimeout(followTimer);
-  if (exitCode !== 0 || timedOut || !answered) {
+  clearTimeout(relocationTimer);
+  const cancelled = relocation === "cancel" && relocationHandled && !answered;
+  if (exitCode !== 0 || timedOut || (!answered && !cancelled)) {
     process.stderr.write(`Native ${label} ConPTY failed: exit=${exitCode}, timeout=${timedOut}, answered=${answered}\n${output}\n`,
       () => process.exit(1));
   } else {
     // The native child has exited successfully. Do not retain node-pty's
     // ConPTY worker handles in this single-purpose acceptance helper.
-    process.stdout.write(`${response}\n`, () => process.exit(0));
+    process.stdout.write(`${cancelled ? "PI_NATIVE_RELOCATION_CANCELLED" : response}\n`, () => process.exit(0));
   }
 });
