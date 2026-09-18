@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { ADAPTER_API_VERSION, validateAdapter } from "./adapter-contract.mjs";
+import { readRegularFile } from "./util.mjs";
 
 export { ADAPTER_API_VERSION, AdapterResultError, validateAdapter, validateAdapterResult,
   createAdapterRegistry, adapterDescriptor, REQUIRED_OPERATIONS, RECORD_FIELDS, RECORD_VALUES } from "./adapter-contract.mjs";
@@ -25,7 +26,7 @@ export async function loadAdapterPlugins(manifestPath, existingIds = []) {
   };
   if (!path.isAbsolute(manifestPath)) fail("CONTEXT_BRIDGE_ADAPTERS must be an absolute manifest path");
   let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); }
+  try { manifest = JSON.parse(readRegularFile(manifestPath)); }
   catch { fail("cannot read the configured JSON manifest"); }
   if (!manifest || manifest.apiVersion !== ADAPTER_API_VERSION || !Array.isArray(manifest.modules) ||
       manifest.modules.some((file) => typeof file !== "string" || !path.isAbsolute(file) || !/\.m?js$/.test(file))) {

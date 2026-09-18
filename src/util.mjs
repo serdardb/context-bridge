@@ -157,6 +157,18 @@ export function transcriptStamp(ref) {
   });
 }
 
+/** Native files may be linked, but must not be devices or blocking streams. */
+export function readRegularFile(file, encoding = "utf8") {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+    if (!fs.fstatSync(fd).isFile()) {
+      throw Object.assign(new Error("Expected a regular file."), { code: "BRIDGE_UNSAFE_FILE" });
+    }
+    return fs.readFileSync(fd, encoding);
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 /** Read a bridge-owned regular leaf; only initial absence may return null. */
 export function readOwnedFile(file, { encoding = null, missing = false, maxBytes = null } = {}) {
   if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new Error("Invalid file read limit.");
@@ -167,7 +179,7 @@ export function readOwnedFile(file, { encoding = null, missing = false, maxBytes
   if (!before.isFile() || before.nlink !== 1n) throw unsafe();
   let fd;
   try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const opened = fs.fstatSync(fd, { bigint: true });
     if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== before.dev || opened.ino !== before.ino) throw unsafe();
     let content;

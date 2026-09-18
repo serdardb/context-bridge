@@ -7,6 +7,7 @@ import { adapterFor } from "./agents/index.mjs";
 import { composeDelta } from "./delta.mjs";
 import { promptBody, PROMPT_DELTA_BYTES } from "./delivery.mjs";
 import { liveDecisionFixture } from "./decision-eval.mjs";
+import { readOwnedFile } from "./util.mjs";
 
 export function liveRecallFixture() {
   const value = () => randomUUID();
@@ -67,8 +68,7 @@ function runChild(command, cwd, env, timeoutMs) {
 function finalResponse(file, outcome) {
   if (outcome.status !== 0 || outcome.error || outcome.timedOut) return "";
   try {
-    const info = fs.lstatSync(file);
-    if (info.isFile() && info.nlink === 1 && info.size <= 64 * 1024) return fs.readFileSync(file, "utf8");
+    return readOwnedFile(file, { encoding: "utf8", maxBytes: 64 * 1024 });
   } catch {}
   return "";
 }

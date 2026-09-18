@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { probeJsonl } from "../src/probe.mjs";
 import { ADAPTERS, AGENT_IDS, adapterFor } from "../src/agents/index.mjs";
 import { collect, verifyReport } from "../src/doctor.mjs";
@@ -45,7 +46,9 @@ test("a missing transcript is distinct from an I/O failure", () => {
   try {
     for (const code of ["EACCES", "EIO"]) {
       fs.readFileSync = function (p, ...args) {
-        if (p === file) throw Object.assign(new Error(`private path ${file}`), { code });
+        if (p === file || (typeof p === "number" && fs.fstatSync(p).ino === fs.statSync(file).ino)) {
+          throw Object.assign(new Error(`private path ${file}`), { code });
+        }
         return read.call(this, p, ...args);
       };
       const shape = probeJsonl(file, () => true);
@@ -61,6 +64,39 @@ test("a missing transcript is distinct from an I/O failure", () => {
       }
     }
   } finally { fs.readFileSync = read; }
+  if (process.platform !== "win32") {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-read-pipe-"));
+    try {
+      const fifo = path.join(root, "pipe");
+      execFileSync("mkfifo", [fifo]);
+      const script = `
+        import fs from 'node:fs';
+        import assert from 'node:assert/strict';
+        import {readOwnedFile, readRegularFile} from ${JSON.stringify(path.resolve("src/util.mjs"))};
+        import {probeJsonl} from ${JSON.stringify(path.resolve("src/probe.mjs"))};
+        import {loadAdapterPlugins} from ${JSON.stringify(path.resolve("src/adapter-sdk.mjs"))};
+        import {claudeMessagesSince} from ${JSON.stringify(path.resolve("src/delta.mjs"))};
+        const fifo=process.argv[1], leaf=fifo+'.regular';
+        assert.throws(()=>readRegularFile(fifo), {code:'BRIDGE_UNSAFE_FILE'});
+        assert.equal(probeJsonl(fifo,()=>true).status,'unreadable');
+        await assert.rejects(loadAdapterPlugins(fifo), /cannot read/);
+        assert.throws(()=>claudeMessagesSince(fifo,null), {code:'BRIDGE_TRANSCRIPT_UNREADABLE'});
+        fs.writeFileSync(leaf,'normal');
+        fs.symlinkSync(leaf, leaf+'.link');
+        assert.equal(readRegularFile(leaf+'.link'), 'normal');
+        assert.throws(()=>readOwnedFile(leaf+'.link'), {code:'BRIDGE_UNSAFE_FILE'});
+        const open=fs.openSync;
+        fs.openSync=(p,...args)=>{
+          if(p===leaf) { fs.unlinkSync(leaf); fs.renameSync(fifo,leaf); }
+          return open(p,...args);
+        };
+        assert.throws(()=>readOwnedFile(leaf), {code:'BRIDGE_UNSAFE_FILE'});
+      `;
+      execFileSync(process.execPath, ["--input-type=module", "-e", script, fifo], {
+        timeout: 2000, killSignal: "SIGKILL", stdio: "pipe",
+      });
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
 });
 
 test("a predicate that throws is survivable — a throwing probe would be worse than a blind one", () => {
@@ -183,7 +219,9 @@ test("an unreadable linked session takes its routes off green and the exit code 
   let failed;
   try {
     fs.readFileSync = function (p, ...args) {
-      if (p === transcript) throw Object.assign(new Error("private error detail"), { code: "EACCES" });
+      if (p === transcript || (typeof p === "number" && fs.fstatSync(p).ino === fs.statSync(transcript).ino)) {
+        throw Object.assign(new Error("private error detail"), { code: "EACCES" });
+      }
       return read.call(this, p, ...args);
     };
     failed = collect(project);
