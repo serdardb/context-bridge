@@ -175,6 +175,8 @@ test("consumption is read from the file on disk, not from what state remembers",
   const external = path.join(project, "private.txt");
   fs.writeFileSync(external, "private delivery evidence");
   fs.unlinkSync(safeCheckpointPath(project, rel + ".consumed"));
+  assert.equal(deltaWasConsumed(project, { deltaFile: rel }), false, "absence is not a receipt");
+  assert.equal(deltaWasConsumed(project, {}), false, "malformed pending evidence is not a receipt");
   for (const suffix of ["", ".consumed"]) {
     const leaf = safeCheckpointPath(project, rel + suffix);
     for (const link of [fs.symlinkSync, fs.linkSync]) {
@@ -440,7 +442,7 @@ test("delivery refuses a deltaFile that escapes .bridge", () => {
   const escapingDelta = path.relative(project, path.join(outside, `${stem}.md`));
 
   assert.equal(fullContextFor(project, escapingDelta), null, "a traversing delta never resolves an external full-context file");
-  assert.equal(deltaWasConsumed(project, { deltaFile: escapingDelta }), true, "an escaping deltaFile is treated as nothing to carry");
+  assert.equal(deltaWasConsumed(project, { deltaFile: escapingDelta }), false, "an escaping deltaFile cannot prove delivery");
 
   fs.rmSync(project, { recursive: true });
   fs.rmSync(outside, { recursive: true });

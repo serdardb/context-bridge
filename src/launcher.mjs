@@ -272,9 +272,9 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
     // automatically, because the next handoff supersedes this delta anyway; what
     // matters is that a delta which never arrived is never passed over quietly.
     if (pendingBefore?.via === "hook" && pendingBefore.agent === agent && !deltaWasConsumed(projectDir, pendingBefore)) {
-      log(`${WARN} The context for ${agent} was not delivered: its hooks did not run.`);
-      log(dim(`  It is still at ${pendingBefore.deltaFile}, and the next handoff will carry it again.`));
-      log(dim(`  Codex runs hooks only after you review them once with /hooks.`));
+      log(`${WARN} Hook delivery of the context for ${agent} could not be confirmed.`);
+      log(dim(`  Run bridge status and bridge inspect to check pending context and stored evidence before retrying.`));
+      log(dim(`  Hooks may be untrusted, or checkpoint evidence may be missing or unreadable. Review Codex hooks with /hooks.`));
     }
     // The agent's closing message is written after the handoff command runs, so
     // it is never in the delta the handoff produced. Now that the process has

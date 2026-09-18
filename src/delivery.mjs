@@ -207,16 +207,15 @@ export function fullContextFor(projectDir, deltaRel) {
 
 /**
  * Was a pending delta actually taken? Consuming renames the file, so the name on
- * disk is the truth even when state and a hook raced each other to write it.
+ * disk is evidence even when state and a hook raced each other to write it.
+ * Missing or unsafe evidence does not prove that delivery happened.
  */
 export function deltaWasConsumed(projectDir, injection) {
-  if (!injection?.deltaFile) return true;
-  // An unsafe deltaFile is never a live delivery: treat it as nothing to carry
-  // rather than probe a path outside .bridge.
+  if (!injection) return true;
+  if (!injection.deltaFile) return false;
   const delta = safeCheckpointPath(projectDir, injection.deltaFile);
-  if (!delta) return true;
+  if (!delta) return false;
   try {
-    if (ownedLeafExists(`${delta}${CONSUMED_SUFFIX}`)) return true;
-    return !ownedLeafExists(delta);
+    return ownedLeafExists(`${delta}${CONSUMED_SUFFIX}`);
   } catch { return false; } // unsafe or unreadable evidence cannot prove delivery
 }
