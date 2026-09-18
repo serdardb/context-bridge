@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { ensureState, loadState, mutateProject, createLane, isValidLaneName, laneHasLiveLauncher } from "./state.mjs";
 import { projectIdentity } from "./storage.mjs";
+import { BridgeError } from "./util.mjs";
 
 function git(dir, args) {
   try { return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] }).trim(); }
@@ -64,8 +65,17 @@ export function createWorktreeLane(projectDir, name, destination, { attach = fal
 export function laneWorkspace(projectDir, laneName = null) {
   const state = loadState(projectDir, { readOnly: true });
   const name = laneName ?? state?.activeLane;
-  const worktree = state?.lanes?.[name]?.worktree;
-  if (!worktree) return { projectDir, lane: name, isolated: false };
+  const lane = state?.lanes?.[name];
+  if (!lane || !Object.hasOwn(lane, "worktree")) return { projectDir, lane: name, isolated: false };
+  const worktree = lane.worktree;
+  if (!worktree || typeof worktree !== "object" || Array.isArray(worktree) ||
+      typeof worktree.root !== "string" || !path.isAbsolute(worktree.root) ||
+      typeof worktree.projectId !== "string" || !worktree.projectId ||
+      !isValidLaneName(worktree.lane)) {
+    throw new BridgeError(`Lane '${name}' has an invalid worktree link; refusing to use the parent project instead.`, {
+      code: "BRIDGE_WORKTREE_INVALID", operation: "resolve lane workspace",
+    });
+  }
   if (!fs.existsSync(worktree.root) || projectIdentity(worktree.root).id !== worktree.projectId) {
     throw new Error(`Worktree for lane '${name}' is missing or has changed identity; refusing to launch in another directory.`);
   }

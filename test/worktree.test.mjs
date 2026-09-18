@@ -61,6 +61,19 @@ test("worktree lanes isolate code and state, launch in the correct cwd and remai
   assert.deepEqual(report.workspace, { kind: "git-worktree", available: true });
   assert.throws(() => handoff(root, "codex", { from: "claude", dryRun: true }), /worktree directory/);
   assert.match(git("worktree", "list", "--porcelain"), /feature/);
+  const link = loadState(root).lanes.feature.worktree;
+  for (const invalid of [null, false, "", [], {}, { ...link, root: "relative-path" }]) {
+    mutateProject(root, state => { state.lanes.feature.worktree = invalid; });
+    fs.rmSync(observed, { force: true });
+    const refused = spawnSync(process.execPath, [cli, "claude", "--resume", "feature"], {
+      cwd: root, env: { ...process.env, HOME: dir, PATH: bin }, encoding: "utf8", timeout: 15000,
+    });
+    assert.notEqual(refused.status, 0, "malformed workspace must not launch in the parent project");
+    assert.equal(fs.existsSync(observed), false);
+    assert.throws(() => laneWorkspace(root, "feature"), /invalid worktree/i);
+    assert.equal(projectStatus(root).workspace.available, false);
+  }
+  mutateProject(root, state => { state.lanes.feature.worktree = link; });
   fs.renameSync(target, `${target}-moved`);
   fs.mkdirSync(target);
   assert.throws(() => laneWorkspace(root, "feature"), /changed identity/);

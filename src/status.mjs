@@ -30,12 +30,12 @@ export function switchHistory(projectDir, lane) {
 }
 
 function laneStatus(projectDir, name, lane) {
-  if (lane.worktree) {
+  if (Object.hasOwn(lane, "worktree")) {
     try {
       const workspace = laneWorkspace(projectDir, name);
       const child = loadState(workspace.projectDir, { readOnly: true });
       const childLane = child.lanes[workspace.lane];
-      if (childLane.worktree) throw new Error("Nested workspace link");
+      if (Object.hasOwn(childLane, "worktree")) throw new Error("Nested workspace link");
       return { ...laneStatus(workspace.projectDir, workspace.lane, childLane), workspace: { kind: "git-worktree", available: true } };
     } catch {
       return { activeAgent: null, linkedAgents: [], pending: null, delivery: null,
