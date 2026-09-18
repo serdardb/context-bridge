@@ -407,6 +407,11 @@ try {
   fs.writeFileSync(path.join(project, "fixture.txt"), "BEFORE_RELOCATION_5012\n");
   const beforeMoveHistory = fs.readFileSync(history), beforeMoveEvidence = fs.readFileSync(observations);
   if (crossDevice) {
+    // Earlier forced-termination cases intentionally leave operation records.
+    // Use the public recovery path, which verifies the dead owner/session lock.
+    const recovery = JSON.parse(run([cli, "project", "recover", session.projectId, "--apply", "--json"]));
+    assert.equal(recovery.complete, true);
+    assert.deepEqual(recovery.retained, []);
     relocatedRoot = fs.mkdtempSync(path.join(relocationRoot, "bridge-aider-relocated-"));
     const target = path.join(relocatedRoot, "project");
     fs.cpSync(project, target, { recursive: true });

@@ -162,6 +162,11 @@ try {
         fs.rmSync(path.join(process.cwd(),'.bridge','state.json.lock.guard'),{force:true});
         console.log(JSON.stringify({pending:s.pendingInjection,delta}));`]));
       assert.equal(fs.existsSync(path.join(project, ".bridge", "state.json")), true);
+      if (relocationRoot) {
+        // Retirement must remain atomic on the legacy filesystem. Explicitly
+        // select an owned sibling on that volume, as the real CLI requires.
+        run([bridge, "storage", "migrate", "--retirement-dir", relocatedRoot]);
+      }
     }
     const resumeArgs = ["pi", "--resume", "main", ...flags.filter((flag) => flag !== "--print")];
     if (relocationRoot) {
