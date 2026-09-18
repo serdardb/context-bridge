@@ -353,12 +353,26 @@ test("an agent that answers consumes the delta, and only once", () => {
 
   const recovery = pendingDelta("prompt", "RECOVERED DELIVERY");
   const recoveryFile = safeCheckpointPath(recovery.project, recovery.deltaFile);
-  fs.renameSync(recoveryFile, recoveryFile + ".consumed");
   fs.writeFileSync(path.join(scratch, "codex"), `#!${process.execPath}
     const fs = require('node:fs');
     if (!process.argv.some(arg => arg.includes('RECOVERED DELIVERY'))) process.exit(9);
     fs.appendFileSync('rollout.jsonl', ${JSON.stringify(row + "\n")});
   `, { mode: 0o755 });
+  const interrupted = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import fs from 'node:fs';
+    import { main } from ${JSON.stringify(new URL("../src/cli.mjs", import.meta.url).href)};
+    const rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      const result = rename(from, to);
+      if (from === ${JSON.stringify(recoveryFile)} && to === ${JSON.stringify(recoveryFile + ".consumed")}) process.exit(79);
+      return result;
+    };
+    await main(['codex']);
+  `], { cwd: recovery.project, encoding: "utf8", env: { ...cleanEnv(), PATH: scratch }, timeout: 15000 });
+  assert.equal(interrupted.status, 79, interrupted.stdout + interrupted.stderr);
+  assert.ok(loadState(recovery.project).pendingInjection, "exit after rename must precede pending-state publication");
+  assert.equal(fs.existsSync(recoveryFile), false);
+  assert.equal(fs.readFileSync(recoveryFile + ".consumed", "utf8"), "RECOVERED DELIVERY");
   const recovered = spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
     cwd: recovery.project, encoding: "utf8", env: { ...cleanEnv(), PATH: scratch }, timeout: 15000,
   });
