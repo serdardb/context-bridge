@@ -70,6 +70,67 @@ async function verifyInstalledLock() {
   }
 }
 
+async function verifyWindowsRegistryPermissions() {
+  if (process.platform !== "win32") return null;
+  const system = path.join(process.env.SystemRoot, "System32");
+  const native = (exe, args) => {
+    const result = spawnSync(path.join(system, exe), args, { env, encoding: "utf8", timeout: 15000 });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    return result.stdout.trim();
+  };
+  const sid = native("WindowsPowerShell/v1.0/powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"]);
+  assert.match(sid, /^S-1-[0-9-]+$/);
+  const { ensureState, checkpointsDir, statePath, writeCheckpoint } = await load("src/state.mjs");
+  const { projectIdentity, projectStoreDir } = await load("src/storage.mjs");
+  const project = path.join(root, "acl-project");
+  fs.mkdirSync(project);
+  ensureState(project);
+  writeCheckpoint(project, "main", "2026-09-18T00-00-00-000Z-claude-to-codex.md", "ACL fixture evidence\n");
+  const id = projectIdentity(project).id, store = projectStoreDir(project);
+  const checkpoints = checkpointsDir(project), relative = path.relative(store, checkpoints);
+  const registry = path.join(env.CONTEXT_BRIDGE_HOME, "projects.json");
+  const originalState = fs.readFileSync(statePath(project));
+  const command = (...args) => spawnSync(process.execPath, [cli, "project", ...args],
+    { cwd: empty, env, encoding: "utf8", timeout: 15000 });
+  const denyDuring = (directory, body) => {
+    try {
+      // RD denies listing only; cleanup can remove this explicit ACE in finally.
+      native("icacls.exe", [directory, "/deny", `*${sid}:(RD)`]);
+      assert.throws(() => fs.readdirSync(directory), error => ["EACCES", "EPERM"].includes(error.code));
+      body();
+    } finally { native("icacls.exe", [directory, "/remove:d", `*${sid}`]); }
+  };
+  const beforeRegistry = fs.readFileSync(registry);
+  denyDuring(checkpoints, () => {
+    assert.equal(JSON.parse(command("inspect", id, "--json").stdout).complete, false);
+    const result = command("retire", id, "--apply", "--json");
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(JSON.parse(result.stdout).applied, false);
+    assert.deepEqual(fs.readFileSync(registry), beforeRegistry);
+    assert.deepEqual(fs.readFileSync(statePath(project)), originalState);
+  });
+  fs.rmSync(project, { recursive: true });
+  assert.equal(command("retire", id, "--apply", "--json").status, 0);
+  const archive = path.join(env.CONTEXT_BRIDGE_HOME, "retired-projects", id);
+  const retiredRegistry = fs.readFileSync(registry);
+  denyDuring(path.join(archive, relative), () => {
+    for (const args of [["restore", id, "--apply", "--json"], ["purge", id, "--apply", "--confirm", id, "--json"]]) {
+      const result = command(...args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.deepEqual(fs.readFileSync(registry), retiredRegistry);
+      assert.deepEqual(fs.readFileSync(path.join(archive, "state.json")), originalState);
+    }
+  });
+  assert.equal(command("restore", id, "--apply", "--json").status, 0);
+  assert.deepEqual(fs.readFileSync(path.join(store, "state.json")), originalState);
+  assert.equal(command("retire", id, "--apply", "--json").status, 0);
+  assert.equal(command("purge", id, "--apply", "--confirm", id, "--json").status, 0);
+  assert.equal(fs.existsSync(archive), false);
+  assert.equal(fs.existsSync(project), false);
+  return { nativeDenial: true, refusedMutationsPreserveEvidence: true, missingProjectLifecycle: true };
+}
+
 let client, sharingServer, sharingClosed;
 try {
   assert.ok(run(empty, ["--version"]).includes(manifest.version));
@@ -161,10 +222,11 @@ try {
   assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["bridge_adapters", "bridge_status"]);
   assert.deepEqual((await client.callTool({ name: "bridge_status", arguments: {} })).structuredContent, { state: "absent" });
   assert.deepEqual(fs.readdirSync(empty), []);
+  const windowsRegistryPermissions = await verifyWindowsRegistryPermissions();
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
     installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
     actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true, offlineSharingPreview: true,
-    installedSharingRoundtrip: true,
+    installedSharingRoundtrip: true, windowsRegistryPermissions,
     credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {
   if (sharingServer && sharingServer.exitCode === null && sharingServer.signalCode === null) sharingServer.kill("SIGKILL");
