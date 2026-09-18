@@ -16,7 +16,7 @@ import {
 } from "./state.mjs";
 import { gitDelta } from "./delta.mjs";
 import { latestManifest } from "./audit.mjs";
-import { nowIso } from "./util.mjs";
+import { nowIso, BridgeError } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 
 const stamp = () => nowIso().replace(/[:.]/g, "-");
@@ -104,6 +104,11 @@ export function composeSeed(sourceLane, { decisions, next, gitLines, files }) {
 export function prepareSeed(projectDir, sourceLane) {
   const s = loadState(projectDir, { readOnly: true });
   const src = laneOf(s, sourceLane);
+  if (src && Object.hasOwn(src, "worktree")) {
+    throw new BridgeError("Seed from an isolated lane inside its worktree directory, where its context is stored.", {
+      code: "BRIDGE_SEED_WORKSPACE", operation: "prepare lane seed",
+    });
+  }
   const git = gitDelta(projectDir, src?.git?.sha ?? null);
   const fullText = latestCheckpoint(projectDir, sourceLane, "fullContext")?.text;
   const decisions = sectionBody(fullText, "Decisions");

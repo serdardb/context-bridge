@@ -9,6 +9,7 @@ import { createWorktreeLane, laneWorkspace } from "../src/worktree.mjs";
 import { loadState, mutateProject, statePath } from "../src/state.mjs";
 import { projectStatus } from "../src/status.mjs";
 import { handoff } from "../src/handoff.mjs";
+import { prepareSeed } from "../src/seed.mjs";
 
 const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 function setup(t) {
@@ -72,6 +73,16 @@ test("worktree lanes isolate code and state, launch in the correct cwd and remai
     assert.equal(fs.existsSync(observed), false);
     assert.throws(() => laneWorkspace(root, "feature"), /invalid worktree/i);
     assert.equal(projectStatus(root).workspace.available, false);
+    const status = spawnSync(process.execPath, [cli, "status"], { cwd: root, env: process.env, encoding: "utf8" });
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /Available: no/);
+    const beforeSeed = fs.readFileSync(statePath(root));
+    assert.throws(() => prepareSeed(root, "feature"), /worktree directory/);
+    const seeded = spawnSync(process.execPath, [cli, "lane", "new", "wrong-seed", "--seed", "feature"], {
+      cwd: root, env: process.env, encoding: "utf8",
+    });
+    assert.equal(seeded.status, 1, "a broken workspace link cannot become empty starter context");
+    assert.deepEqual(fs.readFileSync(statePath(root)), beforeSeed);
   }
   mutateProject(root, state => { state.lanes.feature.worktree = link; });
   fs.renameSync(target, `${target}-moved`);

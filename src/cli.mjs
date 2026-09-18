@@ -500,11 +500,11 @@ export async function main(argv) {
         log(`${NONE} No bridge state in this project yet. Run 'bridge' to start.`);
         return;
       }
-      if (s.lanes[s.activeLane]?.worktree) {
+      if (Object.hasOwn(s.lanes[s.activeLane], "worktree")) {
         const report = projectStatus(projectDir);
         log(`Lane ${s.activeLane}: isolated worktree`);
-        log(`  Workspace: ${s.lanes[s.activeLane].worktree.root}`);
-        log(`  Available: ${report.workspace.available ? "yes" : "no (missing or changed identity)"}`);
+        log(`  Workspace: ${s.lanes[s.activeLane].worktree?.root ?? "invalid link"}`);
+        log(`  Available: ${report.workspace.available ? "yes" : "no (invalid, missing or changed identity)"}`);
         log(`  Active agent: ${report.activeAgent ?? "none"}`);
         log(`  Pending: ${report.pending ? JSON.stringify(report.pending) : "none recorded"}`);
         return;
@@ -963,7 +963,7 @@ function runLane(projectDir, args, flags, seedSource) {
         : "no agents linked";
       const title = l.title ? dim(` (${l.title})`) : "";
       log(`  ${marker}${l.name.padEnd(width)}${title}  ${dim(when)}  ${dim(who)}`);
-      if (s.lanes[l.name]?.worktree) log(`      Worktree: ${s.lanes[l.name].worktree.root}`);
+      if (Object.hasOwn(s.lanes[l.name], "worktree")) log(`      Worktree: ${s.lanes[l.name].worktree?.root ?? "invalid link"}`);
     }
     if (summaries.length === 1) {
       log("");
@@ -998,10 +998,6 @@ function runLane(projectDir, args, flags, seedSource) {
       const s = loadState(projectDir);
       if (!s?.lanes?.[seedSource]) {
         log(`${BAD} No lane named '${seedSource}' to seed from. 'bridge lane' lists them.`);
-        return 1;
-      }
-      if (s.lanes[seedSource].worktree) {
-        log(`${BAD} Seed from an isolated lane inside its worktree directory, where its context is stored.`);
         return 1;
       }
       try {
