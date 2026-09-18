@@ -256,7 +256,11 @@ test("installing Codex hooks preserves whatever was already in the file", async 
     path.join(home, "hooks.json"),
     JSON.stringify({
       description: "the user's own file",
-      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "echo theirs" }] }] },
+      hooks: { SessionStart: [{ matcher: "custom", hooks: [
+        { type: "command", command: "bridge internal-hook session-start --agent codex" },
+        { type: "command", command: "echo theirs" },
+        { type: "command", command: "echo internal-hook --agent codex" },
+      ] }] },
     })
   );
 
@@ -269,10 +273,14 @@ test("installing Codex hooks preserves whatever was already in the file", async 
     assert.equal(after.description, "the user's own file");
     assert.equal(after.hooks.SessionStart.length, 2, "theirs and ours, not ours alone");
     assert.match(after.hooks.SessionStart[0].hooks[0].command, /echo theirs/);
+    assert.equal(after.hooks.SessionStart[0].matcher, "custom");
+    assert.deepEqual(after.hooks.SessionStart[0].hooks.map(hook => hook.command),
+      ["echo theirs", "echo internal-hook --agent codex"], "only the exact owned command is replaced, not its group or mentions");
 
     codex.installHooks();
     const twice = JSON.parse(fs.readFileSync(path.join(home, "hooks.json"), "utf8"));
     assert.equal(twice.hooks.SessionStart.length, 2, "installing again must not pile up duplicates");
+    assert.deepEqual(twice, after);
     for (const invalid of ['{"unfinished":', 'null', '[]', '{"hooks":{"SessionStart":{}}}', '{"hooks":{"SessionStart":[{"hooks":{}}]}}']) {
       fs.writeFileSync(path.join(home, "hooks.json"), invalid);
       assert.throws(() => codex.installHooks(), { code: "BRIDGE_CODEX_HOOKS_INVALID", expected: true });

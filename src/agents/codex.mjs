@@ -223,9 +223,13 @@ export function installHooks() {
   const hooks = { ...(file.hooks ?? {}) };
   const mine = hookDefinitions();
   for (const [event, groups] of Object.entries(mine)) {
-    const existing = (hooks[event] ?? []).filter(
-      (g) => !(g?.hooks ?? []).some((h) => typeof h?.command === "string" && h.command.includes("internal-hook") && h.command.includes("--agent codex"))
-    );
+    const owned = new Set(groups.flatMap(group => group.hooks.map(hook => hook.command)));
+    const existing = (hooks[event] ?? []).flatMap(group => {
+      if (!group.hooks) return [group];
+      const kept = group.hooks.filter(hook => !(hook?.type === "command" && owned.has(hook.command)));
+      if (kept.length === group.hooks.length) return [group];
+      return kept.length ? [{ ...group, hooks: kept }] : [];
+    });
     hooks[event] = [...existing, ...groups];
   }
   fs.mkdirSync(codexHome(), { recursive: true });
