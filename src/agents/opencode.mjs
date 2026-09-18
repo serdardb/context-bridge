@@ -16,7 +16,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { tryExec, readJson, fileExists, opencodeHome, HOME, BridgeError, recordPrefixHash } from "../util.mjs";
+import { tryExec, readJson, fileExists, opencodeHome, HOME, BridgeError, recordPrefixHash, readTranscriptFile } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -85,10 +85,11 @@ function exportSession(sessionId, { snapshot = false } = {}) {
     });
     fs.closeSync(fd);
     fd = undefined;
-    const raw = fs.readFileSync(tmpFile, "utf8");
+    const raw = readTranscriptFile(tmpFile);
     exportDocument(raw, sessionId);
     return raw;
-  } catch {
+  } catch (error) {
+    if (error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw error;
     return null;
   } finally {
     if (fd !== undefined) {

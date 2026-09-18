@@ -1,4 +1,4 @@
-import { readOwnedFile } from "../util.mjs";
+import { readTranscriptFile } from "../util.mjs";
 import { createHash } from "node:crypto";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -8,9 +8,9 @@ const decode = (bytes) => new TextDecoder("utf-8", { fatal: true, ignoreBOM: tru
 /** Aider's Markdown is evidence, not an unambiguous role-delimited protocol. */
 function readStableBytes(file) {
   try {
-    return readOwnedFile(file);
+    return readTranscriptFile(file, { owned: true, encoding: null });
   } catch (error) {
-    if (error.code === "ENOENT") throw error;
+    if (error.code === "ENOENT" || error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw error;
     throw invalid();
   }
 }

@@ -622,6 +622,18 @@ test("a refused handoff does not take the one already waiting with it", async ()
   };
   saveState(project, s);
 
+  const { MAX_TRANSCRIPT_BYTES } = await import("../src/util.mjs");
+  const { statePath } = await import("../src/state.mjs");
+  const stateBefore = fs.readFileSync(statePath(project));
+  const originalTranscript = fs.readFileSync(rollout);
+  fs.truncateSync(rollout, MAX_TRANSCRIPT_BYTES + 1);
+  assert.throws(() => handoff(project, "claude", {
+    from: "codex", summary: "valid summary", checkTarget: () => {},
+  }), { code: "BRIDGE_TRANSCRIPT_TOO_LARGE", expected: true });
+  assert.deepEqual(fs.readFileSync(statePath(project)), stateBefore);
+  assert.deepEqual(fs.readdirSync(dir).sort(), [`${waiting}-full.md`, `${waiting}.md`]);
+  fs.writeFileSync(rollout, originalTranscript);
+
   assert.throws(() =>
     handoff(project, "claude", {
       from: "codex",

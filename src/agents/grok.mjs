@@ -25,6 +25,7 @@ import {
   BridgeError,
   transcriptStamp,
   readRegularFile,
+  readTranscriptFile,
   recordPrefixHash,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
@@ -307,9 +308,10 @@ function* readJsonl(p, required = false, readStatus = null) {
   let before;
   try {
     if (readStatus) before = transcriptStamp({ transcriptPath: p });
-    content = readRegularFile(p);
+    content = readTranscriptFile(p);
     if (readStatus && !isDeepStrictEqual(before, transcriptStamp({ transcriptPath: p }))) readStatus.unreadable = true;
   } catch (cause) {
+    if (cause.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw cause;
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });

@@ -882,6 +882,20 @@ opt-in Aider/Pi candidates.
 
 ## Known limits
 
+Native transcript reads are admitted before allocation, at most 16 MiB per
+file and at most one sixty-fourth of the currently available V8 heap. JSON
+objects, decoded strings, parsing and prefix hashes can occupy substantially
+more memory than their wire representation; the headroom is conservative
+operating policy, not a guarantee against every possible memory exhaustion.
+Oversized sources fail with `BRIDGE_TRANSCRIPT_TOO_LARGE`, not truncated
+conversation or an advanced delivery watermark. Preserve the original and
+start a smaller source session before retrying. This applies to native JSONL,
+Aider history/evidence and OpenCode's exported JSON before parsing. Exporting
+OpenCode still uses a timed external process and temporary disk storage; this
+in-process limit does not bound that external process's memory or disk writes.
+Probe commands report an oversized transcript as unreadable. These limits
+are input admission constraints, separate from the delta delivery byte budget.
+
 - Verified on macOS and in selected Linux arm64 acceptance environments,
   including installed-package operation on Alpine/Node18.18 and native
   OpenCode1.18.31 snapshot/handoff preparation on Node24. These results do not

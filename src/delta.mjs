@@ -1,7 +1,7 @@
 // Deterministic context-delta extraction. No LLM summarization calls in v0.1:
 // conversation truth comes from native session files, work truth from git.
 import { createHash } from "node:crypto";
-import { tryExec, BridgeError, readRegularFile, recordPrefixHash } from "./util.mjs";
+import { tryExec, BridgeError, readTranscriptFile, recordPrefixHash } from "./util.mjs";
 
 // There is no message cap and no per-message length here, deliberately, and this
 // comment is the guard against one coming back. Every number that used to live
@@ -545,8 +545,9 @@ function cap(s) {
 function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
-    content = readRegularFile(p);
+    content = readTranscriptFile(p);
   } catch (cause) {
+    if (cause.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw cause;
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });

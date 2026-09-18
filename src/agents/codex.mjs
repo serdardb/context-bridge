@@ -19,6 +19,7 @@ import {
   sharedSkillPath,
   installedCopyStatus,
   readRegularFile,
+  readTranscriptFile,
   readOwnedFile,
 } from "../util.mjs";
 
@@ -383,7 +384,7 @@ export function observeAudit(ref) {
   let duration = false;
   let content;
   try {
-    content = readRegularFile(ref?.transcriptPath);
+    content = readTranscriptFile(ref?.transcriptPath);
   } catch {
     return { commandArgs: null, outcome: null, exitCode: null, duration: null };
   }

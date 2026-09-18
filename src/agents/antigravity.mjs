@@ -12,7 +12,7 @@
 // of its objections changed this file; one of its claims did not survive checking.
 import fs from "node:fs";
 import path from "node:path";
-import { tryExec, fileExists, readRegularFile, recordPrefixHash, HOME, BridgeError } from "../util.mjs";
+import { tryExec, fileExists, readTranscriptFile, recordPrefixHash, HOME, BridgeError } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -349,8 +349,9 @@ export function smokeCommand() {
 function* readJsonl(p, required = false, readStatus = null) {
   let content;
   try {
-    content = readRegularFile(p);
+    content = readTranscriptFile(p);
   } catch (cause) {
+    if (cause.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw cause;
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });

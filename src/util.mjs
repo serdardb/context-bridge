@@ -5,6 +5,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { publication } from "./publication.mjs";
+import { getHeapStatistics } from "node:v8";
 
 export const HOME = os.homedir();
 export const REPO_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -165,15 +166,45 @@ export function transcriptStamp(ref) {
 }
 
 /** Native files may be linked, but must not be devices or blocking streams. */
-export function readRegularFile(file, encoding = "utf8") {
+export function readRegularFile(file, encoding = "utf8", { maxBytes = null } = {}) {
+  if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new Error("Invalid file read limit.");
   let fd;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
-    if (!fs.fstatSync(fd).isFile()) {
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) {
       throw Object.assign(new Error("Expected a regular file."), { code: "BRIDGE_UNSAFE_FILE" });
     }
-    return fs.readFileSync(fd, encoding);
+    if (maxBytes === null) return fs.readFileSync(fd, encoding);
+    if (opened.size > maxBytes) throw Object.assign(new Error("File exceeds the byte limit."), { code: "BRIDGE_FILE_TOO_LARGE" });
+    const bytes = Buffer.alloc(opened.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = fs.readSync(fd, bytes, length, bytes.length - length, null);
+      if (!count) break;
+      length += count;
+    }
+    if (length > maxBytes) throw Object.assign(new Error("File exceeds the byte limit."), { code: "BRIDGE_FILE_TOO_LARGE" });
+    if (length !== opened.size) throw Object.assign(new Error("Source changed during reading."), { code: "BRIDGE_SOURCE_CHANGED" });
+    return encoding ? bytes.subarray(0, length).toString(encoding) : bytes.subarray(0, length);
   } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+export const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+
+/** Parsed JSON expands beyond wire bytes. This is an admission policy, not an
+ * OOM guarantee: reserve heap headroom and never truncate a source to fit. */
+export function readTranscriptFile(file, { owned = false, encoding = "utf8" } = {}) {
+  const available = Math.max(0, getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed);
+  const maxBytes = Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(available / 64));
+  try {
+    return owned ? readOwnedFile(file, { encoding, maxBytes }) : readRegularFile(file, encoding, { maxBytes });
+  } catch (cause) {
+    if (cause.code !== "BRIDGE_FILE_TOO_LARGE") throw cause;
+    throw new BridgeError(`Source transcript exceeds this process's ${maxBytes}-byte read budget (maximum ${MAX_TRANSCRIPT_BYTES}). No context was truncated. Preserve the original and start a smaller source session before retrying.`, {
+      code: "BRIDGE_TRANSCRIPT_TOO_LARGE", cause,
+    });
+  }
 }
 
 /** Read a bridge-owned regular leaf; only initial absence may return null. */

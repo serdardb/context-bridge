@@ -42,10 +42,10 @@ test("a missing transcript is distinct from an I/O failure", () => {
   assert.equal(probeJsonl(path.join(os.tmpdir(), "nope-does-not-exist.jsonl"), () => true).status, "missing");
   assert.equal(probeJsonl(null, () => true).status, "missing");
   const file = write("unreadable.jsonl", "");
-  const read = fs.readFileSync;
+  const read = fs.readSync;
   try {
     for (const code of ["EACCES", "EIO"]) {
-      fs.readFileSync = function (p, ...args) {
+      fs.readSync = function (p, ...args) {
         if (p === file || (typeof p === "number" && fs.fstatSync(p).ino === fs.statSync(file).ino)) {
           throw Object.assign(new Error(`private path ${file}`), { code });
         }
@@ -63,7 +63,7 @@ test("a missing transcript is distinct from an I/O failure", () => {
           (error) => error.code === "BRIDGE_TRANSCRIPT_UNREADABLE" && error.cause.code === code);
       }
     }
-  } finally { fs.readFileSync = read; }
+  } finally { fs.readSync = read; }
   if (process.platform !== "win32") {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-read-pipe-"));
     try {
@@ -153,7 +153,15 @@ test("each adapter recognises its own real record shape and rejects a foreign on
 // people to ignore the row, which defeats the point of adding it at all.
 test("doctor on a fresh project reports no session, never a failure", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-fresh-"));
-  const r = collect(project);
+  const thread = process.env.CODEX_THREAD_ID;
+  let r;
+  try {
+    delete process.env.CODEX_THREAD_ID;
+    r = collect(project);
+  } finally {
+    if (thread === undefined) delete process.env.CODEX_THREAD_ID;
+    else process.env.CODEX_THREAD_ID = thread;
+  }
   for (const id of AGENT_IDS) {
     const status = r.agents[id].session.status;
     assert.ok(status === "none" || status === "readable", `${id} reported ${status} on a fresh project`);
@@ -222,17 +230,17 @@ test("an unreadable linked session takes its routes off green and the exit code 
 
   const r = collect(project);
   assert.equal(r.agents.claude.session.status, "mismatch");
-  const read = fs.readFileSync;
+  const read = fs.readSync;
   let failed;
   try {
-    fs.readFileSync = function (p, ...args) {
+    fs.readSync = function (p, ...args) {
       if (p === transcript || (typeof p === "number" && fs.fstatSync(p).ino === fs.statSync(transcript).ino)) {
         throw Object.assign(new Error("private error detail"), { code: "EACCES" });
       }
       return read.call(this, p, ...args);
     };
     failed = collect(project);
-  } finally { fs.readFileSync = read; }
+  } finally { fs.readSync = read; }
   assert.equal(failed.agents.claude.session.status, "unreadable");
   failed.agents.claude.version = "fixture-installed";
   assert.ok(verifyReport(failed).failures.includes("claude session is unreadable"));

@@ -216,7 +216,7 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     if (!complete) warnings.push(`${adapter.displayName}: source was only partially readable. Readable messages are included, but its delivery watermark was not advanced.`);
     return { ref, activity, mark, complete, stamp: before };
   } catch (error) {
-    if (error instanceof AdapterResultError) throw error;
+    if (error instanceof AdapterResultError || error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw error;
     return unavailable();
   }
 }
@@ -532,6 +532,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
   // below and so packs as empty, while every other agent packs from the
   // beginning exactly as it would on any other first switch.
   if (!targetSlot.id && sourceId === "claude" && target === "codex") {
+    const sourceMark = sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot));
     if (transfer === transferClaudeSession) preflightOfficialImport();
     const res = transfer(sourceSlot.transcriptPath);
     const targetRef = targetAdapter.hydrate(projectDir, { id: res.threadId });
@@ -541,7 +542,6 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
     // unmarked would make the first return replay the entire imported history
     // back at Claude.
     targetSlot.set({ mark: targetRef?.transcriptPath ? targetAdapter.currentMark(targetRef) : now });
-    const sourceMark = sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot));
     sourceSlot.set({ mark: sourceMark });
     // The import carried Claude's conversation into the thread, so Codex has
     // seen it; without this seed the first return would hand it all back.

@@ -18,7 +18,7 @@ import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
 import { claudeMessagesSince, transcriptMark, markedTranscript } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
-import { tryExec, fileExists, readJson, readRegularFile, HOME, CLAUDE_DIR } from "../util.mjs";
+import { tryExec, fileExists, readJson, readTranscriptFile, HOME, CLAUDE_DIR } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -206,7 +206,7 @@ export function observeAudit(ref) {
   let exitCode = false;
   let content;
   try {
-    content = readRegularFile(ref?.transcriptPath);
+    content = readTranscriptFile(ref?.transcriptPath);
   } catch {
     return { commandArgs: null, exitCode: null };
   }

@@ -16,7 +16,7 @@
 //   - A fresh project has no linked session. That is NEUTRAL, never red.
 //   - An empty session is readable. Zero messages is a fact, not a failure.
 import path from "node:path";
-import { readRegularFile } from "./util.mjs";
+import { readTranscriptFile } from "./util.mjs";
 
 /**
  * Read a JSONL transcript and judge whether our parser still understands it.
@@ -42,7 +42,7 @@ export function probeJsonl(filePath, isKnownRow) {
   if (!filePath) return gone;
   let content;
   try {
-    content = readRegularFile(filePath);
+    content = readTranscriptFile(filePath);
   } catch (error) {
     if (error.code === "ENOENT") return gone;
     return { ...gone, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
