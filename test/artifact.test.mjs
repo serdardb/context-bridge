@@ -220,6 +220,22 @@ test("export pairs context and audit by handoff, never by independent latest fil
     fs.symlinkSync(output, auditFile);
     assert.throws(() => exportArtifact(source, output), /symlinked audit checkpoint/);
     assert.deepEqual(fs.readFileSync(output), before);
+    fs.unlinkSync(auditFile);
+    fs.writeFileSync(auditFile, JSON.stringify({ evidence: "paired audit" }));
+    const open = fs.openSync;
+    let disappeared = false;
+    fs.openSync = (file, ...args) => {
+      if (file === auditFile && !disappeared) {
+        disappeared = true;
+        fs.unlinkSync(auditFile);
+      }
+      return open(file, ...args);
+    };
+    try {
+      assert.throws(() => exportArtifact(source, output), /evidence that changed during reading/);
+      assert.equal(disappeared, true);
+      assert.deepEqual(fs.readFileSync(output), before, "an audit lost during read must not replace an existing export with incomplete evidence");
+    } finally { fs.openSync = open; }
   } finally { fs.rmSync(source, { recursive: true, force: true }); }
 });
 
@@ -372,7 +388,7 @@ for (const failure of ["exit", "throw", ...(process.platform === "win32" ? [] : 
   }
 });
 
-test("artifact export refuses checkpoint symlinks instead of exporting outside files", () => {
+test("artifact export refuses linked checkpoints instead of exporting outside files", () => {
   const source = project();
   const outside = project();
   try {
@@ -383,6 +399,12 @@ test("artifact export refuses checkpoint symlinks instead of exporting outside f
     const destination = path.join(source, "export.cbctx");
     assert.throws(() => exportArtifact(source, destination), /symlinked full context/);
     assert.equal(fs.existsSync(destination), false);
+    assert.equal(fs.readFileSync(evidence, "utf8"), "private external evidence");
+    const checkpoint = path.join(checkpointsDir(source), "2026-09-16T00-00-00-000Z-claude-to-codex-full.md");
+    fs.unlinkSync(checkpoint);
+    fs.linkSync(evidence, checkpoint);
+    assert.throws(() => exportArtifact(source, destination), /unsafe.*full context/i);
+    assert.equal(fs.existsSync(destination), false, "hardlinked private data must not become a portable artifact");
     assert.equal(fs.readFileSync(evidence, "utf8"), "private external evidence");
   } finally {
     fs.rmSync(source, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome, withProjectRuntimeLock } from "./storage.mjs";
 import { ensureState, loadState, mutateState, withProjectStateReadLock, readableCheckpointsDir, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
-import { writeJsonAtomic, writeFileExclusive } from "./util.mjs";
+import { writeJsonAtomic, writeFileExclusive, readOwnedFile, BridgeError } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -161,12 +161,16 @@ function latestFullContext(projectDir, lane) {
 }
 
 function readEvidence(file, label, encoding = "utf8") {
-  if (!fs.lstatSync(file).isFile()) throw new Error(`Refusing to export a non-file or symlinked ${label}.`);
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  let bytes;
   try {
-    if (!fs.fstatSync(fd).isFile()) throw new Error(`Refusing to export a non-file ${label}.`);
-    return fs.readFileSync(fd, encoding);
-  } finally { fs.closeSync(fd); }
+    bytes = readOwnedFile(file, { encoding, missing: true });
+  } catch (cause) {
+    throw new BridgeError(`Refusing to read an unsafe or symlinked ${label}, or evidence that changed during reading.`, { cause });
+  }
+  // Only initial absence is optional for a paired audit; disappearance during
+  // an opened read must not silently turn the export into context without audit.
+  if (bytes === null) throw Object.assign(new BridgeError(`The ${label} does not exist.`), { code: "ENOENT" });
+  return bytes;
 }
 
 function artifactPayload(projectDir, lane = DEFAULT_LANE) {
