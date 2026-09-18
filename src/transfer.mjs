@@ -47,14 +47,18 @@ export function transferClaudeSession(transcriptPath) {
     stdout = execFileSync("node", [companion, "transfer", "--json", "--source", transcriptPath], {
       encoding: "utf8",
       timeout: 120000,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-  } catch (e) {
-    const msg = e.stdout || e.stderr || e.message;
-    throw new BridgeError(`Official Claude→Codex transfer failed: ${String(msg).trim()}`);
+  } catch (cause) {
+    throw new BridgeError("Official Claude-to-Codex transfer failed. The helper may have created a session before failing; inspect Codex before retrying. Helper output was withheld because it can contain private conversation data.", {
+      code: "BRIDGE_TRANSFER_FAILED", operation: "official session transfer", cause,
+    });
   }
   const parsed = extractJson(stdout);
-  if (!parsed?.threadId) {
-    throw new BridgeError(`Transfer did not return a threadId. Output was:\n${stdout.trim()}`);
+  if (typeof parsed?.threadId !== "string" || !parsed.threadId.trim()) {
+    throw new BridgeError("Official transfer did not return a valid thread identity. The helper may have created a session; inspect Codex before retrying. Helper output was withheld because it can contain private conversation data.", {
+      code: "BRIDGE_TRANSFER_INVALID_RESULT", operation: "official session transfer",
+    });
   }
   return parsed;
 }
