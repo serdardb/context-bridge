@@ -16,7 +16,7 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { tryExec, readJson, fileExists, opencodeHome, HOME, BridgeError } from "../util.mjs";
+import { tryExec, readJson, fileExists, opencodeHome, HOME, BridgeError, recordPrefixHash } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -436,11 +436,12 @@ export function promptArgs(delta) {
 // declined. The delta is delivered into history (see preResume) and the person
 // opens the turn. The other four auto-start; this is the documented exception.
 
-/**
- * OpenCode sessions carry timestamps, so the mark is an ISO instant.
- */
-export function currentMark() {
-  return new Date().toISOString();
+/** Capture progress from the same export used for conversation and audit. */
+export function currentMark(ref) {
+  const raw = sourceExport(ref);
+  if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+  const { messages } = exportDocument(raw, ref.id);
+  return { rows: messages.length, prefixHash: recordPrefixHash(messages) };
 }
 
 /**
@@ -473,12 +474,21 @@ function messageTime(info) {
   return Math.max(info?.time?.created || 0, info?.time?.completed || 0);
 }
 
-function incompleteSince(document, sinceIso) {
-  const since = sinceIso ? Date.parse(sinceIso) : 0;
+function selectedExport(document, mark) {
+  const rows = document.messages;
+  const attested = Number.isSafeInteger(mark?.rows) && mark.rows >= 0 && typeof mark.prefixHash === "string";
+  const sourceRewritten = attested && (rows.length < mark.rows ||
+    recordPrefixHash(rows.slice(0, mark.rows)) !== mark.prefixHash);
+  const since = typeof mark === "string" ? Date.parse(mark) : 0;
+  const messages = rows.filter((m, index) => attested ? sourceRewritten || index >= mark.rows
+    : !since || !messageTime(m.info) || messageTime(m.info) > since);
+  return { document: { ...document, messages }, sourceRewritten };
+}
+
+function incompleteExport(document) {
   return document.messages.some(({ info, parts }) =>
-    (!messageTime(info) || messageTime(info) > since) &&
-    ((info.role === "assistant" && !info.time?.completed) ||
-      parts.some(p => p.type === "tool" && ["pending", "running"].includes(p.state?.status))));
+    (info.role === "assistant" && !info.time?.completed) ||
+    parts.some(p => p.type === "tool" && ["pending", "running"].includes(p.state?.status)));
 }
 
 export function parseExportMessages(raw, { required = false } = {}) {
@@ -489,6 +499,10 @@ export function parseExportMessages(raw, { required = false } = {}) {
     if (required) throw error;
     return [];
   }
+  return messagesFromDocument(d);
+}
+
+function messagesFromDocument(d) {
   const messages = [];
   for (const m of d?.messages ?? []) {
     const info = m?.info;
@@ -534,15 +548,10 @@ function sourceExport(ref) {
 export function activitySince(ref, sinceIso) {
   const raw = sourceExport(ref);
   if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
-  const all = parseExportMessages(raw, { required: true });
-  const since = sinceIso ? Date.parse(sinceIso) : 0;
-  const messages = all.filter((m) => {
-    if (!m.at) return true;
-    const t = Date.parse(m.at);
-    return !Number.isFinite(t) || t > since;
-  }).filter((m) => !(m.role === "user" && isBridgeProtocolNoise(m.text)));
-  return { messages, patchedFiles: [], turnsCompleted: 0,
-    sourceComplete: !incompleteSince(exportDocument(raw), sinceIso) };
+  const { document, sourceRewritten } = selectedExport(exportDocument(raw, ref.id), sinceIso);
+  const messages = messagesFromDocument(document).filter((m) => !(m.role === "user" && isBridgeProtocolNoise(m.text)));
+  return { messages, patchedFiles: [], turnsCompleted: 0, sourceRewritten,
+    sourceComplete: !incompleteExport(document) };
 }
 
 /**
@@ -733,13 +742,9 @@ export function parseAudit(raw, sinceIso) {
   const commands = [];
   const filesRead = new Set();
   const filesChanged = new Set();
-  const since = sinceIso ? Date.parse(sinceIso) : 0;
+  d = selectedExport(d, sinceIso).document;
 
   for (const m of d?.messages ?? []) {
-    const info = m?.info;
-    const msgTime = messageTime(info);
-    if (since && msgTime && msgTime <= since) continue;
-
     for (const part of m?.parts ?? []) {
       if (part?.type !== "tool") continue;
       const tool = part?.tool;
@@ -770,6 +775,6 @@ export function parseAudit(raw, sinceIso) {
     filesRead: [...filesRead],
     filesChanged: [...filesChanged],
     dropped: 0,
-    sourceComplete: !incompleteSince(d, sinceIso),
+    sourceComplete: !incompleteExport(d),
   };
 }

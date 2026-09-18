@@ -695,9 +695,9 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   let tail, finalMark;
   try {
     const before = transcriptStamp(ref);
-    finalMark = adapter.currentMark(ref);
     if (adapter.snapshotSource) ref = adapter.snapshotSource(ref);
     if (!ref) throw new Error("Closing source snapshot unavailable");
+    finalMark = adapter.currentMark(ref);
     if (adapter.parseProbe(ref).status !== "readable") {
       log(`${WARN} Closing words from ${adapter.displayName} could not be read completely; progress was not advanced.`);
       return;

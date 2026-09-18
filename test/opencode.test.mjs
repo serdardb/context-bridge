@@ -21,6 +21,7 @@ import {
   auditSince,
   parseProbe,
   snapshotSource,
+  currentMark,
   SQLITE_OPERATION_TIMEOUT_MS,
 } from "../src/agents/opencode.mjs";
 import { buildCommand } from "../src/launcher.mjs";
@@ -268,7 +269,7 @@ if (process.env.OPENCODE_DB !== ${JSON.stringify(database.db)}) {
 }
 const id = process.argv[3];
 const mismatch = fs.existsSync(file + '.mismatch') ? fs.readFileSync(file + '.mismatch', 'utf8') : '';
-const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:Date.now(),completed:Date.now()}},parts:[
+const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:1,completed:2}},parts:[
 {sessionID:id,type:'text',text:'export-generation-'+n},
 {sessionID:id,type:'tool',tool:'bash',state:{status:'completed',input:{command:'echo export-generation-'+n},metadata:{exit:0}}}
 ]}]};
@@ -298,11 +299,22 @@ console.log(JSON.stringify(document));
       assert.equal(audit.agents.opencode.commands[0].args, `echo ${generation}`);
       assert.notEqual(generation, previous, "a later handoff must read a fresh export");
       assert.equal(audit.readerErrors, undefined);
+      assert.equal(state.pendingInjection.sources.opencode.rows, 1);
+      if (turn) assert.match(fs.readFileSync(file, "utf8"), /previously marked conversation changed/);
+      state.knownBy ??= {};
+      (state.knownBy.codex ??= {}).opencode = state.pendingInjection.sources.opencode;
+      saveState(project, state);
       previous = generation;
     }
     const copies = fs.readFileSync(counter + '.copies', 'utf8').trim().split('\n');
     assert.equal(copies.length, 2, "each handoff must export a fresh private SQLite snapshot");
     assert.ok(copies.every(copy => !fs.existsSync(path.dirname(copy))), "private database copies must be cleaned");
+    const snapshot = snapshotSource({ id: "ses_snapshot" });
+    const mark = currentMark(snapshot);
+    const count = fs.readFileSync(counter, "utf8");
+    assert.equal(activitySince(snapshot, mark).messages.length, 0);
+    assert.equal(auditSince(snapshot, mark).commands.length, 0);
+    assert.equal(fs.readFileSync(counter, "utf8"), count, "mark and readers must share one export");
     fs.writeFileSync(counter + ".mismatch", "streaming");
     handoff(project, "codex", { from: "opencode", checkTarget: () => {} });
     assert.equal(loadState(project).pendingInjection.sources.opencode, undefined,

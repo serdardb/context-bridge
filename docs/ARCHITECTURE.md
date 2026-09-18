@@ -478,10 +478,13 @@ its optional hunk record. Initial absence of that optional file is normal;
 disappearance or modification during its read marks the audit incomplete. These
 per-file checks still do not establish a single shared instant across files.
 OpenCode uses the optional adapter `snapshotSource(ref)` operation instead:
-handoff captures the mark first, then creates a consistent SQLite backup using
+handoff first creates a consistent SQLite backup using
 a read-only source connection, including committed WAL pages. Native export runs
 with `OPENCODE_DB` pointing at that private copy; its bytes are shared by the
-ref's probe, activity and audit reads. A later handoff creates a fresh backup and
+ref's mark, probe, activity and audit reads. The mark counts exported messages
+and hashes their parsed prefix, including tool parts. Changed/shrunken history
+replays current readable messages; append-only tails do not depend on advancing
+timestamps. Legacy ISO marks retain their older timestamp filtering. A later handoff creates a fresh backup and
 export. Closing-word collection uses the same snapshot operation. Idle detection
 and discovery still read live data. This isolates Bridge's handoff export from
 later source writes without changing the vendor exporter's own transaction
