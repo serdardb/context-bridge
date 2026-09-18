@@ -9,6 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 // Deliberately load everything from the installed tarball, not this checkout.
 const installed = process.argv[2];
+const coreOnly = process.argv.includes("--core-only");
 assert.ok(installed && path.isAbsolute(installed), "pass an installed package root");
 const manifest = JSON.parse(fs.readFileSync(path.join(installed, "package.json"), "utf8"));
 assert.equal(manifest.name, "@serdardb/context-bridge");
@@ -23,6 +24,8 @@ const env = { ...process.env, HOME: path.join(root, "home"), PATH: "",
   CONTEXT_BRIDGE_HOME: path.join(root, "runtime"), CONTEXT_BRIDGE_STORAGE: "", CONTEXT_BRIDGE_ADAPTERS: "",
   CODEX_THREAD_ID: "", CONTEXT_BRIDGE_LANE: "" };
 Object.assign(process.env, env);
+delete env.CONTEXT_BRIDGE_MCP_MODULE;
+delete process.env.CONTEXT_BRIDGE_MCP_MODULE;
 const cli = path.join(installed, manifest.bin.bridge);
 const run = (cwd, args) => {
   const result = spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: "utf8", timeout: 15000 });
@@ -162,6 +165,20 @@ try {
   assert.equal(JSON.parse(run(empty, ["adapters", "--json"])).adapters.length, 5, "candidates never load implicitly");
   assert.equal(fs.existsSync(env.CONTEXT_BRIDGE_HOME), false, "loading descriptors must not initialize storage");
   assert.deepEqual(fs.readdirSync(empty), []);
+  if (coreOnly) {
+    assert.throws(() => installedRequire.resolve("@serdardb/context-bridge-mcp"), { code: "MODULE_NOT_FOUND" });
+    assert.throws(() => installedRequire.resolve("@modelcontextprotocol/sdk"), { code: "MODULE_NOT_FOUND" });
+    assert.deepEqual(Object.keys(manifest.dependencies), ["koffi"]);
+    const refused = spawnSync(process.execPath, [cli, "mcp", "--project", empty], {
+      env, encoding: "utf8", timeout: 15000,
+    });
+    assert.equal(refused.status, 1);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /MCP companion is not resolvable/);
+    assert.doesNotMatch(refused.stderr, /at file:|node:internal/);
+    assert.equal(fs.existsSync(env.CONTEXT_BRIDGE_HOME), false, "missing MCP must not initialize storage");
+    assert.deepEqual(fs.readdirSync(empty), []);
+  }
   await verifyInstalledLock();
   const { ensureState, writeCheckpoint } = await load("src/state.mjs");
   const { composeFullContext } = await load("src/delta.mjs");
@@ -225,18 +242,28 @@ try {
   for (const dir of [source, target]) assert.deepEqual(fs.readdirSync(dir), [], "no project runtime or Git changes");
 
   const require = createRequire(path.join(installed, "package.json"));
-  const { Client } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")));
-  const { StdioClientTransport } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/stdio.js")));
-  client = new Client({ name: "installed-package-acceptance", version: "1.0.0" });
-  await client.connect(new StdioClientTransport({ command: process.execPath,
-    args: [cli, "mcp", "--project", empty], env, stderr: "pipe" }));
-  assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["bridge_adapters", "bridge_status"]);
-  assert.deepEqual((await client.callTool({ name: "bridge_status", arguments: {} })).structuredContent, { state: "absent" });
+  if (!coreOnly) {
+    const companion = createRequire(require.resolve("@serdardb/context-bridge-mcp"));
+    const { Client } = await import(pathToFileURL(companion.resolve("@modelcontextprotocol/sdk/client/index.js")));
+    const { StdioClientTransport } = await import(pathToFileURL(companion.resolve("@modelcontextprotocol/sdk/client/stdio.js")));
+    client = new Client({ name: "installed-package-acceptance", version: "1.0.0" });
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: [cli, "mcp", "--project", empty], env, stderr: "pipe" }));
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["bridge_adapters", "bridge_status"]);
+    assert.deepEqual((await client.callTool({ name: "bridge_status", arguments: {} })).structuredContent, { state: "absent" });
+    await client.close();
+    client = new Client({ name: "installed-content-acceptance", version: "1.0.0" });
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: [cli, "mcp", "--project", source, "--allow-content"], env, stderr: "pipe" }));
+    const search = await client.callTool({ name: "bridge_search", arguments: { query: "PACKAGED_CONTEXT_5182", limit: 1 } });
+    assert.equal(search.isError, undefined);
+    assert.equal(search.structuredContent.results.length, 1);
+    }
   assert.deepEqual(fs.readdirSync(empty), []);
   const windowsRegistryPermissions = await verifyWindowsRegistryPermissions();
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
     installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
-    actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true, offlineSharingPreview: true,
+    actualMcpStdio: !coreOnly, missingCompanionRefused: coreOnly, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true, offlineSharingPreview: true,
     installedSharingRoundtrip: true, windowsRegistryPermissions,
     credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {

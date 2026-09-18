@@ -61,12 +61,20 @@ test("release evidence binds actual package bytes and commit, expires and reject
     fs.writeFileSync(path.join(root, "index.js"), "export const value = 1;\n");
     fs.writeFileSync(path.join(root, ".gitignore"), "payload.bin\n");
     fs.writeFileSync(path.join(root, "payload.bin"), "first build");
+    const companion = path.join(root, "packages", "mcp");
+    fs.mkdirSync(companion, { recursive: true });
+    fs.writeFileSync(path.join(companion, "package.json"), JSON.stringify({
+      name: "bridge-mcp-receipt-fixture", version: "1.0.0", files: ["index.js", "payload.bin"],
+    }));
+    fs.writeFileSync(path.join(companion, "index.js"), "export const api = 1;\n");
+    fs.writeFileSync(path.join(companion, "payload.bin"), "first companion build");
     git("init", "-q"); git("add", ".");
     git("-c", "user.name=Release Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture");
     assert.throws(() => verifyReleaseEvidence(root), /No readable release acceptance/);
     const prepared = prepareReleaseEvidence(root, { execute });
     assert.deepEqual(executed, RELEASE_GATES.map(([name]) => name));
-    assert.equal(verifyReleaseEvidence(root).binding.packageSha256, prepared.binding.packageSha256);
+    assert.deepEqual(verifyReleaseEvidence(root).binding.packages, prepared.binding.packages);
+    assert.deepEqual(prepared.binding.packages.map((pkg) => pkg.directory), [".", "packages/mcp"]);
     const file = releaseEvidencePath(root), original = fs.readFileSync(file);
     const linkedReceipt = file + ".linked";
     fs.linkSync(file, linkedReceipt);
@@ -78,12 +86,17 @@ test("release evidence binds actual package bytes and commit, expires and reject
       (r) => { r.gates.pop(); },
       (r) => { r.startedAt = new Date(Date.now() - 25 * 3600000).toISOString(); },
       (r) => { r.binding.commit = "different"; },
+      (r) => { r.schema = 1; },
+      (r) => { r.binding.packages.pop(); },
     ]) {
       const receipt = JSON.parse(original); change(receipt);
       fs.writeFileSync(file, JSON.stringify(receipt));
       assert.throws(() => verifyReleaseEvidence(root), { code: "BRIDGE_RELEASE_EVIDENCE" });
     }
     fs.writeFileSync(file, original);
+    fs.writeFileSync(path.join(companion, "payload.bin"), "different ignored companion build");
+    assert.throws(() => verifyReleaseEvidence(root), /different commit, package or toolchain/);
+    fs.writeFileSync(path.join(companion, "payload.bin"), "first companion build");
     fs.writeFileSync(path.join(root, "payload.bin"), "different ignored build");
     assert.throws(() => verifyReleaseEvidence(root), /different commit, package or toolchain/);
     fs.writeFileSync(path.join(root, "payload.bin"), "first build");

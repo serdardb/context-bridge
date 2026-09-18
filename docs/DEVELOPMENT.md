@@ -44,7 +44,8 @@ codex/SKILL.md        shared $bridge skill for Codex, Grok, Antigravity and Open
 docs/                 this documentation
 ```
 
-The bridge uses Node ESM. Runtime dependencies include the MCP SDK and Zod.
+The bridge uses Node ESM. Core's only runtime dependency is Koffi. The optional
+`packages/mcp` companion owns the official MCP SDK and Zod.
 `@hono/node-server` is pinned to the SDK-supported Node 18-compatible 1.x
 line: the SDK also permits 2.x, whose Node 20 requirement would invalidate
 our Node 18.18 installation contract. Verify clean tarball installation with
@@ -54,11 +55,26 @@ a passing checkout suite does not prove consumer dependency resolution.
 Koffi supplies the native kernel-lock backend required for mutations. It is
 loaded on demand; read-only commands remain available when it cannot load,
 while diagnostics report the failure and mutations refuse safely. MCP is an
-optional command, not an optional installation dependency: its SDK, Zod and
-the Hono compatibility pin currently ship in every installation. The direct
+explicitly installed companion; its SDK, Zod and Hono pin no longer ship in
+core-only production installs. They remain development dependencies for test
+clients and source-checkout acceptance. The direct
 Hono pin is intentional because npm overrides in a dependency do not govern
-the consuming project's installation. Splitting MCP into a separately installed
-package remains a packaging decision, not an accomplished size reduction.
+the consuming project's installation.
+
+The companion receives versioned guarded read callbacks from core, not another
+copy of core's storage implementation. Without content opt-in, no search
+callback is provided. It is trusted code, not a sandbox. npm sibling resolution
+is supported; isolated layouts can explicitly set `CONTEXT_BRIDGE_MCP_MODULE`
+to a trusted absolute module path. Do not infer PnP support from npm tests.
+
+`npm run test:package` packs both packages, verifies a clean core-only install
+(including clean MCP refusal), then installs the companion tarball and verifies
+real stdio metadata/content reads. Test clients resolve from that installed
+companion, not checkout dependencies. Release receipt schema 2 binds both
+ordered package hashes; schema 1 receipts cannot authorize publishing either.
+Run publication only from the reviewed repository: the companion's
+prepublish hook checks the same root receipt. Publishing one package does not
+establish registry integrity for the other.
 
 ## Storage tests
 

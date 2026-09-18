@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ensureState, writeCheckpoint, checkpointsDir } from "../src/state.mjs";
@@ -12,6 +13,7 @@ const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
 async function connect(project, extra = [], globalStorage = false, preload = null) {
   const env = { ...process.env, PATH: "" };
   delete env.CONTEXT_BRIDGE_ADAPTERS;
+  env.CONTEXT_BRIDGE_MCP_MODULE = "";
   if (preload) env.NODE_OPTIONS = `--require=${preload}`;
   if (globalStorage) {
     delete env.CONTEXT_BRIDGE_STORAGE;
@@ -23,6 +25,68 @@ async function connect(project, extra = [], globalStorage = false, preload = nul
   await client.connect(transport);
   return client;
 }
+
+test("MCP companion errors are clean and metadata mode supplies no content capability", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-mcp-module-"));
+  const project = path.join(root, "project"), home = path.join(root, "unused-home");
+  fs.mkdirSync(project);
+  const entry = path.join(root, "trusted companion.mjs");
+  const run = (module, extra = [], cwd = project) => spawnSync(process.execPath, [cli, "mcp", "--project", cwd, ...extra], {
+    cwd: project, env: { ...process.env, CONTEXT_BRIDGE_HOME: home, CONTEXT_BRIDGE_MCP_MODULE: module },
+    encoding: "utf8", timeout: 10000,
+  });
+  try {
+    fs.writeFileSync(entry, 'export const bridgeMcpApiVersion = 1; export const runMcp = services => console.log(JSON.stringify(Object.keys(services).sort()));');
+    assert.deepEqual(JSON.parse(run(entry).stdout), ["adapters", "status", "version"]);
+    assert.deepEqual(JSON.parse(run(entry, ["--allow-content"]).stdout), ["adapters", "search", "status", "version"]);
+    for (const [module, message] of [
+      ["./relative.mjs", /must name an absolute/],
+      [path.join(root, "missing.mjs"), /could not load/],
+    ]) {
+      const result = run(module, [], path.join(root, "absent-project"));
+      assert.equal(result.status, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, message);
+      assert.doesNotMatch(result.stderr, /node:internal|at file:/);
+    }
+    for (const source of [
+      'export const bridgeMcpApiVersion = 999; export const runMcp = () => {};',
+      'import "missing-companion-dependency";',
+    ]) {
+      fs.writeFileSync(entry, source);
+      const result = run(entry, [], path.join(root, "absent-project"));
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /incompatible|could not load/);
+      assert.doesNotMatch(result.stderr, /not resolvable|ENOENT|node:internal/);
+    }
+    assert.equal(fs.existsSync(home), false);
+    assert.deepEqual(fs.readdirSync(project), []);
+    // Bypass the independently versioned companion schema: core owns its cap.
+    const previous = process.env.CONTEXT_BRIDGE_HOME;
+    try {
+      process.env.CONTEXT_BRIDGE_HOME = home;
+      ensureState(project);
+      for (let i = 0; i < 21; i++) writeCheckpoint(project, "main",
+        `2026-09-17T00-00-${String(i).padStart(2, "0")}-000Z-claude-to-codex.md`, "limit fixture needle");
+    } finally {
+      if (previous === undefined) delete process.env.CONTEXT_BRIDGE_HOME;
+      else process.env.CONTEXT_BRIDGE_HOME = previous;
+    }
+    fs.writeFileSync(entry, `import assert from "node:assert/strict";
+export const bridgeMcpApiVersion = 1;
+export function runMcp(services) {
+  const result = services.search({query: "needle"});
+  assert.equal(result.results.length, 20);
+  assert.equal(result.omittedResults, 1);
+  assert.equal(services.search({query: "needle", limit: 100}).results.length, 21);
+  for (const limit of [null, -5, 0, 1.5, "20", 101, Infinity, NaN]) {
+    assert.throws(() => services.search({query: "needle", limit}), {code: "BRIDGE_MCP_LIMIT"});
+  }
+}`);
+    const bounded = run(entry, ["--allow-content"]);
+    assert.equal(bounded.status, 0, bounded.stderr);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test("real MCP stdio exposes metadata only by default and never initializes an absent project", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-mcp-"));

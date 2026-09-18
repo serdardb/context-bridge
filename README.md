@@ -91,7 +91,7 @@ agents, not in tool count.
 | Chains (A → B → C) | C receives B's work *and* the A context B was given, labelled by source | pair only | not modelled |
 | Trigger | `/bridge <agent>` | command | git commit / checkout / merge hook |
 | Tool calls | left in the source session | translated `tool_use` ↔ `function_call` | not applicable |
-| Language / deps | Node; 4 runtime dependencies, including native locking | TypeScript | TypeScript, zero deps |
+| Language / deps | Node; one core runtime dependency for native locking; MCP installed separately | TypeScript | TypeScript, zero deps |
 | License | MIT | MIT | MIT |
 | Last commit | 2026-08-03 | 2026-06-03 | 2026-03-02 |
 
@@ -545,6 +545,14 @@ Restarting produces a fresh snapshot; there is no background daemon or cursor.
 
 ### Read-only MCP
 
+MCP is a separately installed companion in this development version (published
+core 0.12.4 predates the split). With a compatible core release, install both
+packages in the same npm prefix:
+
+```bash
+npm install -g @serdardb/context-bridge @serdardb/context-bridge-mcp
+```
+
 Run `bridge mcp --project /absolute/project/path` from an MCP host using stdio.
 The project is fixed at startup; tools cannot choose another directory. By
 default only `bridge_status` and `bridge_adapters` are exposed. Neither starts
@@ -574,8 +582,18 @@ Example host configuration (adjust executable and project paths):
 Local evidence is untrusted data, not instructions. Read-only tool annotations
 do not sandbox installed adapter plugins: `CONTEXT_BRIDGE_ADAPTERS`, when set,
 still loads trusted executable code at startup. Unset it for built-ins only.
-The server uses the official MCP SDK, adding runtime dependencies; this is not
-a claim of native-agent acceptance or a concurrent filesystem snapshot.
+The companion uses the official MCP SDK, Zod and a Node18-compatible Hono pin;
+none are core runtime dependencies. Automatic discovery supports npm sibling
+installations. For isolated layouts (pnpm/Yarn PnP), set the MCP host environment
+`CONTEXT_BRIDGE_MCP_MODULE` to the trusted absolute companion `index.mjs` path,
+with that package's dependencies/loader available. Bridge does not search CWD
+or install code automatically. Missing, unloadable and incompatible companions
+produce distinct errors. Full pnpm/PnP setup is not claimed verified.
+
+The companion is trusted Node code, not a sandbox. Core withholds the search
+callback without content opt-in, but cannot prevent arbitrary installed code
+from reading files itself. MCP acceptance is not native-agent acceptance or a
+concurrent filesystem snapshot.
 
 ## Development status
 

@@ -53,10 +53,12 @@ shell
 | `.cbctx` artifact | Explicit redacted context package with schema and integrity hash; never native session state |
 
 The package is not dependency-free. `package.json` declares Koffi for native
-locking/publication and the Linux tmpfs identity fallback, the MCP SDK and Zod
-for the opt-in MCP interface, and an explicit `@hono/node-server` compatibility
-pin for the SDK dependency graph. The latter is not a Bridge HTTP-server import.
-These dependencies are installed even when MCP is unused. A missing native
+locking/publication and the Linux tmpfs identity fallback. The separately
+installed `@serdardb/context-bridge-mcp` owns the MCP SDK, Zod and an explicit
+`@hono/node-server` compatibility pin, not a Bridge HTTP-server import.
+Core supplies guarded project reads through MCP API 1; the companion does not
+import a second core. Content opt-in controls whether a search callback exists.
+The companion is trusted executable code, not a sandbox. A missing native
 backend refuses operations that require it; it is not replaced by PID-only
 locking. Doctor reports that failure rather than treating installation as
 evidence that mutations work.

@@ -28,7 +28,7 @@
     "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "test:global": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "test:package": "node test/integration/package-install.mjs",
-    "check": "find src bin test -name '*.mjs' -print -exec node --check {} \\;",
+    "check": "find src bin test packages -name '*.mjs' -not -path '*/node_modules/*' -print -exec node --check {} \\;",
     "eval": "node bin/bridge.mjs eval --json",
     "prepublishOnly": "node bin/bridge.mjs release-check --evidence --json"
   },
@@ -62,12 +62,13 @@
     "access": "public"
   },
   "dependencies": {
-    "@hono/node-server": "1.19.17",
-    "@modelcontextprotocol/sdk": "1.30.0",
-    "koffi": "3.3.0",
-    "zod": "4.6.5"
+    "koffi": "3.3.0"
   },
   "devDependencies": {
+    "@serdardb/context-bridge-mcp": "file:packages/mcp",
+    "@hono/node-server": "1.19.17",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.6.5",
     "yaml": "2.9.1"
   }
 }

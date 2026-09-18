@@ -1,0 +1,22 @@
+{
+  "name": "@serdardb/context-bridge-mcp",
+  "version": "0.1.0",
+  "description": "Optional official-SDK MCP stdio transport for Context Bridge",
+  "type": "module",
+  "exports": "./index.mjs",
+  "files": ["index.mjs", "verify-release.mjs", "README.md", "LICENSE"],
+  "engines": { "node": ">=18.18" },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SerdarDB/context-bridge.git",
+    "directory": "packages/mcp"
+  },
+  "publishConfig": { "access": "public" },
+  "scripts": { "prepublishOnly": "node verify-release.mjs" },
+  "dependencies": {
+    "@hono/node-server": "1.19.17",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.6.5"
+  }
+}

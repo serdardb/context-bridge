@@ -38,21 +38,26 @@ function fingerprint(root) {
   const git = (...args) => command(root, "git", args);
   const commit = git("rev-parse", "HEAD");
   if (git("status", "--porcelain", "--untracked-files=all")) throw refusal("Release acceptance requires a clean working tree.");
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  // npm publish runs these after prepublishOnly; unseen rewrites would invalidate
-  // the package hash verified here. Require an explicit reviewed build beforehand.
-  for (const hook of ["prepack", "prepare", "postpack"]) {
-    if (pkg.scripts?.[hook]) throw refusal(`Release evidence does not permit a ${hook} lifecycle script; build before preparing acceptance.`);
-  }
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-release-pack-"));
   try {
-    const [pack] = JSON.parse(command(root, "npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary]));
-    if (!pack?.filename || path.basename(pack.filename) !== pack.filename) throw refusal("npm returned an invalid package filename.");
-    const packageSha256 = digest(fs.readFileSync(path.join(temporary, pack.filename)));
+    const packages = [".", "packages/mcp"].map((directory) => {
+      const location = path.join(root, directory);
+      let pkg;
+      try { pkg = JSON.parse(fs.readFileSync(path.join(location, "package.json"), "utf8")); }
+      catch { throw refusal("Both core and MCP companion manifests are required for release acceptance."); }
+      // Unseen publish-time rewrites would invalidate the accepted hashes.
+      for (const hook of ["prepack", "prepare", "postpack"]) {
+        if (pkg.scripts?.[hook]) throw refusal(`Release evidence does not permit a ${hook} lifecycle script; build before preparing acceptance.`);
+      }
+      const [pack] = JSON.parse(command(location, "npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary]));
+      if (!pack?.filename || path.basename(pack.filename) !== pack.filename) throw refusal("npm returned an invalid package filename.");
+      return { directory, name: pkg.name, version: pkg.version,
+        packageSha256: digest(fs.readFileSync(path.join(temporary, pack.filename))) };
+    });
     if (git("rev-parse", "HEAD") !== commit || git("status", "--porcelain", "--untracked-files=all")) {
       throw refusal("The release tree changed while its package was being measured.");
     }
-    return { commit, packageSha256, name: pkg.name, version: pkg.version,
+    return { commit, packages,
       node: process.version, npm: command(root, "npm", ["--version"]), platform: process.platform, arch: process.arch };
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
@@ -84,7 +89,7 @@ export function prepareReleaseEvidence(root, { execute = runGate } = {}) {
   if (Date.parse(completedAt) - Date.parse(startedAt) > RELEASE_EVIDENCE_MAX_AGE_MS) {
     throw refusal("Release preparation exceeded the acceptance window; no receipt was written.");
   }
-  const receipt = { schema: 1, root, startedAt, completedAt, binding, gates };
+  const receipt = { schema: 2, root, startedAt, completedAt, binding, gates };
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   writeJsonAtomic(file, receipt);
   return { passed: true, file, binding, completedAt };
@@ -98,7 +103,7 @@ export function verifyReleaseEvidence(root) {
     receipt = JSON.parse(readOwnedFile(file, { encoding: "utf8" }));
   } catch { throw refusal("No readable release acceptance receipt. Run bridge release-prepare on the final committed candidate."); }
   const start = Date.parse(receipt.startedAt), end = Date.parse(receipt.completedAt), now = Date.now();
-  if (receipt.schema !== 1 || receipt.root !== root || !Number.isFinite(start) || !Number.isFinite(end) ||
+  if (receipt.schema !== 2 || receipt.root !== root || !Number.isFinite(start) || !Number.isFinite(end) ||
       start > end || end > now || now - start > RELEASE_EVIDENCE_MAX_AGE_MS) {
     throw refusal("Release acceptance is invalid or older than 24 hours; rerun release-prepare.");
   }

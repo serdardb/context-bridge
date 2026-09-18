@@ -318,11 +318,11 @@ test("handing off does not delete the full context written for you", async () =>
 // A name that describes a role the file no longer has is how the next reader is
 // misled, and this project has now watched a stale name outlive its meaning
 // three times. `codex-companion.mjs` is a different thing entirely, OpenAI's own
-// transfer script, so the two paths that legitimately say companion are named
-// here rather than left to be rediscovered.
+// transfer script; the optional MCP package is also unrelated to checkpoints.
+// Those modules are explicitly excluded from this checkpoint-vocabulary guard.
 test("nothing calls the full context file a companion any more", () => {
   const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const allowed = new Set(["doctor.mjs", "transfer.mjs"]);
+  const allowed = new Set(["doctor.mjs", "transfer.mjs", "mcp.mjs", "release-evidence.mjs"]);
   const offenders = [];
   for (const file of fs.readdirSync(root, { recursive: true })) {
     if (!String(file).endsWith(".mjs") || allowed.has(path.basename(String(file)))) continue;
@@ -336,7 +336,7 @@ test("nothing calls the full context file a companion any more", () => {
       if (/companion/i.test(line)) offenders.push(`${file}:${i + 1} ${line.trim()}`);
     }
   }
-  assert.deepEqual(offenders, [], "the file is the full context checkpoint; only OpenAI's transfer script is a companion");
+  assert.deepEqual(offenders, [], "checkpoint code uses full context; companion names belong only to transfer/MCP modules");
 });
 
 // The enforcement, rather than another comment asking the next person to
