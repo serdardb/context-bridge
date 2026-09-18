@@ -202,6 +202,14 @@ test("rollout discovery preserves buffered text and refuses an incomplete candid
   assert.equal(execFileSync(process.execPath, ["-e", malformed, project], {
     env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
   }).trim(), "BRIDGE_DISCOVERY_INCOMPLETE");
+  if (process.platform !== "win32") {
+    for (const file of fs.readdirSync(dir)) fs.unlinkSync(path.join(dir, file));
+    execFileSync("mkfifo", [path.join(dir, "rollout-pipe.jsonl")]);
+    assert.equal(execFileSync(process.execPath, ["-e", malformed, project], {
+      env: { ...process.env, CODEX_HOME: home }, encoding: "utf8",
+      timeout: 2000, killSignal: "SIGKILL",
+    }).trim(), "BRIDGE_DISCOVERY_INCOMPLETE", "a named pipe cannot hang native session discovery");
+  }
 });
 
 // The discovery canary. The 16KB bug proved that a reader can die without a

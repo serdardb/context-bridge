@@ -167,7 +167,9 @@ function rolloutMeta(p) {
   const CEILING = 4 * 1024 * 1024; // a head record larger than this is not one
   let fd;
   try {
-    fd = fs.openSync(p, "r");
+    // Opening a FIFO read-only can block before its type can be inspected.
+    fd = fs.openSync(p, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+    if (!fs.fstatSync(fd).isFile()) throw new Error("not a session file");
     let text = "";
     const buf = Buffer.alloc(CHUNK);
     const decoder = new StringDecoder("utf8");
