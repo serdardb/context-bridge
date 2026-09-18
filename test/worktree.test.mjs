@@ -26,9 +26,12 @@ function setup(t) {
   const root = path.join(dir, "source"); fs.mkdirSync(root);
   const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   git("init");
+  // Worktree reflogs need an identity too; do not fall back to host/DNS lookup.
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.invalid");
   fs.writeFileSync(path.join(root, "tracked.txt"), "committed\n");
   git("add", "tracked.txt");
-  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture");
+  git("commit", "-m", "fixture");
   return { dir, root, git };
 }
 
