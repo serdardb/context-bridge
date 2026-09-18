@@ -351,6 +351,21 @@ test("an agent that answers consumes the delta, and only once", () => {
   assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile)), "and it must not still be pending, or it ships twice");
   assert.equal(loadState(project).pendingInjection, null);
 
+  const recovery = pendingDelta("prompt", "RECOVERED DELIVERY");
+  const recoveryFile = safeCheckpointPath(recovery.project, recovery.deltaFile);
+  fs.renameSync(recoveryFile, recoveryFile + ".consumed");
+  fs.writeFileSync(path.join(scratch, "codex"), `#!${process.execPath}
+    const fs = require('node:fs');
+    if (!process.argv.some(arg => arg.includes('RECOVERED DELIVERY'))) process.exit(9);
+    fs.appendFileSync('rollout.jsonl', ${JSON.stringify(row + "\n")});
+  `, { mode: 0o755 });
+  const recovered = spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: recovery.project, encoding: "utf8", env: { ...cleanEnv(), PATH: scratch }, timeout: 15000,
+  });
+  assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+  assert.equal(loadState(recovery.project).pendingInjection, null, "rename-before-state crash must be recoverable on retry");
+  assert.equal(fs.readFileSync(recoveryFile + ".consumed", "utf8"), "RECOVERED DELIVERY");
+
   const stale = pendingDelta("prompt", "OLD DELIVERY");
   const oldState = loadState(stale.project);
   oldState.pendingInjection.sources = { claude: "old-progress" };

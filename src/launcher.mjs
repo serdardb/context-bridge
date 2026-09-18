@@ -605,7 +605,12 @@ function readDelta(projectDir, inj) {
   }
   let delta;
   try {
-    delta = readOwnedFile(deltaPath, { encoding: "utf8" });
+    delta = readOwnedFile(deltaPath, { encoding: "utf8", missing: true });
+    if (delta === null) {
+      // Rename can succeed just before state publication fails. Pending state
+      // still requires a delivery attempt; replay rather than acknowledge blind.
+      delta = readOwnedFile(deltaPath + CONSUMED_SUFFIX, { encoding: "utf8" });
+    }
   } catch {
     log(`${WARN} Pending delta could not be read (${inj.deltaFile}); the agent starts without it.`);
     return null;
@@ -615,8 +620,8 @@ function readDelta(projectDir, inj) {
 
 /**
  * Record observed delivery only while this exact injection is still pending.
- * Rename precedes the state write; a crash between them can leave pending state
- * requiring recovery. This is not a transactional exactly-once receipt.
+ * Rename precedes the state write; a crash between them leaves pending state
+ * whose consumed file is replayed on retry. This is not an exactly-once receipt.
  */
 function commitDelivery(projectDir, inj) {
   if (!inj?.deltaFile) return;
@@ -633,9 +638,11 @@ function commitDeliveryOwned(projectDir, inj) {
     if (!deltaPath) return;
     try {
       fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
-    } catch {
-      // Already renamed, or gone. Either way it is not ours to commit.
-      return;
+    } catch (error) {
+      if (error.code !== "ENOENT") return;
+      // Only the crash-recovery form is admissible, never absent/linked evidence.
+      try { readOwnedFile(deltaPath + CONSUMED_SUFFIX); }
+      catch { return; }
     }
     commitKnown(st, inj);
     st.pendingInjection = null;
