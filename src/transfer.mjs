@@ -47,6 +47,7 @@ export function transferClaudeSession(transcriptPath) {
     stdout = execFileSync("node", [companion, "transfer", "--json", "--source", transcriptPath], {
       encoding: "utf8",
       timeout: 120000,
+      killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (cause) {

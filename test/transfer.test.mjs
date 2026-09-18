@@ -11,11 +11,27 @@ test("official transfer failures never print companion content and success requi
   const secret = "SYNTHETIC_PRIVATE_TRANSFER_CONTENT";
   const module = new URL("../src/transfer.mjs", import.meta.url).href;
   try {
-    for (const scenario of ["failure", "invalid-json", "invalid-id", "success"]) {
+    for (const scenario of ["failure", "invalid-json", "invalid-id", "success", "timeout"]) {
       const output = scenario === "success" ? JSON.stringify({ threadId: "synthetic-thread" })
         : scenario === "invalid-id" ? JSON.stringify({ threadId: { private: secret } }) : secret;
-      fs.writeFileSync(companion, `console.log(${JSON.stringify(output)}); console.error(${JSON.stringify(secret)}); process.exit(${scenario === "failure" ? 7 : 0});`);
+      fs.writeFileSync(companion, `console.log(${JSON.stringify(output)}); console.error(${JSON.stringify(secret)});
+        ${scenario === "timeout" ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);" : `process.exit(${scenario === "failure" ? 7 : 0});`}`);
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import cp from 'node:child_process';
+        import { syncBuiltinESMExports } from 'node:module';
+        if (${JSON.stringify(scenario)} === 'timeout') {
+          const run = cp.execFileSync;
+          cp.execFileSync = (command, args, options) => {
+            // Fail before launching an unbounded child in the negative control.
+            if (options.timeout !== 120000 || options.killSignal !== 'SIGKILL') process.exit(3);
+            try { return run(command, args, { ...options, timeout: 200 }); }
+            catch (error) {
+              if (error.code !== 'ETIMEDOUT' || error.signal !== 'SIGKILL') process.exit(4);
+              throw error;
+            }
+          };
+          syncBuiltinESMExports();
+        }
         import { transferClaudeSession } from ${JSON.stringify(module)};
         try { console.log(JSON.stringify(transferClaudeSession('synthetic-transcript'))); }
         catch (error) { console.error(error.message); process.exit(error.expected ? 1 : 2); }
