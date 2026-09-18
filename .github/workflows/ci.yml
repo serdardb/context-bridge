@@ -75,6 +75,8 @@ jobs:
           $env:BRIDGE_TEST_PTY_MODULE = "$env:RUNNER_TEMP/bridge-test-pty/node_modules/node-pty/lib/index.js"
           $env:BRIDGE_TEST_PI_BIN = "$env:RUNNER_TEMP/bridge-native-pi/node_modules/.bin"
           node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" --migrate
+      - name: Actual Windows TLS sharing and bounded transfer acceptance
+        run: node test/integration/remote-tls.mjs
 
   native-aider-windows:
     name: native Aider 0.86.2 acceptance · windows-latest

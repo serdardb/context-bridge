@@ -114,7 +114,7 @@ try {
   console.log(JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, node: process.version,
     untrustedTlsRefused: true, trustedTlsRoundtrip: true, chunkedResponseLimit: true,
     clientDeadline: true, serverUploadDeadlineMs: uploadMs, credentialsInOutput: false,
-    scope: "real local TLS proxy and actual CLI, ephemeral certificate trust; not public deployment, Windows or general load acceptance" }, null, 2));
+    scope: "real local TLS proxy and actual CLI on the reported platform, ephemeral certificate trust; not public deployment or general load acceptance" }, null, 2));
 } finally {
   for (const server of servers.reverse()) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
   fs.rmSync(root, { recursive: true, force: true });
