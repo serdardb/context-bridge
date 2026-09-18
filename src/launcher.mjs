@@ -425,9 +425,11 @@ function watchForDelivery(projectDir, agent, carries, baseline) {
     let delivered = false;
     try {
       const activity = adapter.activitySince(ref, baseline.mark);
-      // Some native histories retain failed/partial turns. Their adapters can
-      // distinguish evidence worth preserving from a completed delivery.
-      delivered = activity?.deliveryObserved ?? (activity?.messages?.length > 0);
+      // Explicit receipts may be independent of transcript quality. Otherwise
+      // only a new assistant answer in a complete, unreplayed tail is evidence:
+      // old answers replayed after a rewrite did not answer this delivery.
+      delivered = activity?.deliveryObserved ?? (activity?.sourceComplete !== false &&
+        activity?.sourceRewritten !== true && activity?.messages?.some(message => message.role === "assistant"));
     } catch {
       // A transcript we cannot read is not evidence of delivery.
       return;

@@ -448,6 +448,28 @@ test("the echoed delta prompt is not mistaken for the agent answering", () => {
   assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile)), "the delta prompt is not its own delivery; it stays pending");
   assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")));
   assert.ok(loadState(project).pendingInjection, "so a session the model never answered can be handed over again");
+
+  for (const mode of ["rewritten", "partial", "user-only"]) {
+    const next = pendingDelta("prompt", "UNANSWERED DELIVERY");
+    const old = { timestamp: "2026-01-01T00:00:00.000Z", type: "event_msg",
+      payload: { type: "agent_message", message: "old answer" } };
+    fs.writeFileSync(path.join(next.project, "rollout.jsonl"), JSON.stringify(old) + "\n");
+    const fresh = { timestamp: new Date().toISOString(), type: "event_msg",
+      payload: { type: mode === "user-only" ? "user_message" : "agent_message", message: "new text" } };
+    const content = mode === "rewritten"
+      ? JSON.stringify({ ...old, payload: { ...old.payload, message: "edited old answer" } }) + "\n"
+      : JSON.stringify(old) + "\n" + JSON.stringify(fresh) + "\n" + (mode === "partial" ? "{unfinished\n" : "");
+    fs.writeFileSync(path.join(scratch, "codex"), `#!${process.execPath}
+      require('node:fs').writeFileSync('rollout.jsonl', ${JSON.stringify(content)});
+    `, { mode: 0o755 });
+    const run = spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+      cwd: next.project, encoding: "utf8", env: { ...cleanEnv(), PATH: scratch }, timeout: 15000,
+    });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.ok(loadState(next.project).pendingInjection, `${mode} activity is not proof of a new answer`);
+    assert.ok(fs.existsSync(safeCheckpointPath(next.project, next.deltaFile)));
+    assert.ok(!fs.existsSync(safeCheckpointPath(next.project, next.deltaFile + ".consumed")));
+  }
 });
 
 // A first switch packs the whole conversation, and a command line is finite. On a

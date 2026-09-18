@@ -167,6 +167,14 @@ history, rather than silently trading correctness for a bounded file.
 
 A delta reaches its target one of three ways.
 
+For prompt delivery observed through transcript activity, the launcher requires
+a new assistant message in a complete, unreplayed tail. Replaying an edited old
+answer, a partial read, or a new user message does not acknowledge delivery.
+Adapters with an explicit `deliveryObserved` receipt retain that independent
+contract. If the baseline history changes during the run, the conservative
+transcript path leaves delivery pending for retry, even if a real answer was
+also written; it does not infer which replayed text answered this handoff.
+
 **Hook.** Claude and Codex both accept `hookSpecificOutput.additionalContext`
 from a `SessionStart` hook, which places the delta inside the conversation. The
 hook holds the state lock, writes the complete output to stdout, then renames
