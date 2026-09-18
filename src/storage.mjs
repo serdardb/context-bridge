@@ -569,7 +569,9 @@ function syncMigrationPath(file) {
   if (stat.isDirectory() && process.platform === "win32") return;
   let fd;
   try {
-    fd = fs.openSync(file, "r");
+    // Windows FlushFileBuffers requires write access, even when only flushing
+    // bytes already copied. r+ preserves the existing file without truncation.
+    fd = fs.openSync(file, process.platform === "win32" ? "r+" : "r");
     fs.fsyncSync(fd);
   } catch (cause) {
     const error = new BridgeError("Migration evidence could not be flushed to storage. Copies and any retired originals are preserved; inspect the migration before retrying.", {
