@@ -534,6 +534,10 @@ at `f9d7e3e793b518f3c98567607cc1d4f65ca57ec1`; the release candidate must pass i
    gzip bytes while the decompressed tar was byte-identical, including headers.
    Matching extracted files does not authorize substituting a different `.tgz`:
    receipts bind the compressed artifact, not merely its source or file list.
+   The same distinction was reproduced with npm 10.9.0 and 12.0.2 on Node
+   24.18.0: the same checkout produced different tarball bytes. Both npm pack
+   JSON formats are supported, but changing npm after acceptance still requires
+   a fresh receipt. Unreadable or empty file lists fail the package privacy gate.
 5. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
 6. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
 7. Hygiene scan: no machine-specific paths, no credentials, and no tracked runtime state.

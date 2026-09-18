@@ -63,11 +63,12 @@
       "rationale": "Introduces opt-in adapter API and experimental wrappers without changing built-in set."
     },
     {
-      "sha256": "3789960614296d3ca2bd23591310f60777af321578d02956dffb0664938e4fbe",
+      "sha256": "69ee23da60346746b70cc75479e2ad546a3ecc794bfefff2b31dc8c2d6f83d49",
       "files": [
         "src/eval.mjs",
         "src/live-eval.mjs",
         "src/release-evidence.mjs",
+        "src/npm-pack.mjs",
         "src/release-provenance.mjs"
       ],
       "rationale": "Adds evaluation and exact pair-artifact release gates; not the existing verify command."

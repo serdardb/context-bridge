@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { parsePackResult } from "../../src/npm-pack.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const npm = process.env.npm_execpath;
@@ -22,7 +23,8 @@ const run = (args, cwd, timeout = 180000) => {
   return result.stdout;
 };
 try {
-  const [pack] = JSON.parse(run([npm, "pack", "--ignore-scripts", "--json", "--pack-destination", temporary], root));
+  const pack = parsePackResult(run([npm, "pack", "--ignore-scripts", "--json", "--pack-destination", temporary], root),
+    "@serdardb/context-bridge");
   assert.equal(path.basename(pack.filename), pack.filename);
   assert.ok(pack.files.length > 0);
   for (const file of pack.files) {
@@ -51,8 +53,8 @@ try {
   };
   const coreFootprint = footprint();
   process.stdout.write(run([path.join(root, "test", "integration", "installed-package.mjs"), installed, "--core-only"], temporary, 120000));
-  const [companion] = JSON.parse(run([npm, "pack", "--ignore-scripts", "--json", "--pack-destination", temporary],
-    path.join(root, "packages", "mcp")));
+  const companion = parsePackResult(run([npm, "pack", "--ignore-scripts", "--json", "--pack-destination", temporary],
+    path.join(root, "packages", "mcp")), "@serdardb/context-bridge-mcp");
   assert.equal(path.basename(companion.filename), companion.filename);
   for (const file of companion.files) assert.ok(["index.mjs", "verify-release.mjs", "README.md", "LICENSE", "package.json"].includes(file.path), file.path);
   run([npm, "install", ...scope, "--prefix", prefix, "--ignore-scripts", "--omit=dev",

@@ -9,6 +9,31 @@ import { releaseChecks, verifyReleaseCI } from "../src/release.mjs";
 import { prepareReleaseEvidence, verifyReleaseEvidence, releaseEvidencePath, RELEASE_GATES } from "../src/release-evidence.mjs";
 import { verifyReport } from "../src/doctor.mjs";
 import { AGENT_IDS } from "../src/agents/index.mjs";
+import { parsePackResult } from "../src/npm-pack.mjs";
+
+test("pack inspection accepts npm array and keyed formats but refuses ambiguous or unreadable evidence", () => {
+  const record = { name: "fixture", filename: "fixture-1.0.0.tgz", files: [{ path: "package.json" }] };
+  for (const value of [[record], { fixture: record }]) assert.deepEqual(parsePackResult(JSON.stringify(value), "fixture"), record);
+  for (const value of [null, [], {}, [record, record], { fixture: record, other: record },
+    { other: record }, [{ ...record, name: "other" }], [{ ...record, files: [] }],
+    [{ ...record, files: [{}] }], [{ ...record, filename: "../fixture.tgz" }]]) {
+    assert.throws(() => parsePackResult(JSON.stringify(value), "fixture"), { code: "BRIDGE_NPM_PACK_INVALID" });
+  }
+});
+
+test("release privacy gate examines npm12 files and fails when their list cannot be verified", () => {
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const name = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).name;
+  const gate = (files) => releaseChecks(root, { run(command, args) {
+    assert.equal(command, "npm");
+    assert.equal(args[0], "pack");
+    return JSON.stringify({ [name]: { name, filename: "fixture.tgz", files } });
+  } }).checks.find((item) => item.name === "package-private-files").passed;
+  assert.equal(gate([{ path: "package.json" }]), true);
+  assert.equal(gate([{ path: "package.json" }, { path: ".env" }]), false);
+  assert.equal(gate([]), false);
+  assert.equal(gate(undefined), false);
+});
 
 test("release verification requires every supported agent, not just those installed", () => {
   const agents = Object.fromEntries(AGENT_IDS.map((id) => [id, { version: "fixture", smoke: { ok: true } }]));

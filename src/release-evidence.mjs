@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { storageHome } from "./storage.mjs";
 import { createDirDurable, BridgeError, readOwnedFile, writeJsonAtomic } from "./util.mjs";
+import { parsePackResult } from "./npm-pack.mjs";
 
 // A local acceptance receipt, not a signature or a substitute for human review.
 export const RELEASE_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -49,7 +50,7 @@ function fingerprint(root) {
       for (const hook of ["prepack", "prepare", "postpack"]) {
         if (pkg.scripts?.[hook]) throw refusal(`Release evidence does not permit a ${hook} lifecycle script; build before preparing acceptance.`);
       }
-      const [pack] = JSON.parse(command(location, "npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary]));
+      const pack = parsePackResult(command(location, "npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary]), pkg.name);
       if (!pack?.filename || path.basename(pack.filename) !== pack.filename) throw refusal("npm returned an invalid package filename.");
       return { directory, name: pkg.name, version: pkg.version,
         packageSha256: digest(fs.readFileSync(path.join(temporary, pack.filename))) };

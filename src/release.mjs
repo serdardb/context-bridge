@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { runEvaluation } from "./eval.mjs";
 import { verifyChangelogProvenance } from "./release-provenance.mjs";
+import { parsePackResult } from "./npm-pack.mjs";
 
 function readJson(root, file) {
   return JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
@@ -13,17 +14,17 @@ function check(name, passed, detail) {
 }
 
 /** Release provenance checks. This is intentionally separate from runtime Git use. */
-export function releaseChecks(root, { verifyCI = false } = {}) {
+export function releaseChecks(root, { verifyCI = false, run = execFileSync } = {}) {
   const pkg = readJson(root, "package.json");
   const plugin = readJson(root, "plugin/.claude-plugin/plugin.json");
   const marketplace = readJson(root, ".claude-plugin/marketplace.json");
   const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
   let packageFiles = null;
   try {
-    const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+    const raw = run("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
       cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 120000, killSignal: "SIGKILL",
     });
-    packageFiles = JSON.parse(raw)[0]?.files?.map((entry) => entry.path) ?? [];
+    packageFiles = parsePackResult(raw, pkg.name).files.map((entry) => entry.path);
   } catch {
     packageFiles = null;
   }
@@ -40,8 +41,8 @@ export function releaseChecks(root, { verifyCI = false } = {}) {
     verifyChangelogProvenance(root),
     check("working-tree", git(root, ["status", "--porcelain"]) === "", "release tree must be clean"),
     check("package-files", packageFiles && requiredPackagePaths.every((entry) => packageFiles.includes(entry)), packageFiles ? `${packageFiles.length} package files include required runtime and docs` : "npm pack --dry-run could not be verified"),
-    check("package-private-files", privatePackageFiles && privatePackageFiles.length === 0,
-      privatePackageFiles?.length ? `Private/test artifacts in tarball: ${privatePackageFiles.join(", ")}` : "No local state, notes, tests, env files, logs, portable context artifacts or generated sealing keys may be packed"),
+    check("package-private-files", packageFiles?.length > 0 && privatePackageFiles?.length === 0,
+      !packageFiles?.length ? "Package file list could not be verified" : privatePackageFiles?.length ? `Private/test artifacts in tarball: ${privatePackageFiles.join(", ")}` : "No local state, notes, tests, env files, logs, portable context artifacts or generated sealing keys may be packed"),
     check("context-quality", evaluation.passed, `${evaluation.total} deterministic evaluations passed`),
     check("ci-workflow", fs.existsSync(path.join(root, ".github", "workflows", "ci.yml")), "CI workflow configuration is present; this is not run evidence"),
     verifyCI ? verifyReleaseCI(root) : check("ci-head", false, "HEAD CI has not been verified. Use release-check --ci (requires GitHub CLI authentication)."),

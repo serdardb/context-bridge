@@ -47,6 +47,8 @@ half.
   context evaluations complement native workflow checks. Release preparation
   binds successful gates to the exact commit, toolchain and both package hashes;
   publish-time verification rejects missing, stale or changed evidence.
+  Package inspection accepts npm's array and package-keyed JSON output and
+  refuses unverifiable or empty file lists instead of passing the privacy check.
 
 ### Fixed
 
