@@ -132,9 +132,18 @@ try {
   assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(sealed.sealedFile));
   run(empty, ["share", "remove", upload.hash, ...sharingArgs, "--apply"]);
   assert.deepEqual(fs.readdirSync(shareStore), [".share.guard"]);
-  sharingServer.kill("SIGTERM");
-  const stopTimer = setTimeout(() => sharingServer.kill("SIGKILL"), 5000);
-  try { assert.equal(await sharingClosed, 0, serviceError); } finally { clearTimeout(stopTimer); }
+  assert.equal(sharingServer.kill("SIGTERM"), true);
+  let stopExpired = false;
+  const stopTimer = setTimeout(() => { stopExpired = true; sharingServer.kill("SIGKILL"); }, 5000);
+  try {
+    const code = await sharingClosed;
+    assert.equal(stopExpired, false, "sharing shutdown exceeded its deadline");
+    // Windows terminates the process for SIGTERM; it does not run POSIX handlers.
+    if (process.platform === "win32") {
+      assert.equal(code, null, serviceError);
+      assert.equal(sharingServer.signalCode, "SIGTERM");
+    } else assert.equal(code, 0, serviceError);
+  } finally { clearTimeout(stopTimer); }
   const opened = path.join(root, "opened.cbctx");
   run(target, ["artifact", "open", sealed.sealedFile, "--key-file", sealed.keyFile, "--out", opened]);
   assert.deepEqual(fs.readFileSync(opened), fs.readFileSync(artifact));

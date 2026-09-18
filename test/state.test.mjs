@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { ensureState, loadState, STATE_VERSION, safeCheckpointPath, statePath, bridgeDir, checkpointsDir } from "../src/state.mjs";
 import { writeJsonAtomic, writeFileExclusive, processAlive } from "../src/util.mjs";
 
@@ -135,6 +136,9 @@ test("migrating to lanes moves every field and loses none of it", async () => {
   const { statePath, loadState, DEFAULT_LANE } = await import("../src/state.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-lane-mig-")));
   fs.mkdirSync(path.join(project, ".bridge"), { recursive: true });
+  const stoppedLauncher = spawnSync(process.execPath, ["-e", ""], { timeout: 5000 });
+  assert.equal(stoppedLauncher.status, 0);
+  assert.equal(processAlive(stoppedLauncher.pid), false);
 
   // A v4 project mid-flight: linked agents, a watermark matrix, a pending
   // delivery and a recorded git sha.
@@ -150,7 +154,7 @@ test("migrating to lanes moves every field and loses none of it", async () => {
     pendingInjection: { agent: "grok", deltaFile: ".bridge/checkpoints/d.md", sources: { claude: "m" } },
     knownBy: { grok: { claude: "2026-07-20T09:00:00.000Z" } },
     git: { sha: "abc123", recordedAt: "2026-07-20T12:00:00.000Z" },
-    launcher: { stateVersion: 4, pid: 999, recordedAt: "2026-07-20T12:00:00.000Z" },
+    launcher: { stateVersion: 4, pid: stoppedLauncher.pid, recordedAt: "2026-07-20T12:00:00.000Z" },
     updatedAt: "2026-07-20T12:00:00.000Z",
   };
   fs.writeFileSync(path.join(project, ".bridge", "state.json"), JSON.stringify(v4));
