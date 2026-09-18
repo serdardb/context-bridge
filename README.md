@@ -194,7 +194,7 @@ created in a project by default.
   - [Claude Code](https://code.claude.com/docs/en/setup) ≥ 2.1.x, with your Claude subscription
   - [Codex CLI](https://developers.openai.com/codex) ≥ 0.143.0, with your ChatGPT subscription (`codex login`)
   - [Grok CLI](https://github.com/superagent-ai/grok-cli) ≥ 0.2.x, with your xAI key (`grok auth`)
-  - [OpenCode](https://opencode.ai) ≥ 1.18.x, with a provider configured (a free model works; the bridge never makes the call itself). Delivering a handoff into it also needs the `sqlite3` CLI, which macOS ships by default; `bridge doctor` says so if it is missing.
+  - [OpenCode](https://opencode.ai) ≥ 1.18.x, with a provider configured (a free model works; the bridge never makes the call itself). Reading a handoff snapshot or delivering into it also needs the `sqlite3` CLI, which macOS ships by default; `bridge doctor` says so if it is missing.
 - `git` (used for the work-delta; projects without git still work, with a thinner delta)
 
 OpenCode store access honors `OPENCODE_DB` (absolute path, or relative to its
@@ -202,6 +202,13 @@ data directory) and `XDG_DATA_HOME`. `OPENCODE_HOME` remains a Bridge-specific
 data-directory override; keep it aligned with the native agent's configuration.
 An in-memory OpenCode database cannot be shared with Bridge. Nonstandard channel
 database names currently require an explicit `OPENCODE_DB` path.
+For handoff and closing snapshots, Bridge backs up the database through SQLite
+into a private temporary directory, then runs the native exporter against that
+copy. This includes committed WAL data without mixing later live writes into
+the same export. It needs temporary disk space for the whole database; the copy
+is removed when export finishes. Backup failure reports an unavailable source
+rather than falling back to an inconsistent live export. Abrupt process or
+machine termination can leave the private temporary directory behind.
 
 ## Installation
 

@@ -234,11 +234,24 @@ test("handoff shares one OpenCode export between conversation and audit without 
   const project = path.join(root, "project"), bin = path.join(root, "bin");
   fs.mkdirSync(project); fs.mkdirSync(bin);
   const counter = path.join(root, "exports");
+  const database = freshDb();
+  const oldDb = process.env.OPENCODE_DB;
+  process.env.OPENCODE_DB = database.db;
   fs.writeFileSync(path.join(bin, "opencode"), `#!${process.execPath}
 const fs = require('node:fs');
 const file = ${JSON.stringify(counter)};
 const n = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) + 1 : 1;
 fs.writeFileSync(file, String(n));
+if (process.env.OPENCODE_DB !== ${JSON.stringify(database.db)}) {
+  const {execFileSync}=require('node:child_process');
+  const source=${JSON.stringify(database.db)};
+  const copy=process.env.OPENCODE_DB;
+  const query='SELECT count(*) FROM message;';
+  const before=execFileSync('sqlite3',['-readonly',copy,query],{encoding:'utf8'});
+  execFileSync('sqlite3',[source,"INSERT INTO message VALUES ('live-"+n+"','ses_snapshot',0,0,'{}');"]);
+  if(execFileSync('sqlite3',['-readonly',copy,query],{encoding:'utf8'})!==before) process.exit(3);
+  fs.appendFileSync(file+'.copies',copy+'\\n');
+}
 const id = process.argv[3];
 const mismatch = fs.existsSync(file + '.mismatch') ? fs.readFileSync(file + '.mismatch', 'utf8') : '';
 const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:Date.now()}},parts:[
@@ -272,6 +285,9 @@ console.log(JSON.stringify(document));
       assert.equal(audit.readerErrors, undefined);
       previous = generation;
     }
+    const copies = fs.readFileSync(counter + '.copies', 'utf8').trim().split('\n');
+    assert.equal(copies.length, 2, "each handoff must export a fresh private SQLite snapshot");
+    assert.ok(copies.every(copy => !fs.existsSync(path.dirname(copy))), "private database copies must be cleaned");
     for (const mismatch of ["session", "message", "part", "missing"]) {
       fs.writeFileSync(counter + ".mismatch", mismatch);
       assert.throws(() => activitySince({ id: "ses_snapshot" }, null),
@@ -289,6 +305,8 @@ console.log(JSON.stringify(document));
     }
   } finally {
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    if (oldDb === undefined) delete process.env.OPENCODE_DB; else process.env.OPENCODE_DB = oldDb;
+    fs.rmSync(database.dir, { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

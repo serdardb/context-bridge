@@ -60,15 +60,28 @@ export const conflictFlags = [
  * no predictable /tmp path to race or hijack. Errors are not swallowed by a shell
  * redirect; a failed export throws and returns null through the catch.
  */
-function exportSession(sessionId) {
+function exportSession(sessionId, { snapshot = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-export-"));
   const tmpFile = path.join(dir, "session.json");
   let fd;
   try {
-    fd = fs.openSync(tmpFile, "w");
+    let env = process.env;
+    if (snapshot) {
+      const source = databasePath();
+      if (!source || !fileExists(source)) return null;
+      // Export paginates native queries. Give it one SQLite snapshot, including
+      // committed WAL pages, instead of letting those queries race live writes.
+      execFileSync("sqlite3", ["-batch", "-readonly", path.resolve(source), ".backup snapshot.db"], {
+        cwd: dir, stdio: ["ignore", "ignore", "ignore"],
+        timeout: SQLITE_OPERATION_TIMEOUT_MS, killSignal: "SIGKILL",
+      });
+      env = { ...process.env, OPENCODE_DB: path.join(dir, "snapshot.db") };
+    }
+    fd = fs.openSync(tmpFile, "w", 0o600);
     execFileSync("opencode", ["export", sessionId], {
+      env,
       stdio: ["ignore", fd, "ignore"],
-      timeout: 15000,
+      timeout: 15000, killSignal: "SIGKILL",
     });
     fs.closeSync(fd);
     fd = undefined;
@@ -479,7 +492,7 @@ const sourceExports = new WeakMap();
 
 /** A per-handoff export shared by probe, activity and audit, never session-wide. */
 export function snapshotSource(ref) {
-  const raw = ref?.id ? exportSession(ref.id) : null;
+  const raw = ref?.id ? exportSession(ref.id, { snapshot: true }) : null;
   if (!raw) throw new BridgeError("OpenCode session export could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
   exportDocument(raw);
   const snapshot = { ...ref };
