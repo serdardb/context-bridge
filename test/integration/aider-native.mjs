@@ -312,7 +312,7 @@ try {
   run([cli, "handoff", "aider", "--from", "codex", "--summary", "Update fixture.txt using the native Aider edit engine"]);
   editResponse = true;
   await execute(true, true, false, true, true);
-  assert.equal(fs.readFileSync(path.join(project, "fixture.txt"), "utf8"), "BRIDGE_EDITED_BY_NATIVE_SDK\n");
+  assert.equal(fs.readFileSync(path.join(project, "fixture.txt"), "utf8"), `BRIDGE_EDITED_BY_NATIVE_SDK${os.EOL}`);
   assert.ok(JSON.stringify(requests.at(-1)).includes("ORIGINAL_NATIVE_FILE_CONTENT"));
   assert.equal(JSON.parse(run([cli, "status", "--json"])).pending, null);
   assert.equal(fs.existsSync(path.join(project, ".git")), false);
