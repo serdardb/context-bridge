@@ -16,7 +16,9 @@ for (const [name, command] of [
   ["direct-python", [python, "-I", probe, "sleep"]],
   ["node-wrapper", [process.execPath, "-e", wrapper, python, "-I", probe, "sleep"]],
   ["blocked-socket", [python, "-I", probe, "socket"]],
-  ["signal-wakeup-socket", [python, "-I", probe, "wakeup"]],
+  // Exploratory primitive, not an established Windows capability.
+  ...(process.argv.includes("--wakeup")
+    ? [["signal-wakeup-socket", [python, "-I", probe, "wakeup"]]] : []),
 ]) {
   const result = spawnSync(process.execPath, [terminal, ...command], {
     env: { ...process.env, BRIDGE_TEST_PTY_FLOW: "aider", BRIDGE_TEST_PTY_TRACE: "1" },
