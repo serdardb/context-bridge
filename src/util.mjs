@@ -120,6 +120,7 @@ export function tryExec(cmd, args, opts = {}) {
     return execFileSync(cmd, args, {
       encoding: "utf8",
       timeout: opts.timeout ?? 15000,
+      killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "ignore"],
       ...opts,
     }).trim();
