@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { ensureProjectStore, projectStoreDir, projectIdentity } from "../storage.mjs";
-import { writeFileExclusive } from "../util.mjs";
+import { writeFileExclusive, readOwnedFile } from "../util.mjs";
 import { resolveAiderRuntime, AIDER_SDK_VERSION } from "./aider-runtime.mjs";
 import { readAiderHistory, readAiderEvidence } from "./aider-records.mjs";
 
@@ -42,11 +42,11 @@ export function aiderSessionRef(projectDir, id) {
   directory(dir);
   const file = path.join(dir, "session.json");
   const before = regular(file);
-  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
   let meta;
   try {
     const opened = fs.fstatSync(fd);
-    if (before.dev !== opened.dev || before.ino !== opened.ino) throw invalid();
+    if (!opened.isFile() || opened.nlink !== 1 || before.dev !== opened.dev || before.ino !== opened.ino) throw invalid();
     meta = JSON.parse(fs.readFileSync(fd, "utf8"));
   } finally { fs.closeSync(fd); }
   const projectId = projectIdentity(projectDir).id;
@@ -102,7 +102,7 @@ export function aiderStartedSessions(projectDir, { startedAt, childPid } = {}) {
   return aiderSessionsForProject(projectDir).filter((ref) => {
     const file = path.join(path.dirname(ref.eventsPath), "launch.json");
     let launch;
-    try { regular(file); launch = JSON.parse(fs.readFileSync(file, "utf8")); }
+    try { regular(file); launch = JSON.parse(readOwnedFile(file, { encoding: "utf8" })); }
     catch (error) { if (error.code === "ENOENT") return false; throw error; }
     return launch?.version === 1 && launch.sessionId === ref.id && launch.projectId === ref.projectId &&
       launch.pid === childPid && typeof launch.at === "string" && Date.parse(launch.at) >= Date.parse(startedAt);

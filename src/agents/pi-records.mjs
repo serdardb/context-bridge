@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import { readRegularFile } from "../util.mjs";
 
 const invalid = () => new Error("Unsupported or damaged Pi session; refusing to treat it as empty activity.");
 const instant = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -6,7 +6,7 @@ const instant = (value) => typeof value === "string" && Number.isFinite(Date.par
 // Pi v3 is an append-only tree, not a linear chat. Its persisted leaf is the
 // last entry; following parentId is essential after /tree changes branches.
 export function readPiSession(file) {
-  const content = fs.readFileSync(file, "utf8");
+  const content = readRegularFile(file);
   const lines = content.split("\n");
   const records = [];
   let incompleteTail = false;

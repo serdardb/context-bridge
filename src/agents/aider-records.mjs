@@ -11,9 +11,9 @@ function readStableBytes(file) {
   try {
     const before = fs.lstatSync(file);
     if (!before.isFile() || before.isSymbolicLink()) throw invalid();
-    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const opened = fs.fstatSync(fd);
-    if (opened.dev !== before.dev || opened.ino !== before.ino) throw invalid();
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) throw invalid();
     const bytes = fs.readFileSync(fd);
     const after = fs.fstatSync(fd);
     if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || bytes.length !== opened.size) throw invalid();
