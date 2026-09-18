@@ -296,7 +296,18 @@ test("handing off does not delete the full context written for you", async () =>
   s.activeAgent = "codex";
   saveState(project, s);
 
-  handoff(project, "claude", { from: "codex", decisions: "d", next: "n", checkTarget: () => {} });
+  makeGroups(project, { count: 22, ageDays: 30, startIndex: 0 });
+  const rm = fs.rmSync;
+  fs.rmSync = (file, ...args) => {
+    if (path.dirname(file) === dir) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    return rm(file, ...args);
+  };
+  try {
+    const result = handoff(project, "claude", { from: "codex", decisions: "d", next: "n", checkTarget: () => {} });
+    assert.match(result, /automatic checkpoint cleanup was incomplete or refused/);
+    assert.match(result, /Handoff is ready/);
+    assert.ok(loadState(project).pendingInjection, "cleanup failure must preserve the prepared handoff");
+  } finally { fs.rmSync = rm; }
 
   const left = fs.readdirSync(dir);
   assert.ok(left.includes(`${stem}-full.md`), "it survives the very act that used to delete it");

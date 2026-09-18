@@ -43,10 +43,14 @@ function underLauncher() {
 function autoPrune(projectDir, lines) {
   try {
     const res = pruneCheckpoints(projectDir);
-    if (res.deletedGroups > 0) {
+    if (res.failedOperations || Object.entries(res).some(([key, value]) => key.startsWith("skipped") && value)) {
+      lines.push(`${WARN} Handoff committed, but automatic checkpoint cleanup was incomplete or refused (${res.deletedFiles} files removed). Inspect storage and run bridge clean; the new handoff remains prepared.`);
+    } else if (res.deletedGroups > 0) {
       lines.push(`${OK} Pruned ${res.deletedGroups} old checkpoint groups (older than 7 days, beyond the newest 20).`);
     }
-  } catch {}
+  } catch {
+    lines.push(`${WARN} Handoff committed, but automatic checkpoint cleanup failed. Inspect storage and run bridge clean; the new handoff remains prepared.`);
+  }
 }
 
 function splitNotes(s) {
