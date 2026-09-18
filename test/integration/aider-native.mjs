@@ -12,6 +12,8 @@ import { createAiderSession, aiderSessionRef, aiderSessionsForProject, aiderStar
 const python = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const interactive = process.argv.includes("--interactive");
 const crossDevice = process.argv.includes("--cross-device");
+const relocationRoot = process.env.BRIDGE_TEST_RELOCATION_ROOT || "/dev/shm";
+if (crossDevice) assert.ok(path.isAbsolute(relocationRoot), "relocation root must be absolute");
 const windows = process.platform === "win32";
 assert.ok(python && path.isAbsolute(python));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-aider-transport-"));
@@ -405,7 +407,7 @@ try {
   fs.writeFileSync(path.join(project, "fixture.txt"), "BEFORE_RELOCATION_5012\n");
   const beforeMoveHistory = fs.readFileSync(history), beforeMoveEvidence = fs.readFileSync(observations);
   if (crossDevice) {
-    relocatedRoot = fs.mkdtempSync("/dev/shm/bridge-aider-relocated-");
+    relocatedRoot = fs.mkdtempSync(path.join(relocationRoot, "bridge-aider-relocated-"));
     const target = path.join(relocatedRoot, "project");
     fs.cpSync(project, target, { recursive: true });
     assert.notEqual(fs.statSync(project).dev, fs.statSync(target).dev, "exercise real cross-device relocation");

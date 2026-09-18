@@ -10,7 +10,9 @@ import { readPiSession, piMark, piActivity } from "../../src/agents/pi-records.m
 
 const cli = process.argv[2];
 if (!cli || !path.isAbsolute(cli) || !fs.statSync(cli).isFile()) throw new Error("Pass an absolute installed Pi CLI file.");
-const relocationRoot = process.argv.includes("--cross-device") ? "/dev/shm" : null;
+const relocationRoot = process.argv.includes("--cross-device")
+  ? process.env.BRIDGE_TEST_RELOCATION_ROOT || "/dev/shm" : null;
+if (relocationRoot) assert.ok(path.isAbsolute(relocationRoot), "relocation root must be absolute");
 const bridgeRequested = process.argv.includes("--bridge") || process.argv.includes("--migrate") || Boolean(relocationRoot);
 const interactiveRequested = process.argv.includes("--interactive") || bridgeRequested;
 const windows = process.platform === "win32";
