@@ -112,6 +112,11 @@ barrier before temporary-file creation forces observable kernel contention.
 Only one of two objects fits the quota. Separate workers then exit at four
 write/flush/publication boundaries; restart must never serve a partial object
 or renew an already-published object's expiry. This uses synthetic local data,
+and also roundtrips an exact 24MiB envelope with maximum-size synthetic
+ciphertext. Both declared-length and chunked uploads one byte over the wire
+limit must return413 without leaving an object or staging file. Shape validation
+in the opaque store is not cryptographic authentication of that synthetic data.
+The harness uses
 no provider or Git, and runs outside `npm test`. It does not establish distributed
 quota, physical power-loss durability or protection against hostile parent swaps.
 

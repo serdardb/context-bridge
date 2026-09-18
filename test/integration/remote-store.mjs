@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import http from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { startArtifactServer, sendArtifact, fetchArtifact } from "../../src/remote-artifact.mjs";
-import { sealArtifact } from "../../src/sealed-artifact.mjs";
+import { sealArtifact, MAX_ENVELOPE_BYTES, MAX_SEALED_PLAINTEXT_BYTES } from "../../src/sealed-artifact.mjs";
 import { publication } from "../../src/publication.mjs";
 import { ensureState, writeCheckpoint } from "../../src/state.mjs";
 import { exportArtifact } from "../../src/artifact.mjs";
@@ -122,9 +123,41 @@ if (process.argv[2] === "--worker") {
       assert.deepEqual(fs.readFileSync(downloaded), fs.readFileSync(first.sealedFile));
       if (existing) assert.deepEqual(fs.readFileSync(file), existing, "retry must retain original expiry and bytes");
     }
+
+    const largeDirectory = path.join(root, "large"); fs.mkdirSync(largeDirectory, { mode: 0o700 });
+    const large = await start(largeDirectory, tokenFile, MAX_ENVELOPE_BYTES * 3);
+    // Transport validates shape, not authenticity. Padding isolates the wire
+    // boundary while the synthetic ciphertext exercises its independent limit.
+    const envelope = Buffer.from(JSON.stringify({ sealedVersion: 1, algorithm: "aes-256-gcm",
+      nonce: Buffer.alloc(12).toString("base64"), tag: Buffer.alloc(16).toString("base64"),
+      ciphertext: Buffer.alloc(MAX_SEALED_PLAINTEXT_BYTES).toString("base64") }));
+    const maximum = Buffer.alloc(MAX_ENVELOPE_BYTES, 32); envelope.copy(maximum);
+    const maximumFile = path.join(root, "maximum.cbsealed"); fs.writeFileSync(maximumFile, maximum);
+    const maximumSent = await sendArtifact(maximumFile, large);
+    const maximumDownload = path.join(root, "maximum-downloaded.cbsealed");
+    await fetchArtifact(maximumSent.hash, maximumDownload, large);
+    assert.deepEqual(fs.readFileSync(maximumDownload), maximum);
+    const oversized = Buffer.concat([maximum, Buffer.from(" ")]);
+    const oversizedHash = crypto.createHash("sha256").update(oversized).digest("hex");
+    for (const chunked of [false, true]) {
+      const status = await new Promise((resolve, reject) => {
+        const req = http.request(`${large.endpoint}/v1/artifacts/${oversizedHash}`, { method: "PUT", headers: {
+          Authorization: `Bearer ${fs.readFileSync(tokenFile, "utf8")}`, "X-Bridge-TTL": "60",
+          ...(chunked ? {} : { "Content-Length": oversized.length }),
+        } }, res => { res.resume(); res.once("end", () => resolve(res.statusCode)); res.once("error", reject); });
+        req.setTimeout(10000, () => req.destroy(new Error("Upload boundary deadline")));
+        req.once("error", reject);
+        // Explicit writes force chunked encoding when no Content-Length exists.
+        req.write(maximum); req.end(Buffer.from(" "));
+      });
+      assert.equal(status, 413, "server must bound both declared and chunked uploads");
+      assert.equal(fs.existsSync(path.join(largeDirectory, oversizedHash)), false);
+    }
+    assert.deepEqual(fs.readdirSync(largeDirectory).sort(), [".share.guard", maximumSent.hash].sort());
     assert.deepEqual(fs.readdirSync(project), []);
     console.log(JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, node: process.version,
       crossProcessQuota: true, actualKernelContention: true, serverExitBoundaries: 4, restartRoundtrip: true,
+      maximumUploadRoundtripBytes: maximum.length, oversizedDeclaredAndChunked: "413 without publication",
       scope: "two cooperating processes, observed atomic publication boundaries; not distributed quota, hostile directory races or power loss" }, null, 2));
   } finally {
     for (const { child, closed } of workers) {
