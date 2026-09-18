@@ -112,6 +112,31 @@ test("worktree attachment recovers a missing parent link without deleting code o
   assert.equal(loadState(root).lanes.recovery, undefined);
   assert.equal(fs.readFileSync(path.join(target, "precious.txt"), "utf8"), "keep");
   assert.ok(loadState(target).lanes.recovery, "removing a parent link does not erase the child state");
+  const uncertain = path.join(dir, "uncertain");
+  const interrupted = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const execute = cp.execFileSync;
+    cp.execFileSync = (cmd, args, options) => {
+      const result = execute(cmd, args, options);
+      if (cmd === 'git' && args.includes('add') && args.includes('worktree')) {
+        if (options.timeout !== 30000 || options.killSignal !== 'SIGKILL') process.exit(78);
+        throw Object.assign(new Error('private Git output'), { code: 'ETIMEDOUT' });
+      }
+      return result;
+    };
+    syncBuiltinESMExports();
+    process.argv.splice(1, 0, 'bridge');
+    await import(${JSON.stringify(new URL("../bin/bridge.mjs", import.meta.url).href)});
+  `, "lane", "new", "uncertain", "--worktree", uncertain], {
+    cwd: root, env: process.env, encoding: "utf8", timeout: 10000, killSignal: "SIGKILL",
+  });
+  assert.equal(interrupted.status, 1, interrupted.stdout + interrupted.stderr);
+  assert.match(interrupted.stderr, /timed out.*Git may already have created/);
+  assert.doesNotMatch(interrupted.stderr, /private Git output|at .*worktree\.mjs/);
+  assert.equal(loadState(root).lanes.uncertain, undefined);
+  assert.equal(fs.readFileSync(path.join(uncertain, "tracked.txt"), "utf8"), "committed\n");
+  assert.equal(createWorktreeLane(root, "uncertain", uncertain, { attach: true }).attached, true);
   const plain = path.join(dir, "no-git-project"); fs.mkdirSync(plain);
   const unavailable = spawnSync(process.execPath, [cli, "lane", "new", "isolated", "--worktree", path.join(dir, "never-created")], {
     cwd: plain, env: { ...process.env, PATH: "" }, encoding: "utf8",

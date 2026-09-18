@@ -7,8 +7,14 @@ import { projectIdentity } from "./storage.mjs";
 import { BridgeError } from "./util.mjs";
 
 function git(dir, args) {
-  try { return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] }).trim(); }
-  catch { throw new Error("Worktree operation failed. Check Git availability, repository, ref and destination; existing worktrees are never deleted automatically."); }
+  try { return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", timeout: 30000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] }).trim(); }
+  catch (cause) {
+    const timedOut = cause.code === "ETIMEDOUT";
+    throw new BridgeError(`${timedOut ? "Worktree operation timed out after 30000ms" : "Worktree operation failed"}. Check Git availability, repository, ref and destination. Git may already have created the worktree; inspect it before retrying or using lane attach. Existing worktrees are never deleted automatically.`, {
+      code: timedOut ? "BRIDGE_WORKTREE_TIMEOUT" : "BRIDGE_WORKTREE_FAILED",
+      operation: "run worktree Git command", cause, nextCommand: "git worktree list",
+    });
+  }
 }
 const canonical = (dir) => fs.realpathSync(dir);
 const common = (dir) => canonical(path.resolve(dir, git(dir, ["rev-parse", "--git-common-dir"])));
