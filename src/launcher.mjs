@@ -673,8 +673,11 @@ function appendExistingCheckpoint(file, contentForSize) {
       throw new Error("Checkpoint changed before append");
     }
     fs.appendFileSync(fd, contentForSize(opened.size));
+    // State publication below is durable; flush these bytes before it can
+    // acknowledge them. A failed flush may still leave appended bytes behind.
+    fs.fsyncSync(fd);
   } catch (cause) {
-    throw new BridgeError("Closing words could not be added safely. Inspect the pending checkpoints before retrying; delivery progress was not advanced.", {
+    throw new BridgeError("Closing words could not be added safely. Checkpoints may contain partially completed additions; inspect them before retrying. Delivery progress was not advanced.", {
       code: "BRIDGE_CHECKPOINT_APPEND_FAILED", operation: "append closing words", cause,
     });
   } finally { if (fd !== undefined) fs.closeSync(fd); }

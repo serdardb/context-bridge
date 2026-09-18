@@ -556,7 +556,31 @@ test("closing words written after the handoff still reach the other agent", asyn
       fs.writeFileSync(file, original);
     }
   }
+  const deltaFile = safeCheckpointPath(project, deltaRel);
   const fullFile = safeCheckpointPath(project, fullRel);
+  for (const target of [fullFile, deltaFile]) {
+    saveState(project, s);
+    const before = loadState(project);
+    const deltaBytes = fs.readFileSync(deltaFile), fullBytes = fs.readFileSync(fullFile);
+    const stat = fs.statSync(target), originalSync = fs.fsyncSync;
+    let reached = false;
+    fs.fsyncSync = fd => {
+      const current = fs.fstatSync(fd);
+      if (current.dev === stat.dev && current.ino === stat.ino) {
+        reached = true;
+        throw Object.assign(new Error("injected checkpoint flush failure"), { code: "EIO" });
+      }
+      return originalSync(fd);
+    };
+    try { assert.throws(() => appendFinalWords(project, loadState(project), "grok"), { code: "BRIDGE_CHECKPOINT_APPEND_FAILED" }); }
+    finally { fs.fsyncSync = originalSync; }
+    assert.equal(reached, true, "both evidence files must flush before acknowledgement");
+    assert.deepEqual(loadState(project), before);
+    if (target === fullFile) assert.deepEqual(fs.readFileSync(deltaFile), deltaBytes);
+    // A flush error does not undo bytes already appended. Reset only the fixture.
+    fs.writeFileSync(deltaFile, deltaBytes);
+    fs.writeFileSync(fullFile, fullBytes);
+  }
   fs.unlinkSync(fullFile);
   saveState(project, s);
   assert.throws(() => appendFinalWords(project, loadState(project), "grok"), { code: "BRIDGE_CHECKPOINT_APPEND_FAILED" });
