@@ -18,6 +18,7 @@ import {
   activitySince,
   auditSince,
   parseProbe,
+  snapshotSource,
   SQLITE_OPERATION_TIMEOUT_MS,
 } from "../src/agents/opencode.mjs";
 import { buildCommand } from "../src/launcher.mjs";
@@ -238,10 +239,17 @@ const fs = require('node:fs');
 const file = ${JSON.stringify(counter)};
 const n = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) + 1 : 1;
 fs.writeFileSync(file, String(n));
-console.log(JSON.stringify({messages:[{info:{role:'assistant',time:{created:Date.now()}},parts:[
-{type:'text',text:'export-generation-'+n},
-{type:'tool',tool:'bash',state:{status:'completed',input:{command:'echo export-generation-'+n},metadata:{exit:0}}}
-]}]}));
+const id = process.argv[3];
+const mismatch = fs.existsSync(file + '.mismatch') ? fs.readFileSync(file + '.mismatch', 'utf8') : '';
+const document = {info:{id},messages:[{info:{sessionID:id,role:'assistant',time:{created:Date.now()}},parts:[
+{sessionID:id,type:'text',text:'export-generation-'+n},
+{sessionID:id,type:'tool',tool:'bash',state:{status:'completed',input:{command:'echo export-generation-'+n},metadata:{exit:0}}}
+]}]};
+if (mismatch === 'session') document.info.id = 'ses_foreign';
+if (mismatch === 'message') document.messages[0].info.sessionID = 'ses_foreign';
+if (mismatch === 'part') document.messages[0].parts[0].sessionID = 'ses_foreign';
+if (mismatch === 'missing') delete document.info;
+console.log(JSON.stringify(document));
 `, { mode: 0o755 });
   const oldPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${oldPath ?? ""}`;
@@ -263,6 +271,21 @@ console.log(JSON.stringify({messages:[{info:{role:'assistant',time:{created:Date
       assert.notEqual(generation, previous, "a later handoff must read a fresh export");
       assert.equal(audit.readerErrors, undefined);
       previous = generation;
+    }
+    for (const mismatch of ["session", "message", "part", "missing"]) {
+      fs.writeFileSync(counter + ".mismatch", mismatch);
+      assert.throws(() => activitySince({ id: "ses_snapshot" }, null),
+        { code: "BRIDGE_TRANSCRIPT_UNREADABLE" }, "foreign or unbound export must not become conversation");
+      assert.throws(() => auditSince({ id: "ses_snapshot" }, null),
+        { code: "BRIDGE_TRANSCRIPT_UNREADABLE" }, "foreign export must not become audit evidence");
+      assert.throws(() => snapshotSource({ id: "ses_snapshot" }), { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+      handoff(project, "codex", { from: "opencode", checkTarget: () => {} });
+      const state = loadState(project);
+      const file = safeCheckpointPath(project, state.pendingInjection.deltaFile);
+      const body = fs.readFileSync(file.replace(/\.md$/, "-full.md"), "utf8");
+      assert.doesNotMatch(body, /export-generation-/);
+      assert.match(fs.readFileSync(file, "utf8"), /source could not be read reliably/);
+      assert.equal(state.pendingInjection.sources.opencode, undefined, "foreign evidence cannot advance delivery");
     }
   } finally {
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;

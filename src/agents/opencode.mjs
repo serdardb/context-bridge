@@ -65,7 +65,9 @@ function exportSession(sessionId) {
     });
     fs.closeSync(fd);
     fd = undefined;
-    return fs.readFileSync(tmpFile, "utf8");
+    const raw = fs.readFileSync(tmpFile, "utf8");
+    exportDocument(raw, sessionId);
+    return raw;
   } catch {
     return null;
   } finally {
@@ -419,13 +421,18 @@ export function currentMark() {
  * Exported so its handling of the export shape can be tested against fixtures
  * without shelling out to a real OpenCode session.
  */
-function exportDocument(raw) {
+function exportDocument(raw, expectedSessionId = null) {
   try {
     const start = raw.indexOf("{");
     if (start < 0) throw new Error("Missing JSON document");
     const document = JSON.parse(raw.slice(start));
     if (!Array.isArray(document?.messages) || document.messages.some((m) =>
       typeof m?.info?.role !== "string" || !Array.isArray(m.parts))) throw new Error("Unsupported export schema");
+    if (expectedSessionId !== null && (document.info?.id !== expectedSessionId ||
+        document.messages.some(m => m.info.sessionID !== expectedSessionId ||
+          m.parts.some(part => part?.sessionID !== expectedSessionId)))) {
+      throw new Error("Export session identity does not match the requested session");
+    }
     return document;
   } catch (cause) {
     throw new BridgeError("OpenCode export is malformed or has an unsupported message schema.", {
@@ -474,7 +481,13 @@ export function snapshotSource(ref) {
 }
 
 function sourceExport(ref) {
-  return ref?.id ? sourceExports.get(ref) ?? exportSession(ref.id) : null;
+  if (!ref?.id) return null;
+  const cached = sourceExports.get(ref);
+  if (cached !== undefined) {
+    exportDocument(cached, ref.id);
+    return cached;
+  }
+  return exportSession(ref.id);
 }
 
 export function activitySince(ref, sinceIso) {
