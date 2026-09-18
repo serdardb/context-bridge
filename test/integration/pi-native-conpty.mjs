@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 assert.equal(process.platform, "win32", "this acceptance exercises Windows ConPTY");
 const modulePath = process.env.BRIDGE_TEST_PTY_MODULE;
@@ -8,14 +9,20 @@ assert.ok(modulePath && path.isAbsolute(modulePath), "supply an isolated node-pt
 const { spawn } = createRequire(import.meta.url)(modulePath);
 const [executable, ...args] = process.argv.slice(2);
 assert.ok(executable && path.isAbsolute(executable));
+console.error("Pi ConPTY: starting native terminal");
 const terminal = spawn(executable, args, {
   name: "xterm-256color", cols: 120, rows: 40,
   cwd: process.cwd(), env: process.env,
 });
+console.error("Pi ConPTY: native terminal started");
 let output = "", answered = false, timedOut = false, quitTimer;
 const timer = setTimeout(() => {
   timedOut = true;
-  terminal.kill();
+  console.error(`Pi ConPTY timeout: answered=${answered}\n${output.slice(-8192)}`);
+  // ConPTY teardown itself may block. Bound cleanup of this fixture's tree.
+  spawnSync(path.join(process.env.SystemRoot, "System32", "taskkill.exe"),
+    ["/PID", String(terminal.pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+  process.exit(1);
 }, 30000);
 terminal.onData((data) => {
   output += data;

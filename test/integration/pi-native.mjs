@@ -63,7 +63,11 @@ async function execute(args, interactive = false, executable = cli, extraEnv = {
     let stdout = "", stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const timer = setTimeout(() => child.kill("SIGKILL"), interactive ? 45000 : 20000);
+    const timer = setTimeout(() => {
+      if (windows) spawnSync(path.join(process.env.SystemRoot, "System32", "taskkill.exe"),
+        ["/PID", String(child.pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+      else child.kill("SIGKILL");
+    }, interactive ? 45000 : 20000);
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("close", (code) => { clearTimeout(timer); code === 0 ? resolve(stdout) : reject(new Error(`Pi exited ${code}: ${stderr}`)); });
   });
