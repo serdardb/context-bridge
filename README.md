@@ -197,6 +197,12 @@ created in a project by default.
   - [OpenCode](https://opencode.ai) ≥ 1.18.x, with a provider configured (a free model works; the bridge never makes the call itself). Delivering a handoff into it also needs the `sqlite3` CLI, which macOS ships by default; `bridge doctor` says so if it is missing.
 - `git` (used for the work-delta; projects without git still work, with a thinner delta)
 
+OpenCode store access honors `OPENCODE_DB` (absolute path, or relative to its
+data directory) and `XDG_DATA_HOME`. `OPENCODE_HOME` remains a Bridge-specific
+data-directory override; keep it aligned with the native agent's configuration.
+An in-memory OpenCode database cannot be shared with Bridge. Nonstandard channel
+database names currently require an explicit `OPENCODE_DB` path.
+
 ## Installation
 
 ```bash

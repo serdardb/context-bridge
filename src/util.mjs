@@ -26,7 +26,8 @@ export function codexHome() {
 }
 
 export function opencodeHome() {
-  return process.env.OPENCODE_HOME || path.join(process.env.HOME || HOME, ".local", "share", "opencode");
+  return process.env.OPENCODE_HOME || path.join(process.env.XDG_DATA_HOME ||
+    path.join(process.env.HOME || HOME, ".local", "share"), "opencode");
 }
 
 export function sharedSkillPath() {

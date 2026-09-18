@@ -653,6 +653,9 @@ console.log(JSON.stringify(discover("/tmp/no-open-code-session", { allowServerFa
 
 test("schemaHealth distinguishes a compatible, missing and incompatible store", () => {
   const previous = process.env.OPENCODE_HOME;
+  const previousDb = process.env.OPENCODE_DB;
+  const previousXdg = process.env.XDG_DATA_HOME;
+  delete process.env.OPENCODE_DB;
   const empty = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-none-"));
   try {
     process.env.OPENCODE_HOME = empty;
@@ -661,6 +664,26 @@ test("schemaHealth distinguishes a compatible, missing and incompatible store", 
     const compatible = freshDb();
     process.env.OPENCODE_HOME = compatible.dir;
     assert.deepEqual(schemaHealth(), { status: "compatible", missing: [] });
+    const custom = path.join(compatible.dir, "custom.db");
+    fs.renameSync(path.join(compatible.dir, "opencode.db"), custom);
+    process.env.OPENCODE_DB = "custom.db";
+    assert.equal(schemaHealth().status, "compatible");
+    assert.equal(preResume({ id: "ses_custom" }, "context").args[0], custom);
+    process.env.OPENCODE_DB = custom;
+    process.env.OPENCODE_HOME = empty;
+    assert.equal(schemaHealth().status, "compatible");
+    assert.equal(fabricateSession(empty, "context").preResume.args[0], custom);
+    process.env.OPENCODE_DB = ":memory:";
+    assert.equal(schemaHealth().status, "unreadable");
+    assert.equal(preResume({ id: "ses_custom" }, "context"), null);
+    assert.equal(fabricateSession(empty, "context"), null);
+    delete process.env.OPENCODE_DB;
+    delete process.env.OPENCODE_HOME;
+    process.env.XDG_DATA_HOME = empty;
+    fs.mkdirSync(path.join(empty, "opencode"));
+    fs.copyFileSync(custom, path.join(empty, "opencode", "opencode.db"));
+    assert.equal(schemaHealth().status, "compatible");
+    assert.equal(preResume({ id: "ses_custom" }, "context").args[0], path.join(empty, "opencode", "opencode.db"));
     fs.rmSync(compatible.dir, { recursive: true, force: true });
 
     const incompatible = fs.mkdtempSync(path.join(os.tmpdir(), "oc-schema-bad-"));
@@ -674,6 +697,8 @@ test("schemaHealth distinguishes a compatible, missing and incompatible store", 
   } finally {
     if (previous === undefined) delete process.env.OPENCODE_HOME;
     else process.env.OPENCODE_HOME = previous;
+    if (previousDb === undefined) delete process.env.OPENCODE_DB; else process.env.OPENCODE_DB = previousDb;
+    if (previousXdg === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = previousXdg;
     fs.rmSync(empty, { recursive: true, force: true });
   }
 });

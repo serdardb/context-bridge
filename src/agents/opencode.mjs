@@ -25,6 +25,13 @@ export const displayName = "OpenCode";
 export const injection = "prompt";
 export const SQLITE_OPERATION_TIMEOUT_MS = 15000;
 
+function databasePath() {
+  const override = process.env.OPENCODE_DB;
+  if (override === ":memory:") return null;
+  if (override) return path.isAbsolute(override) ? override : path.join(opencodeHome(), override);
+  return path.join(opencodeHome(), "opencode.db");
+}
+
 const REQUIRED_SCHEMA = {
   project: ["id", "worktree"],
   session: ["id", "project_id", "slug", "directory", "title", "version", "time_created", "time_updated"],
@@ -174,7 +181,7 @@ function listSessionsViaServer(timeout = 10000) {
 // those share the directory but were never a handoff target. Empty set when the
 // store is absent, which collapses discover to its old newest-wins behaviour.
 export function bridgeTouchedSessionIds() {
-  const dbPath = path.join(opencodeHome(), "opencode.db");
+  const dbPath = databasePath();
   if (!fileExists(dbPath)) return new Set();
   const out = tryExec("sqlite3", [dbPath, "SELECT DISTINCT session_id FROM message WHERE id LIKE 'msg_bridge_%';"]);
   if (!out) return new Set();
@@ -321,7 +328,7 @@ function opencodeVersion() {
  */
 export function fabricateSession(projectDir, delta, now = Date.now()) {
   if (!delta) return null;
-  const dbPath = path.join(opencodeHome(), "opencode.db");
+  const dbPath = databasePath();
   if (!fileExists(dbPath)) return null;
   const dir = path.resolve(projectDir);
   const seed = createHash("sha256").update(`${dir}\n${delta}`).digest("hex");
@@ -370,7 +377,7 @@ export function fabricateSession(projectDir, delta, now = Date.now()) {
  */
 export function preResume(ref, delta) {
   if (!ref?.id || !delta) return null;
-  const dbPath = path.join(opencodeHome(), "opencode.db");
+  const dbPath = databasePath();
   if (!fileExists(dbPath)) return null;
   return {
     cmd: "sqlite3",
@@ -611,7 +618,8 @@ export function health() {
 
 /** Check only the tables and columns used by discovery and handoff injection. */
 export function schemaHealth() {
-  const dbPath = path.join(opencodeHome(), "opencode.db");
+  const dbPath = databasePath();
+  if (dbPath === null) return { status: "unreadable", missing: [], detail: "in-memory databases cannot be shared with the bridge" };
   if (!fileExists(dbPath)) return { status: "none", missing: [] };
 
   const missing = [];
