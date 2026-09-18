@@ -23,7 +23,7 @@ export function resolveAiderRuntime({ env = process.env, cwd = process.cwd() } =
   // Do not realpath a venv's Python symlink: invoking its base target selects a
   // different environment. -I excludes cwd, PYTHONPATH and user site packages.
   const result = spawnSync(python, ["-I", "-c", probe], {
-    cwd, env, encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024,
+    cwd, env, encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
     windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
   });
   let info;
