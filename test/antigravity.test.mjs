@@ -72,16 +72,20 @@ test("internal machinery rows never reach the next agent", async () => {
   );
 });
 
-test("the watermark is the step index, and nothing is resent or skipped", async () => {
+test("step watermarks preserve append-only progress and replay revised history", async () => {
   const { home, adapter } = await fixture();
-  writeTranscript(home, "conv", [
+  const rows = [
     row(0, "USER_INPUT", "<USER_REQUEST>one</USER_REQUEST>"),
     row(1, "PLANNER_RESPONSE", "first", "MODEL"),
     row(2, "USER_INPUT", "<USER_REQUEST>two</USER_REQUEST>"),
     row(3, "PLANNER_RESPONSE", "second", "MODEL"),
-  ]);
+  ];
+  writeTranscript(home, "conv", rows);
   const ref = adapter.refById(null, "conv");
-  assert.equal(adapter.currentMark(ref), 3);
+  const mark = adapter.currentMark(ref);
+  assert.equal(mark.step, 3);
+  assert.equal(mark.rows, 4);
+  assert.match(mark.prefixHash, /^[a-f0-9]{64}$/);
   assert.equal(adapter.activitySince(ref, null).messages.length, 4, "no watermark means everything");
   assert.deepEqual(
     adapter.activitySince(ref, 1).messages.map((m) => m.text),
@@ -89,6 +93,25 @@ test("the watermark is the step index, and nothing is resent or skipped", async 
     "past the watermark only, and the row at the watermark is not sent again"
   );
   assert.equal(adapter.activitySince(ref, 3).messages.length, 0, "caught up means nothing to send");
+  assert.equal(adapter.activitySince(ref, mark).messages.length, 0);
+  writeTranscript(home, "conv", [...rows, row(4, "PLANNER_RESPONSE", "new tail", "MODEL")]);
+  assert.deepEqual(adapter.activitySince(ref, mark).messages.map(m => m.text), ["new tail"]);
+  assert.equal(adapter.activitySince(ref, mark).sourceRewritten, false);
+  const revised = [...rows];
+  revised[0] = row(0, "USER_INPUT", "corrected decision");
+  revised[3] = row(3, "RUN_COMMAND", "Command failed", "MODEL");
+  writeTranscript(home, "conv", revised);
+  assert.equal(adapter.activitySince(ref, mark).sourceRewritten, true);
+  assert.ok(adapter.activitySince(ref, mark).messages.some(m => m.text === "corrected decision"));
+  assert.equal(adapter.auditSince(ref, mark).commands[0].ok, false,
+    "audit must replay the revised step rather than treating it as acknowledged");
+  const refreshed = adapter.currentMark(ref);
+  assert.equal(adapter.activitySince(ref, refreshed).messages.length, 0);
+  assert.equal(adapter.auditSince(ref, refreshed).commands.length, 0);
+  writeTranscript(home, "conv", [revised[0]]);
+  assert.equal(adapter.activitySince(ref, mark).sourceRewritten, true);
+  writeTranscript(home, "conv", [...rows, row(3, "PLANNER_RESPONSE", "completed same step", "MODEL")]);
+  assert.ok(adapter.activitySince(ref, mark).messages.some(m => m.text === "completed same step"));
 });
 
 test("a turn is over when the transcript ends on a finished model response", async () => {

@@ -11,7 +11,6 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
@@ -26,6 +25,7 @@ import {
   BridgeError,
   transcriptStamp,
   readRegularFile,
+  recordPrefixHash,
 } from "../util.mjs";
 import { skillLabel } from "./codex.mjs";
 
@@ -121,13 +121,7 @@ export function currentMark(ref) {
   for (const e of readJsonl(ref.eventsPath, true)) {
     if (e.ts && (!ts || e.ts > ts)) ts = e.ts;
   }
-  return { rows: chat.length, ts, chatPrefixHash: chatHash(chat) };
-}
-
-function chatHash(rows) {
-  const hash = createHash("sha256");
-  for (const row of rows) hash.update(JSON.stringify(row) + "\n");
-  return hash.digest("hex");
+  return { rows: chat.length, ts, chatPrefixHash: recordPrefixHash(chat) };
 }
 
 /** Accepts the compound mark, a bare row count, or nothing. */
@@ -145,7 +139,7 @@ export function activitySince(ref, mark) {
   // A count cannot detect compaction or editing between two handoffs. Legacy
   // marks still work, but only newly captured marks attest the earlier prefix.
   const sourceRewritten = chat.length < previous || (typeof mark?.chatPrefixHash === "string" &&
-    chatHash(chat.slice(0, previous)) !== mark.chatPrefixHash);
+    recordPrefixHash(chat.slice(0, previous)) !== mark.chatPrefixHash);
   const from = sourceRewritten ? 0 : previous;
   const messages = [];
   let index = 0;

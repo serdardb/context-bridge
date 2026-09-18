@@ -12,7 +12,7 @@
 // of its objections changed this file; one of its claims did not survive checking.
 import fs from "node:fs";
 import path from "node:path";
-import { tryExec, fileExists, readRegularFile, HOME, BridgeError } from "../util.mjs";
+import { tryExec, fileExists, readRegularFile, recordPrefixHash, HOME, BridgeError } from "../util.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 
@@ -188,29 +188,42 @@ function wasTruncated(row) {
 
 /**
  * Its rows are numbered, not timestamped in a way we can trust across a resume,
- * so the watermark is the step index: a number this adapter defines and nobody
- * else interprets.
+ * so progress uses the step index plus a parsed-prefix fingerprint. The legacy
+ * numeric mark remains readable; new marks also detect edited earlier steps.
  */
 export function currentMark(ref) {
+  const rows = [...readJsonl(ref.transcriptPath, true)];
   let last = -1;
-  for (const row of readJsonl(ref.transcriptPath, true)) {
+  for (const row of rows) {
     if (typeof row.step_index === "number" && row.step_index > last) last = row.step_index;
   }
-  return last < 0 ? null : last;
+  return last < 0 ? null : { step: last, rows: rows.length, prefixHash: recordPrefixHash(rows) };
+}
+
+function readMarkedRows(ref, mark, readStatus) {
+  const rows = [...readJsonl(ref.transcriptPath, true, readStatus)];
+  const step = typeof mark === "number" ? mark : typeof mark?.step === "number" ? mark.step : -1;
+  let last = -1;
+  for (const row of rows) if (typeof row.step_index === "number") last = Math.max(last, row.step_index);
+  const attested = Number.isSafeInteger(mark?.rows) && mark.rows >= 0 && typeof mark.prefixHash === "string";
+  const sourceRewritten = last < step || (attested && (rows.length < mark.rows ||
+    recordPrefixHash(rows.slice(0, mark.rows)) !== mark.prefixHash ||
+    rows.slice(mark.rows).some(row => typeof row.step_index === "number" && row.step_index <= step)));
+  return { rows, from: sourceRewritten ? -1 : step, sourceRewritten };
 }
 
 export function activitySince(ref, mark) {
   const readStatus = { malformed: 0 };
-  const from = typeof mark === "number" ? mark : -1;
+  const { rows, from, sourceRewritten } = readMarkedRows(ref, mark, readStatus);
   const messages = [];
-  for (const row of readJsonl(ref.transcriptPath, true, readStatus)) {
+  for (const row of rows) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (!isConversationRow(row)) continue;
     const text = textOf(row);
     const role = roleFor(row);
     if (text && !(role === "user" && isBridgeProtocolNoise(text))) messages.push({ role, text, at: row.created_at ?? null });
   }
-  return { messages, patchedFiles: [], turnsCompleted: 0, sourceComplete: readStatus.malformed === 0 };
+  return { messages, patchedFiles: [], turnsCompleted: 0, sourceRewritten, sourceComplete: readStatus.malformed === 0 };
 }
 
 /**
@@ -423,15 +436,15 @@ export function observeAudit(ref) {
  * which is what its capabilities call `parsed`.
  */
 export function auditSince(ref, mark) {
-  const from = typeof mark === "number" ? mark : -1;
   const commands = [];
   const filesRead = new Set();
   const filesChanged = new Set();
   let pendingArgs = null;
   let dropped = 0;
   const readStatus = { malformed: 0 };
+  const { rows, from } = readMarkedRows(ref, mark, readStatus);
 
-  for (const row of readJsonl(ref?.transcriptPath, true, readStatus)) {
+  for (const row of rows) {
     if (typeof row.step_index !== "number" || row.step_index <= from) continue;
     if (row.type === "PLANNER_RESPONSE" && (row.tool_calls ?? []).length) {
       const call = row.tool_calls[0];

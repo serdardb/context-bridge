@@ -94,8 +94,8 @@ are detected through the contract rather than a fixed count in caller code.
 
 The two-agent design assumed time was universal. Claude and Codex timestamp
 their records, so their watermark is an ISO instant. Grok's chat rows carry no
-timestamps at all, so its watermark is a compound `{rows, ts}` counting rows in
-the chat file and the newest event timestamp beside it. Using time there would
+timestamps at all, so its watermark counts chat rows, fingerprints their parsed
+prefix, and records the newest event timestamp beside it. Using time there would
 have silently resent the whole conversation on every switch.
 
 So a watermark is whatever the adapter says it is. Callers persist it and hand
@@ -455,6 +455,15 @@ messages recur. Composition reserves the larger possible overflow notice.
 Appending rows preserves the usual tail-only behavior. Older marks without the
 hash can detect shrinking but not same-length edits; audit timestamps remain an
 independent stream. This does not establish rewrite detection for all vendors.
+Antigravity now records the maximum step index, row count and parsed-prefix hash.
+Conversation and audit share the same selection: a changed prefix, shortened
+history or appended row reusing an acknowledged step replays the current readable
+history. A refreshed mark acknowledges that replay; ordinary higher-step appends
+remain incremental. Legacy numeric marks still work, but detect only a reduced
+maximum step, not edits that preserve it. Hashing parsed records ignores JSONL
+whitespace, not object-key reordering; conservative replay can repeat unchanged
+content. Neither adapter reconstructs deleted history or guarantees a snapshot
+against concurrent vendor writes.
 Grok also stamps each JSONL read that contributes activity or audit, including
 its optional hunk record. Initial absence of that optional file is normal;
 disappearance or modification during its read marks the audit incomplete. These

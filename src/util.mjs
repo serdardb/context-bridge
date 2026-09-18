@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { publication } from "./publication.mjs";
@@ -13,6 +13,13 @@ export const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(HOME, ".cla
 export const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, ".codex");
 export const GROK_HOME = process.env.GROK_HOME || path.join(HOME, ".grok");
 export const OPENCODE_HOME = process.env.OPENCODE_HOME || path.join(HOME, ".local", "share", "opencode");
+
+/** Fingerprint an ordered parsed-record prefix, independent of JSONL spacing. */
+export function recordPrefixHash(rows) {
+  const hash = createHash("sha256");
+  for (const row of rows) hash.update(JSON.stringify(row) + "\n");
+  return hash.digest("hex");
+}
 
 // Resolved per call, so tests (and a changed env) are honoured without a reload.
 // The module-level constants above are kept for callers that read them once at
