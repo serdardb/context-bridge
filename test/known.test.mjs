@@ -409,9 +409,11 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     fs.writeFileSync(claudeTranscript, sourceBytes);
     let reads = 0;
     fs.readFileSync = (file, ...args) => {
-      if (file === claudeTranscript && ++reads >= failAt) {
+      const sourceRead = file === claudeTranscript || (typeof file === "number" &&
+        fs.fstatSync(file).ino === fs.statSync(claudeTranscript).ino);
+      if (sourceRead && ++reads >= failAt) {
         if (fault === "rewrite") {
-          fs.writeFileSync(file, "");
+          fs.writeFileSync(claudeTranscript, "");
           return originalRead(file, ...args);
         }
         if (fault === "malformed") return originalRead(file, ...args) + "\n{unfinished";

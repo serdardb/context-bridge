@@ -89,7 +89,9 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
         if (mode === "missing") fs.rmSync(file, { force: true });
         else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : "");
         fs.readFileSync = (...args) => {
-          if (args[0] === file && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
+          const sourceRead = args[0] === file || (typeof args[0] === "number" && fs.existsSync(file) &&
+            fs.fstatSync(args[0]).ino === fs.statSync(file).ino);
+          if (sourceRead && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
           if (args[0] === path.join(project, "hunk_records.jsonl") && mode === "hunk-denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
           const content = read(...args);
           if (args[0] === hunkFile && mode === "hunk-rewritten") fs.writeFileSync(hunkFile, "");
