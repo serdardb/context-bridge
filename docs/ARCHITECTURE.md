@@ -92,8 +92,9 @@ are detected through the contract rather than a fixed count in caller code.
 
 ### Watermarks are opaque
 
-The two-agent design assumed time was universal. Claude and Codex timestamp
-their records, so their watermark is an ISO instant. Grok's chat rows carry no
+The two-agent design assumed time was universal. Claude and Codex originally
+used an ISO instant; new marks count parsed rows and fingerprint their prefix,
+so buffered older-timestamped rows are not silently skipped. Grok's chat rows carry no
 timestamps at all, so its watermark counts chat rows, fingerprints their parsed
 prefix, and records the newest event timestamp beside it. Using time there would
 have silently resent the whole conversation on every switch.
@@ -446,6 +447,14 @@ the delta and manifest, and withhold the source watermark. Error-only manifests
 are retained even when no commands could be recovered. A file changing after
 these checks or auxiliary evidence changing independently remains outside this
 bounded detection; this is not a vendor transaction.
+Claude and Codex use parsed-prefix marks for conversation and audit. New physical
+rows are selected even when their timestamps predate preparation; changed or
+shortened prefixes replay the current readable history with a warning. Audit
+retains earlier command calls for pairing with newly selected outcomes, without
+reporting unchanged old calls again. Legacy ISO marks still filter by timestamp
+and cannot detect older-stamped revisions. An official import whose rollout path
+is not yet discoverable retains that legacy starting mark. Completion/idleness
+checks still use their separate requested-at timestamp, not the transcript mark.
 Grok's new compound marks also hash the parsed chat prefix. If that prefix is
 rewritten between handoffs, or the chat shrinks below the saved row count, the
 adapter replays the current readable conversation and handoff labels the replay.

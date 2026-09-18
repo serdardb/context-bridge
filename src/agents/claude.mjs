@@ -16,9 +16,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
-import { claudeMessagesSince } from "../delta.mjs";
+import { claudeMessagesSince, transcriptMark, markedTranscript } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
-import { nowIso, tryExec, fileExists, readJson, readRegularFile, HOME, CLAUDE_DIR, BridgeError } from "../util.mjs";
+import { tryExec, fileExists, readJson, readRegularFile, HOME, CLAUDE_DIR } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -77,7 +77,7 @@ export function resumeCommand(ref, extraArgs = []) {
 export function activitySince(ref, sinceIso) {
   const readStatus = { malformed: 0 };
   const messages = claudeMessagesSince(ref.transcriptPath, sinceIso, readStatus);
-  return { messages, patchedFiles: [], turnsCompleted: 0, sourceComplete: readStatus.malformed === 0 };
+  return { messages, patchedFiles: [], turnsCompleted: 0, sourceRewritten: readStatus.sourceRewritten, sourceComplete: readStatus.malformed === 0 };
 }
 
 /**
@@ -98,9 +98,9 @@ export function idleAfter() {
   return null;
 }
 
-/** Claude filters by transcript timestamp, so its mark is an ISO instant. */
-export function currentMark() {
-  return nowIso();
+/** Record progress independently of when the vendor timestamps buffered rows. */
+export function currentMark(ref) {
+  return transcriptMark(ref?.transcriptPath);
 }
 
 /**
@@ -246,39 +246,28 @@ export function observeAudit(ref) {
  */
 export function auditSince(ref, sinceIso) {
   const uses = new Map();
+  const included = new Set();
   const order = [];
   const filesRead = new Set();
   const filesChanged = new Set();
   let dropped = 0;
-  let sourceComplete = true;
-  let content;
-  try {
-    content = readRegularFile(ref?.transcriptPath);
-  } catch (cause) {
-    throw new BridgeError("The audit transcript could not be read.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause });
-  }
-
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    let row;
-    try {
-      row = JSON.parse(line);
-    } catch {
-      sourceComplete = false;
-      continue;
-    }
-    if (sinceIso && row.timestamp && row.timestamp <= sinceIso) continue;
+  const readStatus = { malformed: 0 };
+  const { rows, selected } = markedTranscript(ref?.transcriptPath, sinceIso, readStatus);
+  for (const [index, row] of rows.entries()) {
+    const fresh = selected(row, index);
     for (const b of row?.message?.content ?? []) {
       if (b?.type === "tool_use") {
-        if (b.name === "Read" && b.input?.file_path) filesRead.add(b.input.file_path);
-        if ((b.name === "Edit" || b.name === "Write") && b.input?.file_path) filesChanged.add(b.input.file_path);
+        if (fresh && b.name === "Read" && b.input?.file_path) filesRead.add(b.input.file_path);
+        if (fresh && (b.name === "Edit" || b.name === "Write") && b.input?.file_path) filesChanged.add(b.input.file_path);
         if (b.name !== "Bash") continue; // only shell commands belong in a command ledger
         uses.set(b.id, { tool: b.name, args: b.input?.command ?? null, at: row.timestamp ?? null, ok: null, exitCode: null, durationMs: null });
         order.push(b.id);
+        if (fresh) included.add(b.id);
       } else if (b?.type === "tool_result" && uses.has(b.tool_use_id)) {
         uses.get(b.tool_use_id).ok = b.is_error !== true;
+        if (fresh) included.add(b.tool_use_id);
       }
     }
   }
-  return { commands: order.map((id) => uses.get(id)).filter(Boolean), filesRead: [...filesRead], filesChanged: [...filesChanged], dropped, sourceComplete };
+  return { commands: order.filter(id => included.has(id)).map((id) => uses.get(id)).filter(Boolean), filesRead: [...filesRead], filesChanged: [...filesChanged], dropped, sourceComplete: readStatus.malformed === 0 };
 }

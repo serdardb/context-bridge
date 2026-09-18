@@ -540,7 +540,7 @@ function handoffOwned(projectDir, target, { summary, decisions, nextNotes, adopt
     // v3 mark means "my own stream is shared up to here". Leaving the target
     // unmarked would make the first return replay the entire imported history
     // back at Claude.
-    targetSlot.set({ mark: targetRef ? targetAdapter.currentMark(targetRef) : now });
+    targetSlot.set({ mark: targetRef?.transcriptPath ? targetAdapter.currentMark(targetRef) : now });
     const sourceMark = sourceAdapter.currentMark(sourceAdapter.hydrate(projectDir, sourceSlot));
     sourceSlot.set({ mark: sourceMark });
     // The import carried Claude's conversation into the thread, so Codex has

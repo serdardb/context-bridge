@@ -5,12 +5,11 @@ import {
   rolloutsForProjectSince,
   rolloutHeadHealth,
 } from "../discover.mjs";
-import { codexActivitySince, codexAuditSince, rolloutIdleAfter } from "../delta.mjs";
+import { codexActivitySince, codexAuditSince, rolloutIdleAfter, transcriptMark } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  nowIso,
   fileExists,
   writeJsonAtomic,
   BridgeError,
@@ -138,9 +137,9 @@ export function idleAfter(ref, sinceIso) {
   return ref.transcriptPath ? rolloutIdleAfter(ref.transcriptPath, sinceIso) : false;
 }
 
-/** Codex rollout records carry timestamps, so its mark is an ISO instant. */
-export function currentMark() {
-  return nowIso();
+/** Record progress independently of when the vendor timestamps buffered rows. */
+export function currentMark(ref) {
+  return transcriptMark(ref?.transcriptPath);
 }
 
 /** A brand new thread seeded by an initial prompt: `codex [OPTIONS] [PROMPT]`. */

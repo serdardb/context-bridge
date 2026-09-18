@@ -1,7 +1,7 @@
 // Deterministic context-delta extraction. No LLM summarization calls in v0.1:
 // conversation truth comes from native session files, work truth from git.
 import { createHash } from "node:crypto";
-import { tryExec, BridgeError, readRegularFile } from "./util.mjs";
+import { tryExec, BridgeError, readRegularFile, recordPrefixHash } from "./util.mjs";
 
 // There is no message cap and no per-message length here, deliberately, and this
 // comment is the guard against one coming back. Every number that used to live
@@ -11,11 +11,30 @@ import { tryExec, BridgeError, readRegularFile } from "./util.mjs";
 // the room went unused. What decides now is the road's own limit, passed in by
 // the caller, and whatever does not fit is left out whole and counted.
 
-/** Claude transcript records (user/assistant text) newer than sinceIso. */
+/** New marks attest parsed history; legacy ISO marks retain timestamp filtering. */
+export function transcriptMark(file) {
+  const rows = [...readJsonl(file, true)];
+  return { rows: rows.length, prefixHash: recordPrefixHash(rows) };
+}
+
+export function markedTranscript(file, mark, readStatus = null) {
+  const rows = [...readJsonl(file, true, readStatus)];
+  const attested = Number.isSafeInteger(mark?.rows) && mark.rows >= 0 && typeof mark.prefixHash === "string";
+  const sourceRewritten = attested && (rows.length < mark.rows ||
+    recordPrefixHash(rows.slice(0, mark.rows)) !== mark.prefixHash);
+  if (readStatus) readStatus.sourceRewritten = sourceRewritten;
+  const selected = (row, index) => attested
+    ? sourceRewritten || index >= mark.rows
+    : !mark || !row.timestamp || row.timestamp > mark;
+  return { rows, selected, sourceRewritten };
+}
+
+/** Claude transcript records (user/assistant text) after the saved mark. */
 export function claudeMessagesSince(transcriptPath, sinceIso, readStatus = null) {
   const out = [];
-  for (const r of readJsonl(transcriptPath, true, readStatus)) {
-    if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
+  const { rows, selected } = markedTranscript(transcriptPath, sinceIso, readStatus);
+  for (const [index, r] of rows.entries()) {
+    if (!r.timestamp || !selected(r, index)) continue;
     if (r.isSidechain) continue;
     if (r.type === "user") {
       const text = extractClaudeText(r.message?.content);
@@ -34,8 +53,9 @@ export function codexActivitySince(rolloutPath, sinceIso) {
   const messages = [];
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const r of readJsonl(rolloutPath, true, readStatus)) {
-    if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
+  const { rows, selected, sourceRewritten } = markedTranscript(rolloutPath, sinceIso, readStatus);
+  for (const [index, r] of rows.entries()) {
+    if (!r.timestamp || !selected(r, index)) continue;
     const p = r.payload || {};
     if (r.type === "event_msg") {
       if (p.type === "user_message" && p.message) {
@@ -55,7 +75,7 @@ export function codexActivitySince(rolloutPath, sinceIso) {
       }
     }
   }
-  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 };
+  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceRewritten, sourceComplete: readStatus.malformed === 0 };
 }
 
 /** True when the rollout contains a task_complete event after sinceIso (idle signal). */
@@ -605,13 +625,16 @@ export const SKILL_SENTINEL = "hand this session off to another coding agent via
  */
 export function codexAuditSince(rolloutPath, sinceIso) {
   const calls = new Map();
+  const included = new Set();
   const order = [];
   const filesChanged = new Set();
   let dropped = 0;
   const readStatus = { malformed: 0 };
 
-  for (const r of readJsonl(rolloutPath, true, readStatus)) {
-    if (!r.timestamp || (sinceIso && r.timestamp <= sinceIso)) continue;
+  const { rows, selected } = markedTranscript(rolloutPath, sinceIso, readStatus);
+  for (const [index, r] of rows.entries()) {
+    if (!r.timestamp) continue;
+    const fresh = selected(r, index);
     const p = r.payload || {};
     // Codex issues a call two ways: function_call (exec_command) carries its args
     // as a JSON string in `arguments`, while custom_tool_call (apply_patch) carries
@@ -621,14 +644,16 @@ export function codexAuditSince(rolloutPath, sinceIso) {
     if ((p.type === "function_call" || p.type === "custom_tool_call") && p.call_id) {
       calls.set(p.call_id, { tool: p.name ?? null, args: argsOf(p.arguments ?? p.input), at: r.timestamp, ok: null, exitCode: null, durationMs: null });
       order.push(p.call_id);
+      if (fresh) included.add(p.call_id);
     } else if ((p.type === "function_call_output" || p.type === "custom_tool_call_output") && calls.has(p.call_id)) {
       Object.assign(calls.get(p.call_id), readOutcome(p.output));
-    } else if (r.type === "event_msg" && p.type === "patch_apply_end") {
+      if (fresh) included.add(p.call_id);
+    } else if (fresh && r.type === "event_msg" && p.type === "patch_apply_end") {
       for (const f of extractPatchFiles(p)) filesChanged.add(f);
     }
   }
 
-  const commands = order.map((id) => calls.get(id)).filter(Boolean);
+  const commands = order.filter(id => included.has(id)).map((id) => calls.get(id)).filter(Boolean);
   return {
     commands,
     filesChanged: [...filesChanged],
