@@ -138,6 +138,13 @@ test("future releases pass metadata gates without historical wording and mismatc
     assert.equal(gate(releaseChecks(root), "manifest-versions"), false);
     metadata("2.0.0");
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    write("src/accidental-bundle/context.cbsealed", "private ciphertext fixture");
+    write("src/accidental-bundle/key.bin", "private key fixture");
+    const sealedLeak = releaseChecks(root).checks.find((item) => item.name === "package-private-files");
+    assert.equal(sealedLeak.passed, false, "generated sealed bundles must not enter the published package");
+    assert.match(sealedLeak.detail, /context\.cbsealed/);
+    assert.match(sealedLeak.detail, /key\.bin/);
+    fs.rmSync(path.join(root, "src/accidental-bundle"), { recursive: true });
     pkg.files.push("notes");
     write("package.json", pkg);
     write("notes/private-review.md", "local-only review fixture");

@@ -30,7 +30,8 @@ export function releaseChecks(root, { verifyCI = false } = {}) {
   const requiredPackagePaths = ["bin/bridge.mjs", "src/cli.mjs", "src/storage.mjs", "plugin/hooks/hooks.json", "codex/SKILL.md", "docs/ARCHITECTURE.md"];
   const privatePackageFiles = packageFiles?.filter((file) =>
     file.split("/").some((part) => [".bridge", "notes", "test", "tests"].includes(part) || /^\.env(?:\.|$)/.test(part)) ||
-    /(?:\.cbctx|\.log)$/.test(file) || /(?:^|\/)state\.json(?:\.|$)/.test(file));
+    /(?:\.cbctx|\.cbsealed|\.log)$/.test(file) || /(?:^|\/)key\.bin$/.test(file) ||
+    /(?:^|\/)state\.json(?:\.|$)/.test(file));
   const evaluation = runEvaluation();
   const checks = [
     check("manifest-versions", plugin.version === pkg.version && marketplace.metadata?.version === pkg.version, `package ${pkg.version}, plugin ${plugin.version}, marketplace ${marketplace.metadata?.version}`),
@@ -40,7 +41,7 @@ export function releaseChecks(root, { verifyCI = false } = {}) {
     check("working-tree", git(root, ["status", "--porcelain"]) === "", "release tree must be clean"),
     check("package-files", packageFiles && requiredPackagePaths.every((entry) => packageFiles.includes(entry)), packageFiles ? `${packageFiles.length} package files include required runtime and docs` : "npm pack --dry-run could not be verified"),
     check("package-private-files", privatePackageFiles && privatePackageFiles.length === 0,
-      privatePackageFiles?.length ? `Private/test artifacts in tarball: ${privatePackageFiles.join(", ")}` : "No local state, notes, tests, env files, logs or portable context artifacts may be packed"),
+      privatePackageFiles?.length ? `Private/test artifacts in tarball: ${privatePackageFiles.join(", ")}` : "No local state, notes, tests, env files, logs, portable context artifacts or generated sealing keys may be packed"),
     check("context-quality", evaluation.passed, `${evaluation.total} deterministic evaluations passed`),
     check("ci-workflow", fs.existsSync(path.join(root, ".github", "workflows", "ci.yml")), "CI workflow configuration is present; this is not run evidence"),
     verifyCI ? verifyReleaseCI(root) : check("ci-head", false, "HEAD CI has not been verified. Use release-check --ci (requires GitHub CLI authentication)."),
