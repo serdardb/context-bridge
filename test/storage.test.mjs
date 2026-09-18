@@ -646,6 +646,8 @@ test("project retirement and restoration preserve evidence through real process 
         [${JSON.stringify(path.resolve("bin/bridge.mjs"))}, 'project', 'retire', id, '--apply', '--dry-run'],
         { encoding: 'utf8', timeout: 5000, env: process.env });
       assert.equal(invalid.status, 1, 'unsupported options must refuse before applying retirement');
+      assert.match(invalid.stderr, /Invalid project options/);
+      assert.doesNotMatch(invalid.stderr, /ReferenceError|at main/);
       assert.deepEqual(fs.readFileSync(path.join(home, 'projects.json')), registry);
       assert.equal(fs.existsSync(store), true);
       assert.equal(fs.existsSync(archive), false);

@@ -38,7 +38,7 @@ import { planLegacyMigration, migrateLegacyStorage, registeredProjects, adoptPro
 import { splitLauncherArgs, argumentSummary } from "./agentargs.mjs";
 import { loadConfig, savedArgs, isDangerous } from "./config.mjs";
 import { AGENT_IDS, adapterFor } from "./agents/index.mjs";
-import { log, bold, dim, OK, BAD, NONE, WARN } from "./util.mjs";
+import { log, bold, dim, OK, BAD, NONE, WARN, BridgeError } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
