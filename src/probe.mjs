@@ -16,7 +16,7 @@
 //   - A fresh project has no linked session. That is NEUTRAL, never red.
 //   - An empty session is readable. Zero messages is a fact, not a failure.
 import path from "node:path";
-import { readTranscriptFile } from "./util.mjs";
+import { readTranscriptLines } from "./util.mjs";
 
 /**
  * Read a JSONL transcript and judge whether our parser still understands it.
@@ -40,18 +40,10 @@ export function probeJsonl(filePath, isKnownRow) {
   // sends people to the wrong file.
   const gone = { status: "missing", rows: 0, known: 0, malformed: 0, detail: filePath ? path.basename(filePath) : null };
   if (!filePath) return gone;
-  let content;
-  try {
-    content = readTranscriptFile(filePath);
-  } catch (error) {
-    if (error.code === "ENOENT") return gone;
-    return { ...gone, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
-  }
-
   let rows = 0;
   let known = 0;
   let malformed = 0;
-  for (const line of content.split("\n")) {
+  try { for (const line of readTranscriptLines(filePath)) {
     if (!line.trim()) continue;
     let row;
     try {
@@ -67,6 +59,9 @@ export function probeJsonl(filePath, isKnownRow) {
       // A predicate that throws on an unexpected row is itself drift evidence,
       // but it is not this row's fault; count it as unrecognised and move on.
     }
+  } } catch (error) {
+    if (error.code === "ENOENT" && rows === 0) return gone;
+    return { ...gone, status: "unreadable", errorCode: /^[A-Z][A-Z0-9_]*$/.test(error.code ?? "") ? error.code : "READ_FAILED" };
   }
 
   // An empty file is a session that has not spoken yet, not a broken parser.

@@ -19,7 +19,7 @@ import {
   sharedSkillPath,
   installedCopyStatus,
   readRegularFile,
-  readTranscriptFile,
+  readTranscriptLines,
   readOwnedFile,
 } from "../util.mjs";
 
@@ -382,13 +382,7 @@ export function observeAudit(ref) {
   let outcome = false;
   let exitCode = false;
   let duration = false;
-  let content;
-  try {
-    content = readTranscriptFile(ref?.transcriptPath);
-  } catch {
-    return { commandArgs: null, outcome: null, exitCode: null, duration: null };
-  }
-  for (const line of content.split("\n")) {
+  try { for (const line of readTranscriptLines(ref?.transcriptPath)) {
     if (!line.trim()) continue;
     let row;
     try {
@@ -415,6 +409,7 @@ export function observeAudit(ref) {
       else if (duration !== true && /Wall time:/.test(p.output ?? "")) duration = "parsed";
     }
   }
+  } catch { return { commandArgs: null, outcome: null, exitCode: null, duration: null }; }
   if (!sawTool) return { commandArgs: null, outcome: null, exitCode: null, duration: null };
   return { commandArgs: args, outcome, exitCode, duration };
 }

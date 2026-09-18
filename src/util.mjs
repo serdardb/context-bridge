@@ -192,6 +192,65 @@ export function readRegularFile(file, encoding = "utf8", { maxBytes = null } = {
 
 export const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
 
+function transcriptBudget(divisor = 64) {
+  return Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(Math.max(0,
+    getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed) / divisor));
+}
+
+/** Limit retained parsed results separately from transient JSONL input. */
+export function transcriptRetentionBudget() {
+  const limit = transcriptBudget(32);
+  let bytes = 0;
+  return (value) => {
+    bytes += Buffer.byteLength(JSON.stringify(value));
+    if (bytes > limit) throw new BridgeError("Extracted transcript context exceeds the retained-context memory budget. No context was truncated.", {
+      code: "BRIDGE_TRANSCRIPT_TOO_LARGE",
+    });
+  };
+}
+
+/** Bounded JSONL records from one regular-file snapshot, not a whole-file string. */
+export function* readTranscriptLines(file) {
+  const limit = transcriptBudget();
+  const chunk = Buffer.alloc(64 * 1024);
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+    const before = fs.fstatSync(fd, { bigint: true });
+    if (!before.isFile()) throw Object.assign(new Error("Expected a regular transcript file."), { code: "BRIDGE_UNSAFE_FILE" });
+    const changed = () => Object.assign(new Error("Source transcript changed during reading."), { code: "BRIDGE_SOURCE_CHANGED" });
+    let remaining = before.size;
+    let parts = [], length = 0;
+    const append = (part) => {
+      length += part.length;
+      if (length > limit) throw new BridgeError(`A transcript record exceeds this process's ${limit}-byte read budget. No context was truncated.`, { code: "BRIDGE_TRANSCRIPT_TOO_LARGE" });
+      if (part.length) parts.push(Buffer.from(part));
+    };
+    while (remaining > 0n) {
+      const count = fs.readSync(fd, chunk, 0, Number(remaining < BigInt(chunk.length) ? remaining : BigInt(chunk.length)), null);
+      if (!count) throw changed();
+      remaining -= BigInt(count);
+      let start = 0;
+      for (let i = 0; i < count; i++) {
+        if (chunk[i] !== 10) continue;
+        append(chunk.subarray(start, i));
+        const line = Buffer.concat(parts, length).toString("utf8");
+        parts = []; length = 0;
+        yield line;
+        start = i + 1;
+      }
+      append(chunk.subarray(start, count));
+    }
+    if (length) yield Buffer.concat(parts, length).toString("utf8");
+    const after = fs.fstatSync(fd, { bigint: true });
+    const current = fs.statSync(file, { bigint: true });
+    for (const stat of [after, current]) {
+      if (stat.dev !== before.dev || stat.ino !== before.ino || stat.size !== before.size ||
+          stat.mtimeNs !== before.mtimeNs || stat.ctimeNs !== before.ctimeNs) throw changed();
+    }
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
 /** Parsed JSON expands beyond wire bytes. This is an admission policy, not an
  * OOM guarantee: reserve heap headroom and never truncate a source to fit. */
 export function readTranscriptFile(file, { owned = false, encoding = "utf8" } = {}) {

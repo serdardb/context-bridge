@@ -21,6 +21,44 @@ import {
 } from "../src/delta.mjs";
 import { HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES } from "../src/delivery.mjs";
 
+test("large JSONL sources stream without losing marks, late outcomes or read failures", async () => {
+  const { transcriptMark, codexAuditSince } = await import("../src/delta.mjs");
+  const { recordPrefixHash, readTranscriptLines, MAX_TRANSCRIPT_BYTES } = await import("../src/util.mjs");
+  const { execFileSync } = await import("node:child_process");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-streaming-"));
+  const file = path.join(root, "rollout.jsonl");
+  try {
+    const call = { timestamp: "2026-01-01", payload: { type: "function_call", call_id: "old", name: "exec_command", arguments: '{"cmd":"echo retained"}' } };
+    const filler = { type: "reasoning", payload: "multibyte-ş".repeat(4000) };
+    const records = [call];
+    fs.writeFileSync(file, JSON.stringify(call) + "\n");
+    const line = JSON.stringify(filler) + "\n";
+    while (fs.statSync(file).size <= MAX_TRANSCRIPT_BYTES + 1024) {
+      fs.appendFileSync(file, line); records.push(filler);
+    }
+    const mark = transcriptMark(file);
+    assert.equal(mark.prefixHash, recordPrefixHash(records));
+    const message = { timestamp: "2026-01-02", type: "event_msg", payload: { type: "agent_message", message: "WHOLE_NEW_MESSAGE" } };
+    const outcome = { timestamp: "2026-01-02", payload: { type: "function_call_output", call_id: "old", output: "Exit code: 0" } };
+    fs.appendFileSync(file, JSON.stringify(message) + "\n" + JSON.stringify(outcome) + "\n");
+    const script = `import {codexActivitySince, codexAuditSince} from ${JSON.stringify(new URL("../src/delta.mjs", import.meta.url).href)};
+      const file=process.argv[1], mark=JSON.parse(process.argv[2]);
+      const activity=codexActivitySince(file,mark), audit=codexAuditSince(file,mark);
+      console.log(JSON.stringify({messages:activity.messages,commands:audit.commands}));`;
+    const got = JSON.parse(execFileSync(process.execPath, ["--max-old-space-size=128", "--input-type=module", "-e", script, file, JSON.stringify(mark)], { encoding: "utf8", timeout: 30000 }));
+    assert.deepEqual(got.messages.map(m => m.text), ["WHOLE_NEW_MESSAGE"]);
+    assert.equal(got.commands[0].args, "echo retained");
+    assert.equal(got.commands[0].exitCode, 0);
+    assert.equal(codexAuditSince(file, mark).sourceComplete, true);
+    fs.writeFileSync(file, JSON.stringify(message) + "\n");
+    assert.equal(codexActivitySince(file, mark).sourceRewritten, true);
+    const reader = readTranscriptLines(file);
+    reader.next();
+    fs.appendFileSync(file, "{}\n");
+    assert.throws(() => reader.next(), { code: "BRIDGE_SOURCE_CHANGED" });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("claudeMessagesSince extracts post-sync user and assistant text defensively", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-delta-"));
   const transcript = path.join(dir, "claude.jsonl");
@@ -627,7 +665,8 @@ test("a refused handoff does not take the one already waiting with it", async ()
   const { statePath } = await import("../src/state.mjs");
   const stateBefore = fs.readFileSync(statePath(project));
   const originalTranscript = fs.readFileSync(rollout);
-  fs.truncateSync(rollout, MAX_TRANSCRIPT_BYTES + 1);
+  // The limit applies to a single JSONL record, not the whole streamed file.
+  fs.truncateSync(rollout, originalTranscript.length + MAX_TRANSCRIPT_BYTES + 1);
   assert.throws(() => handoff(project, "claude", {
     from: "codex", summary: "valid summary", checkTarget: () => {},
   }), { code: "BRIDGE_TRANSCRIPT_TOO_LARGE", expected: true });

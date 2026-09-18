@@ -41,7 +41,7 @@ test("a torn write is partial, not fatal: the parser reads past the bad line", (
 test("a missing transcript is distinct from an I/O failure", () => {
   assert.equal(probeJsonl(path.join(os.tmpdir(), "nope-does-not-exist.jsonl"), () => true).status, "missing");
   assert.equal(probeJsonl(null, () => true).status, "missing");
-  const file = write("unreadable.jsonl", "");
+  const file = write("unreadable.jsonl", "{}\n");
   const read = fs.readSync;
   try {
     for (const code of ["EACCES", "EIO"]) {

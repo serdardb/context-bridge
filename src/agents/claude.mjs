@@ -18,7 +18,7 @@ import path from "node:path";
 import { latestClaudeTranscript, claudeTranscriptsSince } from "../discover.mjs";
 import { claudeMessagesSince, transcriptMark, markedTranscript } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
-import { tryExec, fileExists, readJson, readTranscriptFile, HOME, CLAUDE_DIR } from "../util.mjs";
+import { tryExec, fileExists, readJson, readTranscriptLines, transcriptRetentionBudget, HOME, CLAUDE_DIR } from "../util.mjs";
 
 export const id = "claude";
 export const displayName = "Claude Code";
@@ -204,13 +204,7 @@ export function observeAudit(ref) {
   let sawTool = false;
   let args = false;
   let exitCode = false;
-  let content;
-  try {
-    content = readTranscriptFile(ref?.transcriptPath);
-  } catch {
-    return { commandArgs: null, exitCode: null };
-  }
-  for (const line of content.split("\n")) {
+  try { for (const line of readTranscriptLines(ref?.transcriptPath)) {
     if (!line.trim()) continue;
     let row;
     try {
@@ -228,6 +222,7 @@ export function observeAudit(ref) {
       if (b?.type === "tool_result" && (b.exit_code !== undefined || b.exitCode !== undefined)) exitCode = true;
     }
   }
+  } catch { return { commandArgs: null, exitCode: null }; }
   if (!sawTool) return { commandArgs: null, exitCode: null };
   return { commandArgs: args, exitCode };
 }
@@ -246,6 +241,7 @@ export function observeAudit(ref) {
  */
 export function auditSince(ref, sinceIso) {
   const uses = new Map();
+  const retain = transcriptRetentionBudget();
   const included = new Set();
   const order = [];
   const filesRead = new Set();
@@ -257,6 +253,7 @@ export function auditSince(ref, sinceIso) {
     const fresh = selected(row, index);
     for (const b of row?.message?.content ?? []) {
       if (b?.type === "tool_use") {
+        retain([b.id, b.name, b.input, row.timestamp]);
         if (fresh && b.name === "Read" && b.input?.file_path) filesRead.add(b.input.file_path);
         if (fresh && (b.name === "Edit" || b.name === "Write") && b.input?.file_path) filesChanged.add(b.input.file_path);
         if (b.name !== "Bash") continue; // only shell commands belong in a command ledger

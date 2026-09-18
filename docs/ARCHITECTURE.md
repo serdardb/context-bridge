@@ -893,15 +893,22 @@ opt-in Aider/Pi candidates.
 
 ## Known limits
 
-Native transcript reads are admitted before allocation, at most 16 MiB per
-file and at most one sixty-fourth of the currently available V8 heap. JSON
+Claude/Codex JSONL extraction, marks, audit observation and JSONL shape probes
+stream regular files in bounded chunks. Each record is admitted before parsing,
+at most 16 MiB and at most one sixty-fourth of the available V8 heap. Retained
+conversation/audit inputs have a separate 16 MiB maximum (also reduced for heap
+headroom). Parsed-prefix hashes retain their existing format; attested extraction
+verifies the prefix and rechecks the parsed source across its two passes.
+Source changes refuse reliable extraction rather than advancing a watermark.
+Other whole-file native readers retain the 16 MiB file admission limit. JSON
 objects, decoded strings, parsing and prefix hashes can occupy substantially
 more memory than their wire representation; the headroom is conservative
 operating policy, not a guarantee against every possible memory exhaustion.
 Oversized sources fail with `BRIDGE_TRANSCRIPT_TOO_LARGE`, not truncated
 conversation or an advanced delivery watermark. Preserve the original and
-start a smaller source session before retrying. This applies to native JSONL,
-Aider history/evidence and OpenCode's exported JSON before parsing. Exporting
+start a smaller source session before retrying. The whole-file policy still
+applies to Grok/Antigravity/Pi readers, Aider history/evidence and OpenCode's
+exported JSON before parsing. Exporting
 OpenCode still uses a timed external process and temporary disk storage; this
 in-process limit does not bound that external process's memory or disk writes.
 Probe commands report an oversized transcript as unreadable. These limits

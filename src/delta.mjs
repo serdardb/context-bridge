@@ -1,7 +1,7 @@
 // Deterministic context-delta extraction. No LLM summarization calls in v0.1:
 // conversation truth comes from native session files, work truth from git.
 import { createHash } from "node:crypto";
-import { tryExec, BridgeError, readTranscriptFile, recordPrefixHash } from "./util.mjs";
+import { tryExec, BridgeError, readTranscriptLines, transcriptRetentionBudget } from "./util.mjs";
 
 // There is no message cap and no per-message length here, deliberately, and this
 // comment is the guard against one coming back. Every number that used to live
@@ -13,22 +13,41 @@ import { tryExec, BridgeError, readTranscriptFile, recordPrefixHash } from "./ut
 
 /** New marks attest parsed history; legacy ISO marks retain timestamp filtering. */
 export function transcriptMark(file) {
-  let rows;
-  try { rows = [...readJsonl(file, true)]; }
+  let rows = 0;
+  const hash = createHash("sha256");
+  try { for (const row of readJsonl(file, true)) { rows++; hash.update(JSON.stringify(row) + "\n"); } }
   catch (error) {
     // A linked session may not have published its first transcript yet. Only
     // confirmed absence is an empty baseline; unreadable evidence still fails.
     if (error.cause?.code !== "ENOENT") throw error;
-    rows = [];
+    rows = 0;
   }
-  return { rows: rows.length, prefixHash: recordPrefixHash(rows) };
+  return { rows, prefixHash: hash.digest("hex") };
 }
 
 export function markedTranscript(file, mark, readStatus = null) {
-  const rows = [...readJsonl(file, true, readStatus)];
   const attested = Number.isSafeInteger(mark?.rows) && mark.rows >= 0 && typeof mark.prefixHash === "string";
-  const sourceRewritten = attested && (rows.length < mark.rows ||
-    recordPrefixHash(rows.slice(0, mark.rows)) !== mark.prefixHash);
+  let sourceRewritten = false, expectedHash = null;
+  if (attested) {
+    const prefix = createHash("sha256"), all = createHash("sha256");
+    let count = 0;
+    for (const row of readJsonl(file, true)) {
+      const encoded = JSON.stringify(row) + "\n";
+      all.update(encoded);
+      if (count++ < mark.rows) prefix.update(encoded);
+    }
+    sourceRewritten = count < mark.rows || prefix.digest("hex") !== mark.prefixHash;
+    expectedHash = all.digest("hex");
+  }
+  const rows = { *entries() {
+    const hash = createHash("sha256");
+    let index = 0;
+    for (const row of readJsonl(file, true, readStatus)) {
+      if (expectedHash) hash.update(JSON.stringify(row) + "\n");
+      yield [index++, row];
+    }
+    if (expectedHash && hash.digest("hex") !== expectedHash) throw new BridgeError("Source transcript changed between verification and extraction. Retry without advancing its mark.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
+  } };
   if (readStatus) readStatus.sourceRewritten = sourceRewritten;
   const selected = (row, index) => attested
     ? sourceRewritten || index >= mark.rows
@@ -39,16 +58,17 @@ export function markedTranscript(file, mark, readStatus = null) {
 /** Claude transcript records (user/assistant text) after the saved mark. */
 export function claudeMessagesSince(transcriptPath, sinceIso, readStatus = null) {
   const out = [];
+  const retain = transcriptRetentionBudget();
   const { rows, selected } = markedTranscript(transcriptPath, sinceIso, readStatus);
   for (const [index, r] of rows.entries()) {
     if (!r.timestamp || !selected(r, index)) continue;
     if (r.isSidechain) continue;
     if (r.type === "user") {
       const text = extractClaudeText(r.message?.content);
-      if (text && !isBridgeProtocolNoise(text)) out.push({ role: "user", text, at: r.timestamp });
+      if (text && !isBridgeProtocolNoise(text)) { retain(text); out.push({ role: "user", text, at: r.timestamp }); }
     } else if (r.type === "assistant") {
       const text = extractClaudeText(r.message?.content);
-      if (text) out.push({ role: "assistant", text, at: r.timestamp });
+      if (text) { retain(text); out.push({ role: "assistant", text, at: r.timestamp }); }
     }
   }
   return out;
@@ -58,12 +78,14 @@ export function claudeMessagesSince(transcriptPath, sinceIso, readStatus = null)
 export function codexActivitySince(rolloutPath, sinceIso) {
   const readStatus = { malformed: 0 };
   const messages = [];
+  const retain = transcriptRetentionBudget();
   const patchedFiles = new Set();
   let turnsCompleted = 0;
   const { rows, selected, sourceRewritten } = markedTranscript(rolloutPath, sinceIso, readStatus);
   for (const [index, r] of rows.entries()) {
     if (!r.timestamp || !selected(r, index)) continue;
     const p = r.payload || {};
+    if (r.type === "event_msg") retain(p.message ?? p.last_agent_message ?? p.changes ?? p.files ?? "");
     if (r.type === "event_msg") {
       if (p.type === "user_message" && p.message) {
         if (!isBridgeProtocolNoise(p.message)) messages.push({ role: "user", text: String(p.message), at: r.timestamp });
@@ -543,21 +565,20 @@ function cap(s) {
 }
 
 function* readJsonl(p, required = false, readStatus = null) {
-  let content;
   try {
-    content = readTranscriptFile(p);
+    for (const line of readTranscriptLines(p)) {
+      if (!line.trim()) continue;
+      let row;
+      try { row = JSON.parse(line); }
+      catch { if (readStatus) readStatus.malformed++; continue; }
+      yield row;
+    }
   } catch (cause) {
     if (cause.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw cause;
     if (required) throw new BridgeError("The source transcript could not be read. Check permissions and storage availability before retrying.", {
       code: "BRIDGE_TRANSCRIPT_UNREADABLE", cause,
     });
     return;
-  }
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      yield JSON.parse(line);
-    } catch { if (readStatus) readStatus.malformed++; }
   }
 }
 
@@ -633,6 +654,7 @@ export const SKILL_SENTINEL = "hand this session off to another coding agent via
  */
 export function codexAuditSince(rolloutPath, sinceIso) {
   const calls = new Map();
+  const retain = transcriptRetentionBudget();
   const included = new Set();
   const order = [];
   const filesChanged = new Set();
@@ -650,6 +672,7 @@ export function codexAuditSince(rolloutPath, sinceIso) {
     // never the call, so apply_patch never appeared as a command at all. Found in
     // review, and hidden until then by a test that prepended a synthetic call.
     if ((p.type === "function_call" || p.type === "custom_tool_call") && p.call_id) {
+      retain([p.call_id, p.arguments ?? p.input, p.name, r.timestamp]);
       calls.set(p.call_id, { tool: p.name ?? null, args: argsOf(p.arguments ?? p.input), at: r.timestamp, ok: null, exitCode: null, durationMs: null });
       order.push(p.call_id);
       if (fresh) included.add(p.call_id);

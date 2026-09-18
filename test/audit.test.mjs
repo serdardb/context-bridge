@@ -87,7 +87,7 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
         fs.rmSync(hunkFile, { force: true });
         if (mode.startsWith("hunk-")) fs.writeFileSync(hunkFile, JSON.stringify({ authorType: "agent", filePath: path.join(project, "changed.txt") }) + "\n");
         if (mode === "missing") fs.rmSync(file, { force: true });
-        else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : "");
+        else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : mode === "denied" ? JSON.stringify(record) + "\n" : "");
         fs.readSync = (...args) => {
           const sourceRead = args[0] === file || (typeof args[0] === "number" && fs.existsSync(file) &&
             fs.fstatSync(args[0]).ino === fs.statSync(file).ino);

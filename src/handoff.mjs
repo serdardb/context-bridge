@@ -217,6 +217,7 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     return { ref, activity, mark, complete, stamp: before };
   } catch (error) {
     if (error instanceof AdapterResultError || error.code === "BRIDGE_TRANSCRIPT_TOO_LARGE") throw error;
+    debugLog("handoff.source.unavailable", { agent: adapter.id, code: error.code, causeCode: error.cause?.code });
     return unavailable();
   }
 }
