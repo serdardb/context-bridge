@@ -6,7 +6,7 @@ import { readOwnedFile, writeFileExclusive, syncPublishedDirectory, BridgeError 
 import { publication } from "./publication.mjs";
 
 export const MAX_SEALED_PLAINTEXT_BYTES = 16 * 1024 * 1024;
-const MAX_ENVELOPE_BYTES = 24 * 1024 * 1024;
+export const MAX_ENVELOPE_BYTES = 24 * 1024 * 1024;
 const AAD = Buffer.from("context-bridge:sealed-artifact:v1:aes-256-gcm\n");
 const fields = ["sealedVersion", "algorithm", "nonce", "tag", "ciphertext"];
 
@@ -21,6 +21,18 @@ function base64(value, length = null) {
   const bytes = Buffer.from(value, "base64");
   if (bytes.toString("base64") !== value || (length !== null && bytes.length !== length)) throw invalid();
   return bytes;
+}
+
+/** Shape validation for opaque transport; does not authenticate without the key. */
+export function inspectSealedBytes(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_ENVELOPE_BYTES) throw invalid();
+  const envelope = JSON.parse(bytes.toString("utf8"));
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
+      Object.keys(envelope).length !== fields.length || fields.some(field => !Object.hasOwn(envelope, field)) ||
+      envelope.sealedVersion !== 1 || envelope.algorithm !== "aes-256-gcm") throw invalid();
+  const ciphertext = base64(envelope.ciphertext);
+  if (ciphertext.length > MAX_SEALED_PLAINTEXT_BYTES) throw invalid();
+  return { ciphertext, nonce: base64(envelope.nonce, 12), tag: base64(envelope.tag, 16) };
 }
 
 /** Publish ciphertext and its independent key as one private, exclusive bundle. */
@@ -65,15 +77,10 @@ export function openSealedArtifact(input, output, { keyFile, verifyKey = null } 
     if (typeof keyFile !== "string" || !keyFile) throw invalid();
     key = readOwnedFile(keyFile, { maxBytes: 32 });
     if (key.length !== 32) throw invalid();
-    const envelope = JSON.parse(readOwnedFile(input, { maxBytes: MAX_ENVELOPE_BYTES, encoding: "utf8" }));
-    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
-        Object.keys(envelope).length !== fields.length || fields.some(field => !Object.hasOwn(envelope, field)) ||
-        envelope.sealedVersion !== 1 || envelope.algorithm !== "aes-256-gcm") throw invalid();
-    const ciphertext = base64(envelope.ciphertext);
-    if (ciphertext.length > MAX_SEALED_PLAINTEXT_BYTES) throw invalid();
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, base64(envelope.nonce, 12), { authTagLength: 16 });
+    const { ciphertext, nonce, tag } = inspectSealedBytes(readOwnedFile(input, { maxBytes: MAX_ENVELOPE_BYTES }));
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
     decipher.setAAD(AAD);
-    decipher.setAuthTag(base64(envelope.tag, 16));
+    decipher.setAuthTag(tag);
     plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
     decodeArtifact(plaintext, { verifyKey });
   } catch (cause) {

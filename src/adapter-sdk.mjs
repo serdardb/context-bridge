@@ -12,7 +12,7 @@ export function defineAdapter(adapter, apiVersion = ADAPTER_API_VERSION) {
 }
 
 const RESERVED = new Set(["doctor", "verify", "eval", "release", "storage", "project", "status",
-  "clean", "inspect", "handoff", "lane", "unlink", "help", "version", "search", "artifact", "adapters", "mcp", "watch"]);
+  "clean", "inspect", "handoff", "lane", "unlink", "help", "version", "search", "artifact", "share", "adapters", "mcp", "watch"]);
 
 // Explicit configuration is permission to execute trusted local JS. Never
 // discover plugins from a project, package dependency or remote URL implicitly.

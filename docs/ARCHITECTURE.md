@@ -797,3 +797,23 @@ The encryption key never appears in the envelope or receipt (only its file path
 does). Senders must not share the bundle as a whole. Separate-channel key transfer,
 recipient trust and access to an already decrypted copy remain user concerns.
 No remote store, revocation service or automatic import is implemented here.
+
+## Remote Artifact Transport
+
+`remote-artifact.mjs` implements separate opt-in send/fetch/remove and a
+foreground opaque store. Ordinary artifact and handoff paths never invoke it.
+Client previews are local. Applied operations require an explicit endpoint and
+private bearer-token file; HTTPS is required except explicit literal-loopback
+HTTP. Redirects and URL credentials are rejected. Fetch validates exact bytes
+against the requested ciphertext hash before exclusive local publication, but
+cannot authenticate encryption or signer identity without the separate keys.
+
+The server binds loopback for an operator-managed TLS proxy. One bearer token
+is one trust domain, not multiple tenants. Requests are bounded by byte size,
+wall deadline and concurrency; disk quota includes retained expired objects.
+Each immutable object is one atomically published record containing its expiry
+and ciphertext. A kernel guard serializes quota/publication/deletion across
+cooperating processes. Expiry is checked before download, retry does not renew
+it, and explicit removal is required for physical deletion. No project identity,
+agent session, decryption key, automatic import or background service is created.
+Operational commands and remaining acceptance limits are in [SHARING.md](SHARING.md).

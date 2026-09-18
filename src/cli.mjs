@@ -27,6 +27,7 @@ import { releaseChecks } from "./release.mjs";
 import { prepareReleaseEvidence, verifyReleaseEvidence } from "./release-evidence.mjs";
 import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
 import { sealArtifact, openSealedArtifact } from "./sealed-artifact.mjs";
+import { sendArtifact, fetchArtifact, removeRemoteArtifact, startArtifactServer } from "./remote-artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
 import { inspectRegisteredProject } from "./project-inspect.mjs";
@@ -97,6 +98,10 @@ ${cmd("artifact import <file>")}Verify; --verify-key <pem> requires trusted sign
 ${cmd("artifact cache <file>")}Verify and store by content hash outside the project; accepts --verify-key
 ${cmd("artifact seal <file>")}Create a private encrypted bundle: --out <new-directory> [--verify-key <pem>]
 ${cmd("artifact open <file>")}Decrypt without importing: --key-file <key.bin> --out <new-file>
+${cmd("share send <file>")}Preview sealed upload; --endpoint <origin> --apply sends with --token-file
+${cmd("share fetch <hash>")}Download ciphertext only; --endpoint --token-file --out are required
+${cmd("share remove <hash>")}Preview remote removal; --endpoint --token-file --apply removes
+${cmd("share serve")}Run a loopback opaque store; --dir <private-directory> --token-file required
 ${cmd("search <text>")}Search local summaries, checkpoints and audits
 ${cmd("storage plan [--json]")}Preview legacy storage migration without changing files
 ${cmd("storage migrate")}Migrate legacy storage; --retirement-dir selects an external source-filesystem vault
@@ -384,6 +389,46 @@ export async function main(argv) {
         log(`${report.passed ? OK : BAD} release checks ${report.passed ? "passed" : "failed"} for ${report.version}.`);
       }
       process.exitCode = report.passed ? 0 : 1;
+      return;
+    }
+
+    case "share": {
+      const parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, options: {
+        endpoint: { type: "string" }, "token-file": { type: "string" }, out: { type: "string" },
+        dir: { type: "string" }, port: { type: "string" }, "quota-bytes": { type: "string" },
+        "ttl-seconds": { type: "string" }, apply: { type: "boolean" }, json: { type: "boolean" },
+        "allow-loopback-http": { type: "boolean" },
+      } });
+      const [action, input] = parsed.positionals;
+      const allowed = {
+        send: ["endpoint", "token-file", "apply", "json", "allow-loopback-http", "ttl-seconds"],
+        fetch: ["endpoint", "token-file", "out", "json", "allow-loopback-http"],
+        remove: ["endpoint", "token-file", "apply", "json", "allow-loopback-http"],
+        serve: ["dir", "token-file", "port", "quota-bytes", "json"],
+      };
+      if (!Object.hasOwn(allowed, action ?? "") || parsed.positionals.length !== (action === "serve" ? 1 : 2) ||
+          Object.keys(parsed.values).some(key => !allowed[action].includes(key))) throw new Error("Usage: bridge share send|fetch|remove <file-or-hash> --endpoint <origin> | serve --dir <private-directory> --token-file <file>");
+      const values = parsed.values;
+      if (action === "serve") {
+        if (!values.dir || !values["token-file"]) throw new Error("Sharing server requires --dir and --token-file.");
+        const { server, endpoint } = await startArtifactServer({ directory: values.dir, tokenFile: values["token-file"],
+          port: values.port === undefined ? 0 : Number(values.port),
+          quotaBytes: values["quota-bytes"] === undefined ? undefined : Number(values["quota-bytes"]) });
+        log(values.json ? JSON.stringify({ event: "listening", endpoint, encryptedObjectsOnly: true }) : `Sharing store listening at ${endpoint}; use a TLS proxy for remote access.`);
+        await new Promise(resolve => {
+          const stop = () => { server.close(resolve); server.closeAllConnections(); };
+          process.once("SIGINT", stop); process.once("SIGTERM", stop);
+          server.once("close", () => { process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); resolve(); });
+        });
+        return;
+      }
+      if (!values.endpoint || (action === "fetch" && !values.out)) throw new Error("An explicit --endpoint is required; fetch also requires --out.");
+      const options = { endpoint: values.endpoint, tokenFile: values["token-file"], apply: values.apply,
+        allowLoopbackHttp: values["allow-loopback-http"], ttl: values["ttl-seconds"] === undefined ? undefined : Number(values["ttl-seconds"]) };
+      const result = action === "send" ? await sendArtifact(input, options)
+        : action === "fetch" ? await fetchArtifact(input, values.out, options)
+          : await removeRemoteArtifact(input, options);
+      log(values.json ? JSON.stringify(result, null, 2) : `${result.applied === false ? "Preview" : "Completed"}: ${action} ${result.hash}`);
       return;
     }
 

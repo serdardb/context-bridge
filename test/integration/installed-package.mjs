@@ -101,6 +101,9 @@ try {
   const artifact = path.join(root, "context.cbctx"), roundtrip = path.join(root, "roundtrip.cbctx");
   run(source, ["artifact", "export", artifact]);
   const sealed = JSON.parse(run(source, ["artifact", "seal", artifact, "--out", path.join(root, "sealed"), "--json"]));
+  const sharingPreview = JSON.parse(run(source, ["share", "send", sealed.sealedFile, "--endpoint", "https://unavailable.invalid", "--json"]));
+  assert.equal(sharingPreview.applied, false);
+  assert.equal(sharingPreview.hash, sealed.hash);
   const opened = path.join(root, "opened.cbctx");
   run(target, ["artifact", "open", sealed.sealedFile, "--key-file", sealed.keyFile, "--out", opened]);
   assert.deepEqual(fs.readFileSync(opened), fs.readFileSync(artifact));
@@ -120,7 +123,7 @@ try {
   assert.deepEqual(fs.readdirSync(empty), []);
   console.log(JSON.stringify({ version: manifest.version, platform: process.platform, node: process.version,
     installedArtifact: true, experimentalEntryPoints: true, gitAbsentFromPath: true, cliReadOnly: true, artifactRoundtrip: true,
-    actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true,
+    actualMcpStdio: true, kernelExclusion: true, killedOwnerRecovery: true, sealedArtifactRoundtrip: true, offlineSharingPreview: true,
     credentialsUsed: false, vendorAgentsVerified: false }));
 } finally {
   await client?.close();
