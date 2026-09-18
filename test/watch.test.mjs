@@ -77,6 +77,27 @@ test("watch reports unavailable and recovery without adopting a replacement dire
     assert.deepEqual(events.map((event) => event.type), ["snapshot", "change", "unavailable", "recovered", "unavailable", "recovered"]);
     assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6]);
     assert.deepEqual(fs.readFileSync(statePath(root)), stored);
+    fs.statSync = stat;
+    const replacement = `${root}-replacement`;
+    fs.mkdirSync(replacement);
+    ensureState(replacement);
+    const duringRead = new AbortController(), observed = [];
+    let checks = 0;
+    fs.statSync = (...args) => {
+      const value = stat(...args);
+      if (args[0] === fs.realpathSync(root) && ++checks === 2) {
+        // Initial identity and pre-read check see the old inode. Status then
+        // resolves a different registered project now occupying that path.
+        fs.renameSync(root, `${root}-original`);
+        fs.renameSync(replacement, root);
+      }
+      return value;
+    };
+    await watchProject(root, { policy: "read-only", signal: duringRead.signal,
+      emit: event => { observed.push(event); duringRead.abort(); } });
+    assert.equal(observed[0].type, "unavailable", "replacement during status read must not be published as the watched project");
+    assert.equal(Object.hasOwn(observed[0], "status"), false);
+    fs.statSync = stat;
     await assert.rejects(watchProject(root, { policy: "repair", emit() {} }), /read-only/);
     await assert.rejects(watchProject(root, { policy: "read-only", interval: 1, emit() {} }), /interval/);
   } finally {
@@ -84,5 +105,6 @@ test("watch reports unavailable and recovery without adopting a replacement dire
     controller.abort();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(`${root}-original`, { recursive: true, force: true });
+    fs.rmSync(`${root}-replacement`, { recursive: true, force: true });
   }
 });

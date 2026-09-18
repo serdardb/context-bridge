@@ -20,7 +20,9 @@ export async function watchProject(projectDir, { policy, interval = 1000, signal
     let status;
     try {
       if (directoryIdentity(root) !== initial) throw new Error("Project identity changed");
-      status = projectStatus(root);
+      const candidate = projectStatus(root);
+      if (directoryIdentity(root) !== initial) throw new Error("Project identity changed during status read");
+      status = candidate;
     } catch {
       if (!unavailable) {
         await emit({ type: "unavailable", sequence: ++sequence, at: new Date().toISOString(),
