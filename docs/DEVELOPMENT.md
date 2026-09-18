@@ -95,6 +95,17 @@ staging stays private and only the fixture's temporary root is removed. This
 uses no provider or Git and runs outside `npm test`. It proves process-exit
 behavior, not physical power loss, partial syscalls or hostile parent swaps.
 
+Run `node test/integration/remote-tls.mjs` for real HTTPS sharing acceptance.
+It generates a one-day synthetic certificate using the local `openssl` tool,
+starts an isolated loopback TLS proxy and opaque store, then runs the real CLI
+with and without explicit certificate trust. It checks exact ciphertext
+roundtrip, chunked response limits, token-free error output and both actual
+30-second client/upload deadlines. Allow about 35 seconds; the normal suite
+does not include this wait. Neither system trust nor user credentials change.
+For a container without OpenSSL, an optional absolute fixture directory argument
+may supply synthetic `cert.pem` and `key.pem` (SAN IP 127.0.0.1). Never use real
+service keys. This is local TLS behavior, not public deployment or load testing.
+
 New fixtures should register their project before creating checkpoint files,
 use `checkpointsDir` / `safeCheckpointPath` for physical storage, and retain
 logical checkpoint references in state. Explicit migration and hostile legacy
