@@ -180,8 +180,10 @@ try {
     assert.ok(JSON.stringify(requests[2]).includes(literalContext), "context remains literal data, not shell-expanded text");
     assert.ok(JSON.stringify(requests[2]).includes("BRIDGE_FIRST_CONTEXT_8271"));
     if (relocationRoot) {
+      // Pi's system prompt normalizes Windows separators to forward slashes.
+      const cwdLine = `Current working directory: ${project.replace(/\\/g, "/")}`;
       assert.ok(requests[2].messages.some((message) => message.role === "system" &&
-        typeof message.content === "string" && message.content.includes(project)),
+        typeof message.content === "string" && message.content.split(/\r?\n/).includes(cwdLine)),
       "native Pi must establish the adopted working directory, not just retain its session ID");
     }
     assert.equal(JSON.parse(run([bridge, "status", "--json"])).pending, null, "new Pi output must acknowledge delivery");
