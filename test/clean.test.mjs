@@ -42,6 +42,38 @@ test("dry-run reports without deleting and both files of a group are counted", (
   assert.equal(res.deletedGroups, 2);
   assert.equal(res.deletedFiles, 4); // delta + full per group
   assert.equal(remainingGroups(project), 22);
+
+  const rm = fs.rmSync;
+  let attempts = 0;
+  fs.rmSync = (file, ...args) => {
+    if (path.dirname(file) === checkpointsDir(project) && ++attempts === 2) {
+      throw Object.assign(new Error("cannot delete checkpoint"), { code: "EACCES" });
+    }
+    return rm(file, ...args);
+  };
+  try {
+    const partial = pruneCheckpoints(project);
+    assert.equal(partial.deletedFiles, 1);
+    assert.equal(partial.deletedGroups, 0, "a partially deleted group is not removed");
+    assert.equal(partial.failedOperations, 1);
+    assert.equal(attempts, 2, "stop at the first deletion failure");
+    assert.equal(remainingGroups(project), 22);
+  } finally { fs.rmSync = rm; }
+  const cli = new URL("../src/cli.mjs", import.meta.url).href;
+  const refused = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import fs from "node:fs";
+    import { main } from ${JSON.stringify(cli)};
+    const rm = fs.rmSync;
+    fs.rmSync = (file, ...args) => {
+      if (String(file).startsWith(${JSON.stringify(checkpointsDir(project) + path.sep)}))
+        throw Object.assign(new Error("cannot delete checkpoint"), { code: "EACCES" });
+      return rm(file, ...args);
+    };
+    await main(["clean", "--all"]);
+  `], { cwd: project, encoding: "utf8", timeout: 10000 });
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stdout, /Cleanup incomplete/);
+  assert.doesNotMatch(refused.stdout, /Nothing to prune/);
 });
 
 test("a pending injection's group survives even --all", () => {

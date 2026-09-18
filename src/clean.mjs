@@ -47,7 +47,7 @@ const GROUP_RE = new RegExp(
  * files go uncollected the way Grok's and the audit manifests once did.
  */
 // Every refusal returns the same zeroed shape with one reason flag set. Deletion
-// is all-or-nothing across the project: if any lane, any pending marker, or the
+// preflight is all-or-nothing across the project: if any lane, any pending marker, or the
 // tree itself fails a check, NOTHING is deleted. This is the whole point of the
 // two-phase split below — an earlier review found the old code deleting one lane
 // before discovering a later lane's pending marker was malformed.
@@ -213,7 +213,7 @@ function pruneUnlocked(projectDir, opts) {
   // waiting on is still safe.
   const onlyLane = opts.lane ?? null;
   const toPrune = onlyLane ? laneNames.filter((l) => l === onlyLane) : laneNames;
-  const total = { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0 };
+  const total = { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0, failedOperations: 0 };
   if (opts.staging) Object.assign(total, { deletedStagingFiles: 0, retainedStagingFiles: 0 });
   for (const lane of toPrune) {
     const protectedStems = protectedByDir.get(dirOf.get(lane)) ?? new Set();
@@ -228,6 +228,8 @@ function pruneUnlocked(projectDir, opts) {
     total.deletedGroups += r.deletedGroups;
     total.deletedFiles += r.deletedFiles;
     total.protectedGroups += r.protectedGroups;
+    total.failedOperations += r.failedOperations;
+    if (r.failedOperations) break;
   }
   return total;
 }
@@ -281,8 +283,8 @@ function dirHasCheckpointGroup(dir) {
 // Prune one lane's directory. `protectedStems` is the set of handoff stems that
 // must survive every prune (including --all) because a pending injection somewhere
 // points at a group in this directory. Validation of those markers happens in the
-// caller, before any deletion, so this function never has to refuse: by the time
-// it runs, the decision to delete is already safe.
+// caller, before any deletion. Later I/O failures can leave a partial result;
+// report that result and stop rather than counting incomplete groups as removed.
 function pruneLaneCheckpoints(dir, protectedStems, opts = {}) {
   const keep = opts.keep ?? DEFAULT_KEEP_GROUPS;
   const days = opts.days ?? DEFAULT_MAX_AGE_DAYS;
@@ -292,8 +294,9 @@ function pruneLaneCheckpoints(dir, protectedStems, opts = {}) {
   let entries;
   try {
     entries = fs.readdirSync(dir);
-  } catch {
-    return { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0 };
+  } catch (error) {
+    return { groups: 0, deletedGroups: 0, deletedFiles: 0, protectedGroups: 0,
+      failedOperations: error.code === "ENOENT" ? 0 : 1 };
   }
 
   // Group files by their handoff stem.
@@ -304,9 +307,10 @@ function pruneLaneCheckpoints(dir, protectedStems, opts = {}) {
     const p = path.join(dir, f);
     let mtime;
     try {
-      mtime = fs.statSync(p).mtimeMs;
+      mtime = fs.lstatSync(p).mtimeMs;
     } catch {
-      continue;
+      return { groups: 0, deletedGroups: 0, deletedFiles: 0,
+        protectedGroups: protectedStems.size, failedOperations: 1 };
     }
     const g = groups.get(m[1]) ?? { stem: m[1], files: [], mtime: 0 };
     g.files.push(p);
@@ -319,24 +323,25 @@ function pruneLaneCheckpoints(dir, protectedStems, opts = {}) {
 
   let deletedGroups = 0;
   let deletedFiles = 0;
-  const removedStems = new Set();
-  sorted.forEach((g, index) => {
-    if (protectedStems.has(g.stem)) return;
+  let failedOperations = 0;
+  for (const [index, g] of sorted.entries()) {
+    if (protectedStems.has(g.stem)) continue;
     const expired = g.mtime < cutoff && index >= keep; // AND rule, deliberately
-    if (!(all || expired)) return;
-    deletedGroups++;
-    removedStems.add(g.stem);
+    if (!(all || expired)) continue;
     for (const p of g.files) {
       if (!dryRun) {
         try {
           fs.rmSync(p);
         } catch {
-          continue;
+          failedOperations++;
+          break;
         }
       }
       deletedFiles++;
     }
-  });
+    if (failedOperations) break;
+    deletedGroups++;
+  }
 
   // There is no second schedule here any more. The full context file used to be
   // deleted the moment its reader handed off, with a backstop keeping the newest
@@ -351,6 +356,7 @@ function pruneLaneCheckpoints(dir, protectedStems, opts = {}) {
     deletedGroups,
     deletedFiles,
     protectedGroups: protectedStems.size,
+    failedOperations,
   };
 }
 

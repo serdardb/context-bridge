@@ -846,6 +846,11 @@ export async function main(argv) {
       }
       const verb = flags.has("--dry-run") ? "Would delete" : "Deleted";
       const scope = laneFlag ? ` in lane ${bold(laneFlag)}` : "";
+      if (res.failedOperations) {
+        log(`${WARN} Cleanup incomplete${scope}: ${verb.toLowerCase()} ${res.deletedFiles} files; ${res.deletedGroups} checkpoint groups complete. An inspection or deletion failed; remaining groups were not processed. Inspect permissions and retry.`);
+        process.exitCode = 1;
+        return;
+      }
       if (flags.has("--staging")) {
         log(`${OK} ${verb} ${res.deletedStagingFiles ?? 0} abandoned staging files${scope}; ${res.retainedStagingFiles ?? 0} retained (live, uncertain, changed or protected). Checkpoint groups were not pruned.`);
         return;
