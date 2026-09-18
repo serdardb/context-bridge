@@ -9,9 +9,10 @@ import { readAiderHistory, readAiderEvidence, aiderEvidenceMark, aiderDeliverySi
 import { resolveAiderRuntime } from "../../src/agents/aider-runtime.mjs";
 import { createAiderSession, aiderSessionRef, aiderSessionsForProject, aiderStartedSessions } from "../../src/agents/aider-sessions.mjs";
 
-const python = process.argv[2];
+const python = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const interactive = process.argv.includes("--interactive");
 const crossDevice = process.argv.includes("--cross-device");
+const windows = process.platform === "win32";
 assert.ok(python && path.isAbsolute(python));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-aider-transport-"));
 let project = path.join(root, "project"), relocatedRoot = null;
@@ -65,8 +66,11 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: { message: "LOCAL_PROVIDER_REFUSED", type: "authentication_error" } }));
     return;
   }
+  const outboundCommand = windows
+    ? 'bridge handoff codex --summary "AIDER_OUTBOUND_SUMMARY_6841: verified native context; check the fixture next." --decisions "Keep Git optional" --next "Verify the received summary"'
+    : "bridge handoff codex --summary 'AIDER_OUTBOUND_SUMMARY_6841: verified native context; check the fixture next.' --decisions 'Keep Git optional' --next 'Verify the received summary'";
   const content = outboundResponse
-    ? "```bash\nbridge handoff codex --summary 'AIDER_OUTBOUND_SUMMARY_6841: verified native context; check the fixture next.' --decisions 'Keep Git optional' --next 'Verify the received summary'\n```\n"
+    ? `\`\`\`${windows ? "cmd" : "bash"}\n${outboundCommand}\n\`\`\`\n`
     : failureMode === "length" ? "INCOMPLETE_RESPONSE_3291" : failureMode === "pty" && ptyInterrupted
     ? "PTY_NATIVE_COMPLETED_5368" : editResponse
     ? "fixture.txt\n```text\nBRIDGE_EDITED_BY_NATIVE_SDK\n```\n" : `AIDER_NATIVE_RESPONSE_${requests.length}`;
@@ -151,7 +155,10 @@ async function execute(restore = false, refuse = false, startNew = false, bridge
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      if (windows) {
+        spawnSync(path.join(process.env.SystemRoot, "System32", "taskkill.exe"),
+          ["/PID", String(child.pid), "/T", "/F"], { timeout: 5000, stdio: "ignore" });
+      } else try { process.kill(-child.pid, "SIGKILL"); } catch {}
     }, 60000);
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("close", (code, signal) => {
@@ -161,7 +168,10 @@ async function execute(restore = false, refuse = false, startNew = false, bridge
         startupMs: signalAt === null ? null : signalAt - spawnedAt,
         shutdownMs, timedOut }));
       if (terminate) interruptEntry = null;
-      const expected = terminate ? signalSent && (terminate === "kill" ? signal === "SIGKILL" : code === 128)
+      // Windows implements kill(SIGTERM) as forced termination, not POSIX cleanup.
+      // Subsequent evidence/lock checks still require the orphan to stop safely.
+      const expected = terminate ? signalSent && (terminate === "kill" ? signal === "SIGKILL"
+        : windows ? signal === "SIGTERM" : code === 128)
         : code === 0 && (!outbound || shellConfirmed);
       // Measure cleanup from the signal, not SDK startup/model preparation.
       const timelyShutdown = !terminate || (shutdownMs !== null && shutdownMs < 20000);
@@ -371,8 +381,15 @@ try {
   }
   failureMode = null;
   const delivered = path.join(root, "codex-delivered.json");
-  fs.writeFileSync(path.join(bin, "bridge"), `#!${process.execPath}\nconst {spawnSync}=require('node:child_process'); const r=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(cli)},...process.argv.slice(2)],{stdio:'inherit'}); process.exit(r.status ?? 1);\n`, { mode: 0o700 });
-  fs.writeFileSync(path.join(bin, "codex"), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(delivered)},JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o700 });
+  if (windows) {
+    assert.ok(process.env.BRIDGE_TEST_TARGET_EXE, "Windows acceptance needs the compiled receiver fixture");
+    process.env.BRIDGE_FIXTURE_DELIVERED = delivered;
+    fs.copyFileSync(process.env.BRIDGE_TEST_TARGET_EXE, path.join(bin, "codex.exe"));
+    fs.writeFileSync(path.join(bin, "bridge.cmd"), `@echo off\r\n"${process.execPath}" "${cli}" %*\r\n`);
+  } else {
+    fs.writeFileSync(path.join(bin, "bridge"), `#!${process.execPath}\nconst {spawnSync}=require('node:child_process'); const r=spawnSync(${JSON.stringify(process.execPath)},[${JSON.stringify(cli)},...process.argv.slice(2)],{stdio:'inherit'}); process.exit(r.status ?? 1);\n`, { mode: 0o700 });
+    fs.writeFileSync(path.join(bin, "codex"), `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(delivered)},JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o700 });
+  }
   outboundResponse = true;
   await execute(false, false, false, true, false, false, false, false, "decline");
   assert.equal(fs.existsSync(delivered), false, "declining native shell permission must not switch agents");
@@ -423,7 +440,8 @@ try {
     outboundNativeShellConfirmed: true, outboundPermissionDenialPreserved: true,
     refusalNotAcknowledged: true, partialOutputNotAcknowledged: true, persistentEvidenceVerified: true,
     streamedCompletion: true, streamedPartialRemainsPending: true, streamedRetry: true,
-    wrapperSigtermForwarded: true, interruptedStreamNotAcknowledged: true, resumeAfterTermination: true,
+    wrapperSigtermForwarded: !windows, wrapperForcedTermination: windows,
+    interruptedStreamNotAcknowledged: true, resumeAfterTermination: true,
     wrapperSigkillStopsSdk: true, resumeAfterWrapperKill: true,
     isolatedRuntime: runtime.pythonVersion, sdkVersion: runtime.sdkVersion,
     globalSessionStorage: true, sameFilesystemMove: !crossDevice, crossDeviceAdoption: crossDevice, relocatedNativeEdit: true,

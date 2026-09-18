@@ -70,3 +70,33 @@ jobs:
         run: npm install --prefix "$env:RUNNER_TEMP/bridge-native-pi" --ignore-scripts --engine-strict --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
       - name: Actual native CLI session continuity with a local fixture provider
         run: node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
+
+  native-aider-windows:
+    name: native Aider 0.86.2 acceptance · windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install bridge dependencies
+        run: npm ci --ignore-scripts --engine-strict
+      - name: Install pinned experimental vendor in an isolated Python environment
+        run: |
+          python -m venv "$env:RUNNER_TEMP/bridge-native-aider"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe" -m pip install aider-chat==0.86.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe" -m pip check
+      - name: Compile the local receiver fixture
+        shell: powershell
+        run: |
+          Add-Type -TypeDefinition (Get-Content -Raw test/integration/windows-receiver.cs) -OutputAssembly "$env:RUNNER_TEMP/bridge-receiver.exe" -OutputType ConsoleApplication -ReferencedAssemblies System.Web.Extensions,System
+      - name: Actual native SDK acceptance with a local fixture provider
+        run: |
+          $env:BRIDGE_TEST_TARGET_EXE = "$env:RUNNER_TEMP/bridge-receiver.exe"
+          node test/integration/aider-native.mjs "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe"
