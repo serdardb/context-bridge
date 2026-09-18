@@ -110,18 +110,34 @@ export function promptArgs(delta) {
 
 /**
  * Grok needs a COMPOUND watermark, and the opaque-mark contract is what allows it.
- * The two streams are marked differently because they are shaped differently:
- * chat rows carry no timestamps, so they are marked by row count; events do carry
- * `ts`, so they are marked by instant. Marking events by row count (or the chat by
- * time) would silently recount every turn and every touched file on every handoff.
+ * Each stream has its own parsed-prefix mark. Timestamp progress remains for
+ * legacy marks, not as a substitute for detecting buffered or revised records.
  */
 export function currentMark(ref) {
   const chat = [...readJsonl(ref.transcriptPath, true)];
+  const events = [...readJsonl(ref.eventsPath, true)];
+  const readStatus = { malformed: 0 };
+  const hunks = [...readJsonl(hunkPath(ref), false, readStatus)];
+  if (readStatus.malformed || readStatus.unreadable) throw new BridgeError("Grok file-change evidence could not be read completely.", { code: "BRIDGE_TRANSCRIPT_UNREADABLE" });
   let ts = null;
-  for (const e of readJsonl(ref.eventsPath, true)) {
+  for (const e of events) {
     if (e.ts && (!ts || e.ts > ts)) ts = e.ts;
   }
-  return { rows: chat.length, ts, chatPrefixHash: recordPrefixHash(chat) };
+  return { rows: chat.length, ts, chatPrefixHash: recordPrefixHash(chat),
+    events: prefixMark(events), hunks: prefixMark(hunks) };
+}
+
+function hunkPath(ref) {
+  return path.join(path.dirname(String(ref?.transcriptPath ?? "")), "hunk_records.jsonl");
+}
+
+function prefixMark(rows) { return { rows: rows.length, prefixHash: recordPrefixHash(rows) }; }
+
+function streamSelection(rows, mark, since, timeField) {
+  const attested = Number.isSafeInteger(mark?.rows) && mark.rows >= 0 && typeof mark.prefixHash === "string";
+  const rewritten = attested && (rows.length < mark.rows || recordPrefixHash(rows.slice(0, mark.rows)) !== mark.prefixHash);
+  return { rewritten, selected: (row, index) => attested ? rewritten || index >= mark.rows
+    : !since || !row[timeField] || row[timeField] > since };
 }
 
 /** Accepts the compound mark, a bare row count, or nothing. */
@@ -138,8 +154,12 @@ export function activitySince(ref, mark) {
   const chat = [...readJsonl(ref.transcriptPath, true, readStatus)];
   // A count cannot detect compaction or editing between two handoffs. Legacy
   // marks still work, but only newly captured marks attest the earlier prefix.
+  const events = [...readJsonl(ref.eventsPath, true, readStatus)];
+  const eventSelection = streamSelection(events, mark?.events, since, "ts");
+  const hunks = [...readJsonl(hunkPath(ref), false, readStatus)];
   const sourceRewritten = chat.length < previous || (typeof mark?.chatPrefixHash === "string" &&
-    recordPrefixHash(chat.slice(0, previous)) !== mark.chatPrefixHash);
+    recordPrefixHash(chat.slice(0, previous)) !== mark.chatPrefixHash) ||
+    eventSelection.rewritten || streamSelection(hunks, mark?.hunks, since, "timestamp").rewritten;
   const from = sourceRewritten ? 0 : previous;
   const messages = [];
   let index = 0;
@@ -160,8 +180,8 @@ export function activitySince(ref, mark) {
   }
   const patchedFiles = new Set();
   let turnsCompleted = 0;
-  for (const e of readJsonl(ref.eventsPath, true, readStatus)) {
-    if (since && e.ts && e.ts <= since) continue;
+  for (const [index, e] of events.entries()) {
+    if (!eventSelection.selected(e, index)) continue;
     if (e.type === "turn_ended") turnsCompleted++;
     if (e.type === "tool_completed" && e.outcome === "success") {
       for (const f of filesFromToolEvent(e)) patchedFiles.add(f);
@@ -438,17 +458,16 @@ export function observeAudit(ref) {
  * separating the agent's edits from the human's.
  */
 export function auditSince(ref, mark) {
-  // Grok's mark is a compound { rows, ts }, not an ISO string. Comparing e.ts to
-  // the whole object is always false, so the watermark silently did nothing and
-  // every handoff repacked Grok's entire history. Only the ts half filters here,
-  // because tool and hunk rows are timestamped, not row-counted.
+  // Retain earlier starts for pairing with a newly persisted completion.
   const { ts: since } = normaliseMark(mark);
   const commands = [];
   let pending = null;
   let dropped = 0;
   const readStatus = { malformed: 0 };
-  for (const e of readJsonl(ref?.eventsPath ?? ref?.transcriptPath, true, readStatus)) {
-    if (since && e?.ts && e.ts <= since) continue;
+  const events = [...readJsonl(ref?.eventsPath ?? ref?.transcriptPath, true, readStatus)];
+  const eventSelection = streamSelection(events, mark?.events, since, "ts");
+  for (const [index, e] of events.entries()) {
+    const selected = eventSelection.selected(e, index);
     if (e?.type === "tool_started") {
       pending = { tool: e.tool_name ?? null, args: null, at: e.ts ?? null, ok: null, exitCode: null, durationMs: null };
     } else if (e?.type === "tool_completed") {
@@ -456,13 +475,14 @@ export function auditSince(ref, mark) {
       row.ok = e.outcome === "success";
       row.durationMs = typeof e.duration_ms === "number" ? e.duration_ms : null;
       pending = null;
-      commands.push(row);
+      if (selected) commands.push(row);
     }
   }
   const filesChanged = new Set();
-  for (const h of readJsonl(path.join(path.dirname(String(ref?.transcriptPath ?? "")), "hunk_records.jsonl"), false, readStatus)) {
-    // Hunk records name the field timestamp, not ts, unlike the event stream.
-    if (since && h?.timestamp && h.timestamp <= since) continue;
+  const hunks = [...readJsonl(hunkPath(ref), false, readStatus)];
+  const hunkSelection = streamSelection(hunks, mark?.hunks, since, "timestamp");
+  for (const [index, h] of hunks.entries()) {
+    if (!hunkSelection.selected(h, index)) continue;
     if (h?.filePath && h?.authorType === "agent") filesChanged.add(h.filePath);
   }
   return { commands, filesRead: [], filesChanged: [...filesChanged], dropped,

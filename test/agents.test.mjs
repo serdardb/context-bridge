@@ -128,7 +128,7 @@ test("grok drops harness noise from either role, and protocol text only from the
   );
 });
 
-test("grok events are marked by instant, so turns and files are not recounted", async () => {
+test("grok event and hunk marks preserve late records and detect rewritten evidence", async () => {
   const { project } = await withGrokFixture();
   const grok = adapterFor("grok");
   const ref = grok.discover(project);
@@ -141,6 +141,27 @@ test("grok events are marked by instant, so turns and files are not recounted", 
   const fresh = grok.activitySince(ref, grok.currentMark(ref));
   assert.equal(fresh.turnsCompleted, 0);
   assert.deepEqual(fresh.patchedFiles, [], "a fresh mark must not replay earlier file work");
+  const oldTime = "2026-01-01T00:00:00.000Z";
+  const started = { ts: oldTime, type: "tool_started", tool_name: "shell" };
+  const finished = { ts: oldTime, type: "tool_completed", outcome: "success", duration_ms: 17 };
+  fs.appendFileSync(ref.eventsPath, JSON.stringify(started) + "\n");
+  const mark = grok.currentMark(ref);
+  const hunks = path.join(path.dirname(ref.transcriptPath), "hunk_records.jsonl");
+  fs.appendFileSync(ref.eventsPath, JSON.stringify(finished) + "\n");
+  fs.appendFileSync(hunks, JSON.stringify({ timestamp: oldTime, filePath: "late.mjs", authorType: "agent" }) + "\n");
+  const late = grok.auditSince(ref, mark);
+  assert.equal(late.commands.length, 1);
+  assert.equal(late.commands[0].tool, "shell", "a late completion retains the older start's tool");
+  assert.equal(late.commands[0].ok, true);
+  assert.ok(late.filesChanged.includes("late.mjs"));
+  const refreshed = grok.currentMark(ref);
+  assert.equal(grok.auditSince(ref, refreshed).commands.length, 0);
+  assert.deepEqual(grok.auditSince(ref, refreshed).filesChanged, []);
+  fs.writeFileSync(ref.eventsPath, [started, { ...finished, outcome: "failure" }].map(JSON.stringify).join("\n") + "\n");
+  assert.equal(grok.activitySince(ref, refreshed).sourceRewritten, true);
+  assert.equal(grok.auditSince(ref, refreshed).commands[0].ok, false);
+  fs.writeFileSync(hunks, JSON.stringify({ timestamp: oldTime, filePath: "corrected.mjs", authorType: "agent" }) + "\n");
+  assert.deepEqual(grok.auditSince(ref, refreshed).filesChanged, ["corrected.mjs"]);
 });
 
 test("grok idleness comes from turn_ended, not from guessing at message order", async () => {

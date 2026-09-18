@@ -469,9 +469,14 @@ adapter replays the current readable conversation and handoff labels the replay.
 If this happens during closing collection, the appended section is labelled
 `Replayed context`, not `Closing words`; the full checkpoint explains why earlier
 messages recur. Composition reserves the larger possible overflow notice.
-Appending rows preserves the usual tail-only behavior. Older marks without the
-hash can detect shrinking but not same-length edits; audit timestamps remain an
-independent stream. This does not establish rewrite detection for all vendors.
+Appending rows preserves the usual tail-only behavior. Event and optional hunk
+streams have their own count/hash marks too: late records do not need a newer
+timestamp, and edited or shortened evidence triggers conservative conversation
+replay. Audit keeps earlier tool starts for pairing with late completions. Older
+marks without these fields retain event/hunk timestamp filtering and cannot
+detect same-time edits. Missing optional hunk files initially mean no changes;
+unreadable or malformed hunk evidence refuses new progress capture. This does
+not establish rewrite detection for all vendors or reconstruct removed records.
 Antigravity now records the maximum step index, row count and parsed-prefix hash.
 Conversation and audit share the same selection: a changed prefix, shortened
 history or appended row reusing an acknowledged step replays the current readable
