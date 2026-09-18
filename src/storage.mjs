@@ -8,7 +8,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { writeJsonAtomic, writeFileExclusive, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
-import { withKernelLockSync, waitForLock } from "./locking.mjs";
+import { withKernelLockSync, waitForLock, processCreationToken } from "./locking.mjs";
 import { directoryIdentity as fileIdentity, isVerifiedDirectoryIdentity } from "./directory-identity.mjs";
 
 export const PROJECT_ID_KEY = "context-bridge.project-id";
@@ -60,6 +60,14 @@ export function projectOperations(id) {
   return fs.readdirSync(dir).sort();
 }
 
+// PID reuse must not make a different Windows process own an old reservation.
+function operationOwnerAlive(record) {
+  if (!processIsAlive(record.pid)) return false;
+  if (process.platform !== "win32" || !record.ownerCreationToken) return true;
+  const current = processCreationToken(record.pid);
+  return current === null || current === record.ownerCreationToken;
+}
+
 /** Recover bookkeeping only, never pending handoffs, checkpoints or sessions. */
 export function recoverProjectOperations(id, { apply = false } = {}) {
   if (!PROJECT_UUID.test(id) || !readRegistry().projects[id]) throw new BridgeError("Unknown registered project UUID.");
@@ -73,17 +81,19 @@ export function recoverProjectOperations(id, { apply = false } = {}) {
         const record = JSON.parse(raw);
         if (record?.version !== 1 || record.project !== id || !["handoff", "aider"].includes(record.operation) ||
             (record.operation === "aider" && record.sessionId !== null && !PROJECT_UUID.test(record.sessionId ?? "")) ||
-            !Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isFinite(Date.parse(record.startedAt))) {
+            !Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isFinite(Date.parse(record.startedAt)) ||
+            (record.ownerCreationToken !== undefined && (typeof record.ownerCreationToken !== "string" ||
+              !/^[0-9a-f]{16}$/.test(record.ownerCreationToken)))) {
           throw new Error("Invalid operation record.");
         }
-        if (processIsAlive(record.pid)) {
+        if (operationOwnerAlive(record)) {
           report.retained.push({ file: name, reason: "owner-live-or-unverifiable" });
           continue;
         }
         const recover = () => {
           report.recoverable.push(name);
           if (!apply) return;
-          if (readOwnedFile(file, { encoding: "utf8" }) !== raw || processIsAlive(record.pid)) throw new Error("Operation ownership changed.");
+          if (readOwnedFile(file, { encoding: "utf8" }) !== raw || operationOwnerAlive(record)) throw new Error("Operation ownership changed.");
           fs.unlinkSync(file);
           report.removed.push(name);
         };
@@ -125,7 +135,14 @@ export function withProjectOperation(projectDir, operation, fn) {
     const dir = path.join(storageHome(), "operations", id);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${crypto.randomUUID()}.json`);
+    const ownerCreationToken = processCreationToken(process.pid);
+    if (process.platform === "win32" && !ownerCreationToken) {
+      throw new BridgeError("Cannot establish Windows process ownership; operation refused before reservation.", {
+        code: "BRIDGE_PROCESS_IDENTITY_UNAVAILABLE", nextCommand: "bridge doctor --json",
+      });
+    }
     const record = { version: 1, project: id, operation, pid: process.pid, startedAt: new Date().toISOString(),
+      ...(ownerCreationToken ? { ownerCreationToken } : {}),
       ...(operation === "aider" ? { sessionId: null } : {}) };
     writeFileExclusive(file, JSON.stringify(record));
     return { id, file, record };

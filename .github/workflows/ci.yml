@@ -119,6 +119,8 @@ jobs:
           python-version: "3.12"
       - name: Install bridge dependencies
         run: npm ci --ignore-scripts --engine-strict
+      - name: Native process identity and reservation recovery
+        run: node test/integration/windows-operation-owner.mjs
       - name: Install pinned experimental vendor in an isolated Python environment
         run: |
           python -m venv "$env:RUNNER_TEMP/bridge-native-aider"

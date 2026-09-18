@@ -75,9 +75,20 @@ function loadBackend() {
     const lock = lib.func("int __stdcall LockFileEx(intptr_t, uint32_t, uint32_t, uint32_t, uint32_t, void *)");
     const close = lib.func("int __stdcall CloseHandle(intptr_t)");
     const lastError = lib.func("uint32_t __stdcall GetLastError()");
+    const openProcess = lib.func("intptr_t __stdcall OpenProcess(uint32_t, int, uint32_t)");
+    const processTimes = lib.func("int __stdcall GetProcessTimes(intptr_t, void *, void *, void *, void *)");
     const overlapped = koffi.struct({ Internal: "uintptr_t", InternalHigh: "uintptr_t",
       Offset: "uint32_t", OffsetHigh: "uint32_t", hEvent: "intptr_t" });
     backend = {
+      processToken(pid) {
+        const handle = openProcess(0x1000, 0, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (handle === 0 || handle === 0n) return null;
+        try {
+          const creation = Buffer.alloc(8);
+          if (!processTimes(handle, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8))) return null;
+          return creation.toString("hex");
+        } finally { if (!close(handle)) throw nativeError("process-close", lastError()); }
+      },
       open(file) {
         // Shared reads/writes, but no FILE_SHARE_DELETE: ownership cannot be
         // detached from its pathname by another cooperating Windows writer.
@@ -115,6 +126,13 @@ function loadBackend() {
     throw new Error(`Kernel locking is not supported on ${process.platform}; mutation refused.`);
   }
   return backend;
+}
+
+/** Native process-instance identity; null means unknown, not a dead owner. */
+export function processCreationToken(pid) {
+  if (process.platform !== "win32" || !Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) return null;
+  try { return lockBackend().processToken(pid); }
+  catch { return null; } // Unknown ownership never authorizes recovery.
 }
 
 /** Probe outside the project/store, in a bounded process, including release/reacquire. */
