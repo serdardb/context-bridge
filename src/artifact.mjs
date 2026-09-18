@@ -226,7 +226,7 @@ export function verifyArtifact(filePath, { verifyKey = null } = {}) {
   return decodeArtifact(artifactBytes(filePath), { verifyKey });
 }
 
-function decodeArtifact(bytes, { verifyKey = null } = {}) {
+export function decodeArtifact(bytes, { verifyKey = null } = {}) {
   if (verifyKey !== null && (typeof verifyKey !== "string" || !verifyKey)) throw new Error("A non-empty trusted public key path is required.");
   const artifact = JSON.parse(bytes.toString("utf8"));
   if (artifact?.artifactVersion !== ARTIFACT_VERSION || artifact.kind !== "context-bridge-context") throw new Error("Unsupported or invalid context artifact.");

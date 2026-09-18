@@ -645,7 +645,18 @@ function preserveSchemaBackup(projectDir, version) {
 
 export function loadState(projectDir, options = {}) {
   if (options.readOnly) return readAndUpgradeState(projectDir, options);
-  const current = readStateFile(projectDir);
+  let current;
+  try { current = readStateFile(projectDir); }
+  catch (error) {
+    if (error.code !== "BRIDGE_STATE_UNREADABLE" || error.cause?.replaced !== true) throw error;
+    // An atomic writer can unlink our open snapshot. Discard it and retry once
+    // under ownership; disappearance must not become permission to initialize.
+    return withStateLock(projectDir, () => {
+      const state = readAndUpgradeState(projectDir, options);
+      if (!state) throw error;
+      return state;
+    });
+  }
   if (!current) return null;
   if (current.version === STATE_VERSION) return withActiveLaneView(current);
   if (current.version > STATE_VERSION) return readAndUpgradeState(projectDir, options);

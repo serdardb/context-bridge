@@ -156,7 +156,8 @@ export function transcriptStamp(ref) {
 }
 
 /** Read a bridge-owned regular leaf; only initial absence may return null. */
-export function readOwnedFile(file, { encoding = null, missing = false } = {}) {
+export function readOwnedFile(file, { encoding = null, missing = false, maxBytes = null } = {}) {
+  if (maxBytes !== null && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) throw new Error("Invalid file read limit.");
   let before;
   try { before = fs.lstatSync(file, { bigint: true }); }
   catch (error) { if (missing && error.code === "ENOENT") return null; throw error; }
@@ -167,8 +168,27 @@ export function readOwnedFile(file, { encoding = null, missing = false } = {}) {
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
     const opened = fs.fstatSync(fd, { bigint: true });
     if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== before.dev || opened.ino !== before.ino) throw unsafe();
-    const content = fs.readFileSync(fd, encoding);
+    let content;
+    if (maxBytes === null) content = fs.readFileSync(fd, encoding);
+    else {
+      if (opened.size > BigInt(maxBytes)) throw Object.assign(new Error("Stored file exceeds the byte limit."), { code: "BRIDGE_FILE_TOO_LARGE" });
+      // One extra byte detects growth without an unbounded read allocation.
+      const bytes = Buffer.alloc(Number(opened.size) + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const read = fs.readSync(fd, bytes, length, bytes.length - length, null);
+        if (!read) break;
+        length += read;
+      }
+      if (BigInt(length) !== opened.size) throw unsafe();
+      content = encoding ? bytes.subarray(0, length).toString(encoding) : bytes.subarray(0, length);
+    }
     const after = fs.fstatSync(fd, { bigint: true });
+    if (after.isFile() && after.nlink === 0n) {
+      const error = unsafe();
+      error.replaced = true;
+      throw error;
+    }
     if (!after.isFile() || after.nlink !== 1n || after.size !== opened.size ||
         after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) throw unsafe();
     return content;

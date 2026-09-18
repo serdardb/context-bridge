@@ -770,3 +770,30 @@ opt-in Aider/Pi candidates.
 - Every vendor session format is internal. The parsers are defensive and the
   canaries shout when they stop matching, but a CLI release can still require an
   update here.
+
+## Sealed Artifacts
+
+`sealed-artifact.mjs` layers local authenticated encryption over the existing
+artifact decoder; it does not add network behavior to export/import/cache.
+The versioned JSON envelope authenticates its fixed domain, version and
+algorithm using AES-256-GCM AAD, a fresh random 32-byte key, 12-byte nonce and
+16-byte tag. Canonical base64 and exact fields are required. The 16 MiB plaintext
+and 24 MiB envelope limits bound file reads and allocations; they are format
+limits, not estimated model budgets. `readOwnedFile` supports bounded reads
+while retaining its identity/link/metadata checks.
+
+Sealing validates the same bytes it encrypts. A private staging directory holds
+the ciphertext and independent key before one exclusive directory rename.
+Files and the directory entries are synced through existing publication helpers.
+Opening authenticates and validates the inner artifact, including external
+signature trust when applicable, before exclusive plaintext publication. The
+commands require an existing parent and never overwrite an existing destination.
+Directory-sync failure after publication reports uncertainty, not rollback.
+Process termination can leave a private staging directory; no automatic scanning
+or deletion of unrelated staging directories is attempted. Native Windows and
+physical power-loss acceptance are not implied by POSIX focused tests.
+
+The encryption key never appears in the envelope or receipt (only its file path
+does). Senders must not share the bundle as a whole. Separate-channel key transfer,
+recipient trust and access to an already decrypted copy remain user concerns.
+No remote store, revocation service or automatic import is implemented here.

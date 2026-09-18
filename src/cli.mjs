@@ -26,6 +26,7 @@ import { runLiveEvaluation } from "./live-eval.mjs";
 import { releaseChecks } from "./release.mjs";
 import { prepareReleaseEvidence, verifyReleaseEvidence } from "./release-evidence.mjs";
 import { exportArtifact, importArtifact, cacheArtifact } from "./artifact.mjs";
+import { sealArtifact, openSealedArtifact } from "./sealed-artifact.mjs";
 import { searchProject } from "./search.mjs";
 import { projectStatus, switchHistory } from "./status.mjs";
 import { inspectRegisteredProject } from "./project-inspect.mjs";
@@ -94,6 +95,8 @@ ${cmd("release-check --evidence")}Verify local acceptance without calling agents
 ${cmd("artifact export <file>")}Export redacted context; --sign-key <pem> adds an Ed25519 signature
 ${cmd("artifact import <file>")}Verify; --verify-key <pem> requires trusted signing, --apply stages it
 ${cmd("artifact cache <file>")}Verify and store by content hash outside the project; accepts --verify-key
+${cmd("artifact seal <file>")}Create a private encrypted bundle: --out <new-directory> [--verify-key <pem>]
+${cmd("artifact open <file>")}Decrypt without importing: --key-file <key.bin> --out <new-file>
 ${cmd("search <text>")}Search local summaries, checkpoints and audits
 ${cmd("storage plan [--json]")}Preview legacy storage migration without changing files
 ${cmd("storage migrate")}Migrate legacy storage; --retirement-dir selects an external source-filesystem vault
@@ -388,8 +391,23 @@ export async function main(argv) {
       const parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, options: {
         lane: { type: "string" }, apply: { type: "boolean" }, json: { type: "boolean" },
         "sign-key": { type: "string" }, "verify-key": { type: "string" },
+        out: { type: "string" }, "key-file": { type: "string" },
       } });
       const [action, file] = parsed.positionals;
+      if (["seal", "open"].includes(action)) {
+        if (parsed.positionals.length !== 2 || !parsed.values.out || parsed.values.apply || parsed.values.lane ||
+            parsed.values["sign-key"] || (action === "seal" && parsed.values["key-file"] !== undefined) ||
+            (action === "open" && !parsed.values["key-file"])) {
+          throw new Error("Usage: bridge artifact seal <file> --out <new-directory> [--verify-key <pem>] | open <file> --key-file <key.bin> --out <new-file> [--verify-key <pem>]");
+        }
+        const options = { keyFile: parsed.values["key-file"], verifyKey: parsed.values["verify-key"] };
+        const result = action === "seal" ? sealArtifact(file, parsed.values.out, options)
+          : openSealedArtifact(file, parsed.values.out, options);
+        log(parsed.values.json ? JSON.stringify(result, null, 2) : `${OK} Artifact ${action} completed: ${result.path}`);
+        if (!parsed.values.json && action === "seal") log("Share only context.cbsealed; deliver key.bin separately through a trusted channel. Do not upload the whole bundle.");
+        return;
+      }
+      if (parsed.values.out !== undefined || parsed.values["key-file"] !== undefined) throw new Error("--out and --key-file are only for artifact seal/open.");
       if (parsed.positionals.length !== 2 || !["export", "import", "cache"].includes(action)) {
         throw new Error("Usage: bridge artifact export <file> [--sign-key <pem>] | import <file-or-sha256:hash> [--verify-key <pem>] [--apply] | cache <file> [--verify-key <pem>]");
       }
