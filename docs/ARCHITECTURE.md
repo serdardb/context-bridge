@@ -856,6 +856,13 @@ opt-in Aider/Pi candidates.
 
 ## Security and privacy
 
+- Hook and prompt delivery wrap every handoff, including older pending files,
+  as untrusted historical evidence rather than new instructions or authorization.
+  The warning covers summaries, next steps, quoted conversation and linked
+  records; its bytes are reserved alongside the delivery pointer and closing
+  notice. This is defense in depth, not a prompt-injection sandbox or proof that
+  a receiving model will ignore malicious content. Current user authorization
+  and the receiving agent's own security controls remain necessary.
 - Local-first: ordinary state, handoff and artifact operations need no Bridge
   service or account. There is no automatic telemetry or upload. MCP uses stdio;
   the separate, explicitly started sharing service opens a loopback listener.

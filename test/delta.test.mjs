@@ -430,7 +430,7 @@ test("the sentence used to recognise the handoff skill is still in the handoff s
 // missed it because they all used one wide fixture.
 test("the summary's room comes from the road, not from a number", async () => {
   const { summaryBudgetFor, DEFAULT_SUMMARY_BYTES } = await import("../src/delta.mjs");
-  const { deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES, untrimmedPointer } = await import("../src/delivery.mjs");
+  const { deliverableBudget, HOOK_DELTA_BYTES, PROMPT_DELTA_BYTES, hookBody } = await import("../src/delivery.mjs");
   const sections = { summary: "", fromAgent: "codex", conversation: [], decisions: ["d"], work: [], next: ["n"] };
   const rel = ".bridge/checkpoints/x-full.md";
   const trailing = (lost) =>
@@ -461,9 +461,10 @@ test("the summary's room comes from the road, not from a number", async () => {
   // And what it produces when accepted still fits, which is the claim the whole
   // derivation exists to make true.
   const delta = composeForRoad({ ...sections, summary: "s".repeat(onHook) }, hookRoad, trailing);
-  const delivered = delta + untrimmedPointer(rel);
+  const delivered = hookBody(delta, rel);
   assert.ok(Buffer.byteLength(delta) <= hookRoad, "the on-disk delta still has room for delivery's pointer");
   assert.ok(Buffer.byteLength(delivered) <= HOOK_DELTA_BYTES, "the delivered body must not be trimmed after the summary was accepted");
+  assert.doesNotMatch(delivered, /trimmed to fit/);
 });
 
 

@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { composeDelta, summaryBudgetFor, checkSummaryFits } from "./delta.mjs";
-import { hookBody, HOOK_DELTA_BYTES } from "./delivery.mjs";
+import { hookBody, HOOK_DELTA_BYTES, deliverableBudget } from "./delivery.mjs";
 
 function alternatives(descriptions) {
   const values = descriptions.map((description) => ({ code: randomUUID(), description }));
@@ -66,7 +66,8 @@ export function liveDecisionFixture({ variant = randomInt(2) === 0 ? "immediate-
     ? "Earlier proposal: reuse a successful authorization decision for ten minutes to reduce latency."
     : "Earlier proposal: contact authorization on every operation, regardless of service cost." });
   const sections = { fromAgent: "claude", conversation, decisions: [], work: [], next: [] };
-  const budget = summaryBudgetFor(sections, HOOK_DELTA_BYTES);
+  const road = deliverableBudget(HOOK_DELTA_BYTES, null);
+  const budget = summaryBudgetFor(sections, road);
   const expected = { decision: decision.correct, reason: reason.correct, rejected: rejected.correct,
     next: next.correct, owner: null, completeTranscript: false };
   const assessment =
@@ -76,7 +77,7 @@ export function liveDecisionFixture({ variant = randomInt(2) === 0 ? "immediate-
     JSON.stringify({ decision: decision.values, reason: reason.values, rejected: rejected.values, next: next.values });
   const assessSummary = (text) => {
     checkSummaryFits(text, budget);
-    const body = hookBody(composeDelta({ ...sections, summary: text }, HOOK_DELTA_BYTES));
+    const body = hookBody(composeDelta({ ...sections, summary: text }, road));
     return { expected, prompt: "Synthetic handoff assessment. Do not use tools or change files.\n" + body + assessment,
       contextBytes: Buffer.byteLength(body), variant,
       scope: "synthetic constrained-choice decision/rationale/next-step and omission assessment; not a native hook delivery or general semantic-quality proof" };

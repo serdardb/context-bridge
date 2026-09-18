@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { loadState, mutateState, commitKnown, agentSlot, checkpointsDir, safeCheckpointPath, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { fileExists, nowIso, BridgeError, readOwnedFile } from "./util.mjs";
 import { adapterFor } from "./agents/index.mjs";
-import { hookBody, fullContextFor } from "./delivery.mjs";
+import { hookBody, fullContextFor, frameHandoffRecords } from "./delivery.mjs";
 import { requireClosingComplete } from "./closing.mjs";
 
 /**
@@ -236,7 +236,7 @@ function consumeForHook(projectDir, s, inj, { raw = false } = {}) {
     catch { return null; }
   }
   if (!delta) return null;
-  writeHookOutput(raw ? delta : hookBody(delta, fullContextFor(projectDir, inj.deltaFile)));
+  writeHookOutput(raw ? frameHandoffRecords(delta) : hookBody(delta, fullContextFor(projectDir, inj.deltaFile)));
   try {
     if (!alreadyRenamed) fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
   } catch {

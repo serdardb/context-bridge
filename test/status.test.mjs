@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { defaultState, saveState, loadState, emptyLane, STATE_VERSION, writeCheckpoint, safeCheckpointPath, statePath, checkpointsDir, bridgeDir } from "../src/state.mjs";
-import { HOOK_DELTA_BYTES, hookBody, fullContextFor, untrimmedPointer } from "../src/delivery.mjs";
+import { HOOK_DELTA_BYTES, hookBody, fullContextFor, deliverableBudget } from "../src/delivery.mjs";
 import { projectStatus } from "../src/status.mjs";
 
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "bridge.mjs");
@@ -64,7 +64,7 @@ test("production status diagnoses delivered size and missing evidence without ex
     return parsed.delivery;
   };
   for (const excess of [0, 1]) {
-    const delta = "x".repeat(HOOK_DELTA_BYTES - Buffer.byteLength(untrimmedPointer(full)) + excess);
+    const delta = "x".repeat(deliverableBudget(HOOK_DELTA_BYTES, full) + excess);
     fs.writeFileSync(deltaPath, delta);
     const out = report();
     assert.equal(out.via, "hook");
