@@ -42,7 +42,7 @@ import { log, bold, dim, OK, BAD, NONE, WARN, BridgeError } from "./util.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { parseArgs } from "node:util";
+import { parseArgs as nodeParseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 // Read from the manifest rather than repeating it. This was a hardcoded string,
@@ -163,6 +163,17 @@ Docs and write-ups: https://dogrubakar.com/projects/context-bridge
 
 const LAUNCHER_COMMANDS = AGENT_IDS;
 
+function parseArgs(options) {
+  try { return nodeParseArgs(options); }
+  catch (cause) {
+    if (!cause.code?.startsWith("ERR_PARSE_ARGS_")) throw cause;
+    // Parse errors can include argument values; do not echo credentials or paths.
+    throw new BridgeError("Invalid command options. Run bridge --help for usage.", {
+      code: "BRIDGE_INVALID_OPTIONS", cause,
+    });
+  }
+}
+
 export async function main(argv) {
   const args = argv.filter((a) => !a.startsWith("--"));
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
@@ -205,6 +216,7 @@ export async function main(argv) {
       return;
     }
     case "adapters": {
+      parseArgs({ args: argv.slice(1), allowPositionals: false, options: { json: { type: "boolean" } } });
       const descriptors = AGENT_IDS.map((id) => adapterDescriptor(adapterFor(id)));
       if (flags.has("--json")) log(JSON.stringify({ apiVersion: ADAPTER_API_VERSION, adapters: descriptors }, null, 2));
       else for (const entry of descriptors) log(`${entry.id}: ${entry.displayName} (${entry.injection}, API ${entry.apiVersion})`);
@@ -216,6 +228,9 @@ export async function main(argv) {
       return;
 
     case "doctor":
+      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+        fix: { type: "boolean" }, json: { type: "boolean" }, deep: { type: "boolean" },
+      } });
       process.exitCode = await runDoctor(projectDir, {
         fix: flags.has("--fix"),
         json: flags.has("--json"),
@@ -224,6 +239,9 @@ export async function main(argv) {
       return;
 
     case "verify":
+      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+        json: { type: "boolean" }, all: { type: "boolean" },
+      } });
       process.exitCode = await runVerify(projectDir, { json: flags.has("--json"), all: flags.has("--all") });
       return;
 
@@ -295,7 +313,7 @@ export async function main(argv) {
       } else if (args[1] === "adopt" && args.length === 3) {
         const result = adoptProject(projectDir, args[2]);
         log(flags.has("--json") ? JSON.stringify(result, null, 2) : `${OK} Reconnected ${result.root} to project ${result.id}.`);
-      } else throw new Error("Usage: bridge project list [--json] | inspect <id> [--json] | recover|retire|restore <id> [--apply] [--json] | adopt <id> [--json]");
+      } else throw new BridgeError("Usage: bridge project list [--json] | inspect <id> [--json] | recover|retire|restore <id> [--apply] [--json] | adopt <id> [--json]");
       return;
     }
 
@@ -315,7 +333,9 @@ export async function main(argv) {
         return;
       }
       if (args[1] === "cleanup-ignore" && args.length === 2) {
-        if ([...flags].some((flag) => !["--apply", "--json"].includes(flag))) throw new Error("Usage: bridge storage cleanup-ignore [--apply] [--json]");
+        parseArgs({ args: argv.slice(2), allowPositionals: false, options: {
+          apply: { type: "boolean" }, json: { type: "boolean" },
+        } });
         const result = cleanupLegacyIgnore(projectDir, { apply: flags.has("--apply") });
         if (flags.has("--json")) log(JSON.stringify(result, null, 2));
         else {
@@ -326,7 +346,8 @@ export async function main(argv) {
         process.exitCode = result.blocked ? 1 : 0;
         return;
       }
-      if (args[1] !== "plan" || args.length !== 2) throw new Error("Usage: bridge storage plan [--json]");
+      if (args[1] !== "plan" || args.length !== 2) throw new BridgeError("Usage: bridge storage plan [--json]");
+      parseArgs({ args: argv.slice(2), allowPositionals: false, options: { json: { type: "boolean" } } });
       const plan = planLegacyMigration(projectDir);
       if (flags.has("--json")) log(JSON.stringify(plan, null, 2));
       else {
@@ -362,7 +383,7 @@ export async function main(argv) {
       } });
       if (values.live !== undefined) {
         const agent = values.live;
-        if (!agent || agent.startsWith("--")) throw new Error("eval --live requires an agent: codex");
+        if (!agent || agent.startsWith("--")) throw new BridgeError("eval --live requires an agent: codex");
         const report = await runLiveEvaluation(agent, { scenario: values.scenario ?? "recall" });
         if (values.json) log(JSON.stringify(report, null, 2));
         else {
@@ -372,7 +393,7 @@ export async function main(argv) {
         process.exitCode = report.passed ? 0 : 1;
         return;
       }
-      if (values.scenario !== undefined) throw new Error("eval --scenario requires --live codex");
+      if (values.scenario !== undefined) throw new BridgeError("eval --scenario requires --live codex");
       const report = runEvaluation();
       if (flags.has("--json")) log(JSON.stringify(report, null, 2));
       else {
@@ -394,7 +415,7 @@ export async function main(argv) {
 
     case "release-check": {
       if (flags.has("--evidence")) {
-        if (flags.has("--ci")) throw new Error("Use --ci for live verification or --evidence for recorded acceptance, not both.");
+        if (flags.has("--ci")) throw new BridgeError("Use --ci for live verification or --evidence for recorded acceptance, not both.");
         const report = verifyReleaseEvidence(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
         log(flags.has("--json") ? JSON.stringify(report, null, 2) : `${OK} Recorded acceptance matches this commit and package.`);
         return;
@@ -424,10 +445,10 @@ export async function main(argv) {
         serve: ["dir", "token-file", "port", "quota-bytes", "json"],
       };
       if (!Object.hasOwn(allowed, action ?? "") || parsed.positionals.length !== (action === "serve" ? 1 : 2) ||
-          Object.keys(parsed.values).some(key => !allowed[action].includes(key))) throw new Error("Usage: bridge share send|fetch|remove <file-or-hash> --endpoint <origin> | serve --dir <private-directory> --token-file <file>");
+          Object.keys(parsed.values).some(key => !allowed[action].includes(key))) throw new BridgeError("Usage: bridge share send|fetch|remove <file-or-hash> --endpoint <origin> | serve --dir <private-directory> --token-file <file>");
       const values = parsed.values;
       if (action === "serve") {
-        if (!values.dir || !values["token-file"]) throw new Error("Sharing server requires --dir and --token-file.");
+        if (!values.dir || !values["token-file"]) throw new BridgeError("Sharing server requires --dir and --token-file.");
         const { server, endpoint } = await startArtifactServer({ directory: values.dir, tokenFile: values["token-file"],
           port: values.port === undefined ? 0 : Number(values.port),
           quotaBytes: values["quota-bytes"] === undefined ? undefined : Number(values["quota-bytes"]) });
@@ -439,7 +460,7 @@ export async function main(argv) {
         });
         return;
       }
-      if (!values.endpoint || (action === "fetch" && !values.out)) throw new Error("An explicit --endpoint is required; fetch also requires --out.");
+      if (!values.endpoint || (action === "fetch" && !values.out)) throw new BridgeError("An explicit --endpoint is required; fetch also requires --out.");
       const options = { endpoint: values.endpoint, tokenFile: values["token-file"], apply: values.apply,
         allowLoopbackHttp: values["allow-loopback-http"], ttl: values["ttl-seconds"] === undefined ? undefined : Number(values["ttl-seconds"]) };
       const result = action === "send" ? await sendArtifact(input, options)
@@ -460,7 +481,7 @@ export async function main(argv) {
         if (parsed.positionals.length !== 2 || !parsed.values.out || parsed.values.apply || parsed.values.lane ||
             parsed.values["sign-key"] || (action === "seal" && parsed.values["key-file"] !== undefined) ||
             (action === "open" && !parsed.values["key-file"])) {
-          throw new Error("Usage: bridge artifact seal <file> --out <new-directory> [--verify-key <pem>] | open <file> --key-file <key.bin> --out <new-file> [--verify-key <pem>]");
+          throw new BridgeError("Usage: bridge artifact seal <file> --out <new-directory> [--verify-key <pem>] | open <file> --key-file <key.bin> --out <new-file> [--verify-key <pem>]");
         }
         const options = { keyFile: parsed.values["key-file"], verifyKey: parsed.values["verify-key"] };
         const result = action === "seal" ? sealArtifact(file, parsed.values.out, options)
@@ -469,13 +490,13 @@ export async function main(argv) {
         if (!parsed.values.json && action === "seal") log("Share only context.cbsealed; deliver key.bin separately through a trusted channel. Do not upload the whole bundle.");
         return;
       }
-      if (parsed.values.out !== undefined || parsed.values["key-file"] !== undefined) throw new Error("--out and --key-file are only for artifact seal/open.");
+      if (parsed.values.out !== undefined || parsed.values["key-file"] !== undefined) throw new BridgeError("--out and --key-file are only for artifact seal/open.");
       if (parsed.positionals.length !== 2 || !["export", "import", "cache"].includes(action)) {
-        throw new Error("Usage: bridge artifact export <file> [--sign-key <pem>] | import <file-or-sha256:hash> [--verify-key <pem>] [--apply] | cache <file> [--verify-key <pem>]");
+        throw new BridgeError("Usage: bridge artifact export <file> [--sign-key <pem>] | import <file-or-sha256:hash> [--verify-key <pem>] [--apply] | cache <file> [--verify-key <pem>]");
       }
       if (action === "export" && (parsed.values.apply || parsed.values["verify-key"]) ||
           action !== "export" && parsed.values["sign-key"] ||
-          action === "cache" && (parsed.values.apply || parsed.values.lane)) throw new Error("Artifact signing is for export; --apply is for import; cache is independent of lanes.");
+          action === "cache" && (parsed.values.apply || parsed.values.lane)) throw new BridgeError("Artifact signing is for export; --apply is for import; cache is independent of lanes.");
       let result;
       if (action === "export") result = exportArtifact(projectDir, file, { lane: parsed.values.lane || DEFAULT_LANE, signKey: parsed.values["sign-key"] });
       else if (action === "import") result = importArtifact(file, { projectDir, lane: parsed.values.lane || DEFAULT_LANE, apply: parsed.values.apply, verifyKey: parsed.values["verify-key"] });
@@ -508,6 +529,9 @@ export async function main(argv) {
     }
 
     case "status": {
+      parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+        json: { type: "boolean" }, debug: { type: "boolean" },
+      } });
       if (flags.has("--json")) {
         log(JSON.stringify(projectStatus(projectDir), null, 2));
         return;
@@ -689,6 +713,9 @@ export async function main(argv) {
     }
 
     case "inspect": {
+      const parsed = parseArgs({ args: argv.slice(1), allowPositionals: false, options: {
+        json: { type: "boolean" }, lane: { type: "string" },
+      } });
       const { latestManifest, renderManifest } = await import("./audit.mjs");
       let s = null;
       let corrupt = false;
@@ -700,7 +727,7 @@ export async function main(argv) {
       // --lane inspects a specific lane's newest audit; without it, the active lane's.
       // Resolving a named lane needs readable state, so corrupt state is its own clear
       // error rather than a misleading 'unknown lane'. Plain inspect stays lenient.
-      const wantLane = valueOf(argv, "--lane") || null;
+      const wantLane = parsed.values.lane || null;
       if (wantLane) {
         if (corrupt) {
           log(`${BAD} Bridge state could not be read, so a lane cannot be resolved. Run 'bridge doctor'.`);
@@ -787,7 +814,7 @@ export async function main(argv) {
       }
       if (values.lane !== undefined && !isValidLaneName(values.lane)) throw new BridgeError("Invalid --lane; nothing was pruned.");
       if (values.staging && ["all", "keep", "days"].some((name) => values[name] !== undefined)) {
-        throw new Error("Use clean --staging [--dry-run] [--lane NAME] separately from checkpoint retention options.");
+        throw new BridgeError("Use clean --staging [--dry-run] [--lane NAME] separately from checkpoint retention options.");
       }
       // --lane scopes the prune to one lane; without it, every lane is pruned.
       // Read state through a guard: corrupt or unreadable state must NOT crash here,
@@ -877,7 +904,7 @@ export async function main(argv) {
         const [action, name, ...extra] = parsed.positionals;
         if (!["new", "attach"].includes(action) || !name || extra.length ||
             (action === "attach" && (parsed.values.branch || parsed.values.base))) {
-          throw new Error("Usage: bridge lane new <name> --worktree <path> [--branch <branch>] [--base <ref>] | lane attach <name> --worktree <path>");
+          throw new BridgeError("Usage: bridge lane new <name> --worktree <path> [--branch <branch>] [--base <ref>] | lane attach <name> --worktree <path>");
         }
         const result = createWorktreeLane(projectDir, name, parsed.values.worktree, {
           attach: action === "attach", branch: parsed.values.branch, base: parsed.values.base,

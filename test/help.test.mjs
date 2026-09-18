@@ -1,5 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { adapterFor, AGENT_IDS } from "../src/agents/index.mjs";
 
 // `bridge --help` is the only place a new user learns what exists, and it is
@@ -10,6 +15,36 @@ import { adapterFor, AGENT_IDS } from "../src/agents/index.mjs";
 // be used at all. Neither was caught, because nothing ever read the help text.
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+test("invalid CLI options fail cleanly before reads, fixes or mutations", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-cli-options-"));
+  const project = path.join(root, "project"), home = path.join(root, "runtime");
+  fs.mkdirSync(project);
+  const bin = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
+  const invalid = [
+    ["storage", "plan", "--bogus"], ["storage", "cleanup-ignore", "--aply"],
+    ["status", "--bogus"], ["doctor", "--fix", "--bogus"],
+    ["adapters", "--bogus"], ["inspect", "--bogus"], ["inspect", "--lane"],
+    ["verify", "--bogus"], ["search", "--bogus=PRIVATE_ARGUMENT"],
+    ["eval", "--bogus=PRIVATE_ARGUMENT"], ["clean", "--dryrun"],
+    ["artifact", "seal"], ["share", "serve"], ["storage", "nonsense"],
+    ["eval", "--scenario", "decision"], ["status", "unexpected-positional"],
+  ];
+  try {
+    for (const args of invalid) {
+      const result = spawnSync(process.execPath, [bin, ...args], {
+        cwd: project, encoding: "utf8", timeout: 15000,
+        env: { ...process.env, CONTEXT_BRIDGE_HOME: home, PATH: "" },
+      });
+      assert.equal(result.status, 1, JSON.stringify({ args, stdout: result.stdout, stderr: result.stderr }));
+      assert.match(result.stderr, /^bridge: /);
+      assert.doesNotMatch(result.stderr, /node:internal|\n\s+at |PRIVATE_ARGUMENT/);
+      assert.equal(result.stdout, "", "invalid commands must not produce a success report");
+      assert.deepEqual(fs.readdirSync(project), []);
+      assert.equal(fs.existsSync(home), false, "refusal must precede runtime initialization");
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 /**
  * The lines under "Usage:" and nothing else. The example under "Agent flags"
