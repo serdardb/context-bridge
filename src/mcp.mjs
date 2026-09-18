@@ -23,7 +23,9 @@ export function createReadOnlyMcp(projectDir, { allowContent = false } = {}) {
   const read = (fn) => async (args) => {
     try {
       if (directoryIdentity(root) !== initial) throw new Error("Project replaced");
-      return output(fn(args));
+      const value = fn(args);
+      if (directoryIdentity(root) !== initial) throw new Error("Project replaced during read");
+      return output(value);
     } catch {
       return { isError: true, content: [{ type: "text", text: "Bridge read failed. Check the selected project with the local CLI; no state was changed." }] };
     }

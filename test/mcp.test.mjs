@@ -9,9 +9,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ensureState, writeCheckpoint, checkpointsDir } from "../src/state.mjs";
 
 const cli = fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url));
-async function connect(project, extra = [], globalStorage = false) {
+async function connect(project, extra = [], globalStorage = false, preload = null) {
   const env = { ...process.env, PATH: "" };
   delete env.CONTEXT_BRIDGE_ADAPTERS;
+  if (preload) env.NODE_OPTIONS = `--require=${preload}`;
   if (globalStorage) {
     delete env.CONTEXT_BRIDGE_STORAGE;
     env.CONTEXT_BRIDGE_HOME = path.join(project, "unused-home");
@@ -81,5 +82,28 @@ test("opt-in MCP search returns bounded evidence without consuming or altering f
     assert.equal(partial.structuredContent.issues[0].reason, "unsafe-checkpoint");
     assert.equal(partial.structuredContent.totalMatches, 3);
     assert.equal(partial.structuredContent.omittedResults, 2, "display limit is separate from inaccessible evidence");
-  } finally { await client?.close(); fs.rmSync(root, { recursive: true, force: true }); }
+    await client.close(); client = null;
+    const replacement = `${root}-replacement`, preload = `${root}-preload.cjs`, marker = `${root}-swap`;
+    fs.mkdirSync(replacement); ensureState(replacement);
+    writeCheckpoint(replacement, "main", "2026-09-17T00-00-00-000Z-claude-to-codex.md", "OTHER_PROJECT_SECRET needle");
+    fs.writeFileSync(preload, `const fs = require('node:fs');
+const root = fs.realpathSync(${JSON.stringify(root)}), stat = fs.statSync;
+fs.statSync = function(file, ...args) {
+  const value = stat.call(this, file, ...args);
+  if (file === root && fs.existsSync(${JSON.stringify(marker)})) {
+    fs.unlinkSync(${JSON.stringify(marker)});
+    fs.renameSync(root, ${JSON.stringify(`${root}-original`)});
+    fs.renameSync(${JSON.stringify(replacement)}, root);
+  }
+  return value;
+};`);
+    client = await connect(root, ["--allow-content"], false, preload);
+    fs.writeFileSync(marker, "swap during first identity check");
+    const replaced = await client.callTool({ name: "bridge_search", arguments: { query: "needle" } });
+    assert.equal(replaced.isError, true, "a project replaced during a read must not supply MCP content");
+    assert.equal(JSON.stringify(replaced).includes("OTHER_PROJECT_SECRET"), false);
+  } finally {
+    await client?.close();
+    for (const suffix of ["", "-replacement", "-original", "-preload.cjs", "-swap"]) fs.rmSync(root + suffix, { recursive: true, force: true });
+  }
 });
