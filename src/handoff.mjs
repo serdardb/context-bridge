@@ -208,6 +208,7 @@ function readHandoffSource(adapter, projectDir, slot, since, warnings) {
     const probe = adapter.parseProbe(ref);
     if (!["readable", "partial"].includes(probe.status)) return unavailable();
     const activity = adapter.activitySince(ref, since);
+    if (activity.sourceRewritten) warnings.push(`${adapter.displayName}: previously marked conversation changed. The current readable conversation is replayed and may repeat earlier context.`);
     // This detects ordinary rewrites/appends across these reads, not an atomic
     // vendor snapshot. Conservatively repeat changed sources on the next handoff.
     const unchanged = isDeepStrictEqual(before, transcriptStamp(ref));

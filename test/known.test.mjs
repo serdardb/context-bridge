@@ -462,6 +462,22 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     "unchanged chat must not conceal a rewritten event stream");
   assert.match(fs.readFileSync(safeCheckpointPath(project, changedEvents.pendingInjection.deltaFile), "utf8"), /Grok: source was only partially readable/);
 
+  const grok = (await import("../src/agents/index.mjs")).adapterFor("grok");
+  const ref = grok.hydrate(project, s.agents.grok);
+  saveState(project, s);
+  const marked = loadState(project);
+  marked.knownBy.codex = { grok: grok.currentMark(ref) };
+  saveState(project, marked);
+  const chat = fs.readFileSync(grokChat, "utf8").trim().split("\n").map(JSON.parse);
+  chat[0] = { type: "user", content: "CORRECTED_PREVIOUS_DECISION" };
+  fs.writeFileSync(grokChat, chat.map(JSON.stringify).join("\n") + "\n");
+  handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+  const replay = loadState(project);
+  const replayBody = fs.readFileSync(safeCheckpointPath(project, replay.pendingInjection.deltaFile), "utf8");
+  assert.match(replayBody, /Grok: previously marked conversation changed/);
+  assert.match(replayBody, /CORRECTED_PREVIOUS_DECISION/);
+  assert.deepEqual(replay.pendingInjection.sources.grok, grok.currentMark(ref));
+
   for (const partial of [true, false]) {
     saveState(project, s);
     fs.writeFileSync(claudeTranscript, partial ? sourceBytes.toString() + "{broken\n" : "");

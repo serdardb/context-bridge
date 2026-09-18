@@ -11,6 +11,7 @@
 // the files above.
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 import { probeJsonl, probeWithActivity } from "../probe.mjs";
@@ -115,13 +116,18 @@ export function promptArgs(delta) {
  * time) would silently recount every turn and every touched file on every handoff.
  */
 export function currentMark(ref) {
-  let rows = 0;
-  for (const _ of readJsonl(ref.transcriptPath, true)) rows++;
+  const chat = [...readJsonl(ref.transcriptPath, true)];
   let ts = null;
   for (const e of readJsonl(ref.eventsPath, true)) {
     if (e.ts && (!ts || e.ts > ts)) ts = e.ts;
   }
-  return { rows, ts };
+  return { rows: chat.length, ts, chatPrefixHash: chatHash(chat) };
+}
+
+function chatHash(rows) {
+  const hash = createHash("sha256");
+  for (const row of rows) hash.update(JSON.stringify(row) + "\n");
+  return hash.digest("hex");
 }
 
 /** Accepts the compound mark, a bare row count, or nothing. */
@@ -134,10 +140,16 @@ function normaliseMark(mark) {
 
 export function activitySince(ref, mark) {
   const readStatus = { malformed: 0 };
-  const { rows: from, ts: since } = normaliseMark(mark);
+  const { rows: previous, ts: since } = normaliseMark(mark);
+  const chat = [...readJsonl(ref.transcriptPath, true, readStatus)];
+  // A count cannot detect compaction or editing between two handoffs. Legacy
+  // marks still work, but only newly captured marks attest the earlier prefix.
+  const sourceRewritten = chat.length < previous || (typeof mark?.chatPrefixHash === "string" &&
+    chatHash(chat.slice(0, previous)) !== mark.chatPrefixHash);
+  const from = sourceRewritten ? 0 : previous;
   const messages = [];
   let index = 0;
-  for (const r of readJsonl(ref.transcriptPath, true, readStatus)) {
+  for (const r of chat) {
     const i = index++;
     if (i < from) continue;
     const role = r.type === "user" ? "user" : r.type === "assistant" ? "assistant" : null;
@@ -161,7 +173,8 @@ export function activitySince(ref, mark) {
       for (const f of filesFromToolEvent(e)) patchedFiles.add(f);
     }
   }
-  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceComplete: readStatus.malformed === 0 && !readStatus.unreadable };
+  return { messages, patchedFiles: [...patchedFiles], turnsCompleted, sourceRewritten,
+    sourceComplete: readStatus.malformed === 0 && !readStatus.unreadable };
 }
 
 /**

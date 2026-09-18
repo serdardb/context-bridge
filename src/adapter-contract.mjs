@@ -134,6 +134,7 @@ export function validateAdapterResult(id, operation, result) {
     if (!result || !Array.isArray(result.messages) || !strings(result.patchedFiles) ||
         !Number.isSafeInteger(result.turnsCompleted) || result.turnsCompleted < 0) fail();
     if (Object.hasOwn(result, "deliveryObserved") && typeof result.deliveryObserved !== "boolean") fail();
+    if (Object.hasOwn(result, "sourceRewritten") && typeof result.sourceRewritten !== "boolean") fail();
     if (Object.hasOwn(result, "sourceComplete") && typeof result.sourceComplete !== "boolean") fail();
     for (const message of result.messages) {
       if (!message || !["user", "assistant"].includes(message.role) ||

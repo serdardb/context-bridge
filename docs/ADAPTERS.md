@@ -101,6 +101,10 @@ All adapters must implement the operations listed in `REQUIRED_OPERATIONS`:
   explicit limitation and does not advance that source's watermark. This is
   separate from receipt evidence below; a successful preflight cannot override
   incomplete extraction. Absence keeps the existing probe-based contract.
+  `sourceRewritten: true` means a previously marked conversation prefix changed
+  and the adapter returned the current conversation again. Handoff discloses
+  that replay may duplicate earlier context. It does not itself prove complete
+  extraction or reset the audit stream's independent watermark.
   It may also return `deliveryObserved: boolean`: whether new evidence after the
   supplied watermark confirms receipt of the handoff. When supplied, this is
   authoritative for launcher acknowledgement; `false` preserves partial/failed

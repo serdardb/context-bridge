@@ -49,7 +49,10 @@ test("grok marks by row count because its chat rows have no timestamps", async (
   const grok = adapterFor("grok");
   const ref = grok.discover(project);
 
-  assert.deepEqual(grok.currentMark(ref), { rows: 14, ts: "2026-07-20T11:58:13.932Z" });
+  const mark = grok.currentMark(ref);
+  assert.equal(mark.rows, 14);
+  assert.equal(mark.ts, "2026-07-20T11:58:13.932Z");
+  assert.match(mark.chatPrefixHash, /^[a-f0-9]{64}$/);
 
   const all = grok.activitySince(ref, 0).messages;
   assert.deepEqual(
@@ -70,6 +73,21 @@ test("grok marks by row count because its chat rows have no timestamps", async (
     "mid-session mark returns only real new rows, not protocol noise"
   );
   assert.equal(grok.activitySince(ref, grok.currentMark(ref)).messages.length, 0, "a fresh mark returns nothing");
+  const original = fs.readFileSync(ref.transcriptPath, "utf8");
+  const rows = original.trim().split("\n").map(JSON.parse);
+  rows[0] = { type: "user", content: "REVISED_EARLIER_DECISION" };
+  fs.writeFileSync(ref.transcriptPath, rows.map(JSON.stringify).join("\n") + "\n");
+  const replayed = grok.activitySince(ref, mark);
+  assert.equal(replayed.sourceRewritten, true);
+  assert.ok(replayed.messages.some(m => m.text === "REVISED_EARLIER_DECISION"));
+  const refreshed = grok.currentMark(ref);
+  assert.equal(grok.activitySince(ref, refreshed).messages.length, 0);
+  fs.appendFileSync(ref.transcriptPath, JSON.stringify({ type: "assistant", content: "NEW_TAIL" }) + "\n");
+  const appended = grok.activitySince(ref, refreshed);
+  assert.equal(appended.sourceRewritten, false);
+  assert.deepEqual(appended.messages.map(m => m.text), ["NEW_TAIL"]);
+  fs.writeFileSync(ref.transcriptPath, JSON.stringify(rows[0]) + "\n");
+  assert.equal(grok.activitySince(ref, mark).sourceRewritten, true);
 });
 
 // Two kinds of noise get confused here, and narrowing both to user rows let the

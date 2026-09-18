@@ -446,6 +446,12 @@ the delta and manifest, and withhold the source watermark. Error-only manifests
 are retained even when no commands could be recovered. A file changing after
 these checks or auxiliary evidence changing independently remains outside this
 bounded detection; this is not a vendor transaction.
+Grok's new compound marks also hash the parsed chat prefix. If that prefix is
+rewritten between handoffs, or the chat shrinks below the saved row count, the
+adapter replays the current readable conversation and handoff labels the replay.
+Appending rows preserves the usual tail-only behavior. Older marks without the
+hash can detect shrinking but not same-length edits; audit timestamps remain an
+independent stream. This does not establish rewrite detection for all vendors.
 Grok also stamps each JSONL read that contributes activity or audit, including
 its optional hunk record. Initial absence of that optional file is normal;
 disappearance or modification during its read marks the audit incomplete. These
