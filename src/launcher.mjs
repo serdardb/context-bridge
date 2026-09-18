@@ -207,7 +207,10 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       const slot = agentSlot(s, agent);
       const adapter = adapterFor(agent);
       try {
-        const ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
+        let ref = slot.id ? adapter.hydrate(projectDir, slot) : null;
+        // Discovery may omit a path until the resumed process creates it. Read
+        // the recorded path so absence can be distinguished from access failure.
+        if (ref && !ref.transcriptPath && slot.transcriptPath) ref = { ...ref, transcriptPath: slot.transcriptPath };
         if (!slot.id || ref) deliveryBaseline = { id: slot.id ?? null, mark: ref ? adapter.currentMark(ref) : null };
       } catch {
         // Without a pre-spawn baseline, old transcript text cannot prove receipt.

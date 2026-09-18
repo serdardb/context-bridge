@@ -13,7 +13,14 @@ import { tryExec, BridgeError, readRegularFile, recordPrefixHash } from "./util.
 
 /** New marks attest parsed history; legacy ISO marks retain timestamp filtering. */
 export function transcriptMark(file) {
-  const rows = [...readJsonl(file, true)];
+  let rows;
+  try { rows = [...readJsonl(file, true)]; }
+  catch (error) {
+    // A linked session may not have published its first transcript yet. Only
+    // confirmed absence is an empty baseline; unreadable evidence still fails.
+    if (error.cause?.code !== "ENOENT") throw error;
+    rows = [];
+  }
   return { rows: rows.length, prefixHash: recordPrefixHash(rows) };
 }
 
