@@ -3,8 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome, withProjectRuntimeLock } from "./storage.mjs";
-import { ensureState, loadState, mutateState, withProjectStateReadLock, readableCheckpointsDir, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
-import { writeJsonAtomic, writeFileExclusive, readOwnedFile, BridgeError } from "./util.mjs";
+import { ensureState, loadState, mutateState, withProjectStateReadLock, latestCheckpoint, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
+import { writeJsonAtomic, writeFileExclusive, readOwnedFile, readRegularFile, BridgeError } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -35,7 +35,9 @@ function withImportPidLock(hash, fn) {
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       let owner = null;
-      try { owner = Number(fs.readFileSync(lock, "utf8").trim()); } catch {}
+      const ownerText = readOwnedFile(lock, { encoding: "utf8", missing: true, maxBytes: 64 });
+      if (ownerText === null) continue;
+      owner = Number(ownerText.trim());
       let age = 0;
       try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch {}
       let alive = true;
@@ -71,7 +73,7 @@ function signingData(payload) {
 function artifactKey(file, privateKey) {
   let key;
   try {
-    const pem = fs.readFileSync(file);
+    const pem = readRegularFile(file, null);
     key = privateKey ? crypto.createPrivateKey(pem) : crypto.createPublicKey(pem);
   } catch { throw new Error(`Cannot read a valid ${privateKey ? "private signing" : "trusted public"} key.`); }
   if (key.asymmetricKeyType !== "ed25519") throw new Error("Artifact signatures require an Ed25519 key.");
@@ -142,17 +144,15 @@ function validatePayload(payload) {
 }
 
 function latestFullContext(projectDir, lane) {
-  const dir = readableCheckpointsDir(projectDir, lane);
-  if (!dir) return null;
-  let names;
-  try { names = fs.readdirSync(dir).filter((name) => name.endsWith(CHECKPOINT_KINDS.fullContext)).sort(); } catch { return null; }
-  const name = names.at(-1);
-  if (!name) return null;
-  const context = readEvidence(path.join(dir, name), "full context checkpoint");
-  const auditName = name.slice(0, -CHECKPOINT_KINDS.fullContext.length) + CHECKPOINT_KINDS.audit;
+  const found = latestCheckpoint(projectDir, lane, "fullContext");
+  if (!found) return null;
+  const context = found.text;
+  const auditRel = found.rel.slice(0, -CHECKPOINT_KINDS.fullContext.length) + CHECKPOINT_KINDS.audit;
+  const auditFile = safeCheckpointPath(projectDir, auditRel);
+  if (!auditFile) throw new BridgeError("Unsafe artifact audit checkpoint path.");
   let audit = null;
   try {
-    audit = JSON.parse(readEvidence(path.join(dir, auditName), "audit checkpoint"));
+    audit = JSON.parse(readEvidence(auditFile, "audit checkpoint"));
     if (!audit || typeof audit !== "object" || Array.isArray(audit)) throw new Error("Invalid audit checkpoint.");
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
@@ -297,9 +297,9 @@ export function cacheArtifact(filePath, { verifyKey = null } = {}) {
 }
 
 function recoverImport(projectDir, lane, identity, journal, disk) {
-  if (!fs.existsSync(journal)) return;
-  if (!fs.lstatSync(journal).isFile()) throw new Error("Unsafe artifact import journal.");
-  const record = JSON.parse(fs.readFileSync(journal, "utf8"));
+  const journalText = readOwnedFile(journal, { encoding: "utf8", missing: true });
+  if (journalText === null) return;
+  const record = JSON.parse(journalText);
   if (record.version !== 1 || record.project !== identity || record.lane !== lane ||
       !/^[a-f0-9]{64}$/.test(record.hash) || !/^[a-f0-9]{64}$/.test(record.contentHash) ||
       !/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-claude-to-claude$/.test(record.stem)) {
@@ -314,8 +314,9 @@ function recoverImport(projectDir, lane, identity, journal, disk) {
       }
       const file = safeCheckpointPath(projectDir, rel);
       if (!file) throw new Error("Unsafe artifact recovery checkpoint path.");
-      if (!fs.existsSync(file)) return null;
-      if (!fs.lstatSync(file).isFile() || crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== record.contentHash) {
+      const bytes = readOwnedFile(file, { missing: true });
+      if (bytes === null) return null;
+      if (crypto.createHash("sha256").update(bytes).digest("hex") !== record.contentHash) {
         throw new Error("Artifact recovery checkpoint changed; refusing cleanup.");
       }
       return file;

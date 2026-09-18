@@ -397,15 +397,25 @@ test("artifact export refuses linked checkpoints instead of exporting outside fi
     fs.writeFileSync(evidence, "private external evidence");
     fs.symlinkSync(evidence, path.join(checkpointsDir(source), "2026-09-16T00-00-00-000Z-claude-to-codex-full.md"));
     const destination = path.join(source, "export.cbctx");
-    assert.throws(() => exportArtifact(source, destination), /symlinked full context/);
+    assert.throws(() => exportArtifact(source, destination), { code: "BRIDGE_CHECKPOINT_UNREADABLE" });
     assert.equal(fs.existsSync(destination), false);
     assert.equal(fs.readFileSync(evidence, "utf8"), "private external evidence");
     const checkpoint = path.join(checkpointsDir(source), "2026-09-16T00-00-00-000Z-claude-to-codex-full.md");
     fs.unlinkSync(checkpoint);
     fs.linkSync(evidence, checkpoint);
-    assert.throws(() => exportArtifact(source, destination), /unsafe.*full context/i);
+    assert.throws(() => exportArtifact(source, destination), { code: "BRIDGE_CHECKPOINT_UNREADABLE" });
     assert.equal(fs.existsSync(destination), false, "hardlinked private data must not become a portable artifact");
     assert.equal(fs.readFileSync(evidence, "utf8"), "private external evidence");
+    const directory = checkpointsDir(source), readdir = fs.readdirSync;
+    fs.readdirSync = (file, ...args) => {
+      if (file === directory) throw Object.assign(new Error("denied"), { code: "EACCES" });
+      return readdir(file, ...args);
+    };
+    try {
+      assert.throws(() => exportArtifact(source, destination), error =>
+        error.code === "BRIDGE_CHECKPOINT_UNREADABLE" && error.cause?.code === "EACCES");
+      assert.equal(fs.existsSync(destination), false, "unreadable history must not become a successful empty export");
+    } finally { fs.readdirSync = readdir; }
   } finally {
     fs.rmSync(source, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
