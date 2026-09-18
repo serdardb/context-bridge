@@ -91,9 +91,14 @@ try:
 except FileNotFoundError as error:
     assert error.filename == args.reservation
 events.write_text(json.dumps(dict(type='session',version=1,sessionId='session',projectId='project'))+'\\n')
-(root/'chat.md').write_text('')
+(root/'chat.md').write_bytes(b'native history\\r\\n')
+assert m.read_regular(root/'chat.md') == (root/'chat.md').read_bytes()
 record=m.Evidence(root,'session','project')
 record.append(0,False,[])
+assert events.read_bytes() == record.previous,'append must persist the exact evidence bytes'
+record.append(0,False,[])
+assert events.read_bytes() == record.previous,'second append must retain the exact prefix'
+assert m.Evidence(root,'session','project').sequence == 2,'native evidence must reopen after two turns'
 outside=root/'external-evidence';outside.write_bytes(b'private unchanged')
 original=os.open
 def swapped(file,flags,*args,**kwargs):
@@ -110,7 +115,8 @@ assert outside.read_bytes()==b'private unchanged','external file was modified'
   assert.equal(evidence.status, 0, evidence.stderr || evidence.error?.message);
   console.log(JSON.stringify({ platform: process.platform, concurrentWriterRefused: true,
     crossLanguageExclusion: true, nodeBlocksPython: true, lateChildRefused: true,
-    crashRecovery: true, stableLockFile: true, symlinkRefused: true, evidenceSwapRefused: true }));
+    crashRecovery: true, stableLockFile: true, symlinkRefused: true, evidenceSwapRefused: true,
+    evidenceBytesStable: true, evidenceReopened: true }));
 } finally {
   clearTimeout(timer);
   if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL");

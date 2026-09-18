@@ -53,7 +53,8 @@ def read_regular(file):
     before = os.lstat(file)
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise RuntimeError("Unsafe Aider session file.")
-    fd = os.open(file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     try:
         opened = os.fstat(fd)
         if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
@@ -119,8 +120,9 @@ class Evidence:
                   "history": {"version": 1, "bytes": len(history),
                               "sha256": hashlib.sha256(history).hexdigest()}}
         data = (json.dumps(record) + "\n").encode("utf-8")
+        # Evidence prefixes and history hashes describe bytes, not CRT text lines.
         fd = os.open(self.file, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-                     | getattr(os, "O_NONBLOCK", 0))
+                     | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
         try:
             opened = os.fstat(fd)
             if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
