@@ -614,10 +614,9 @@ function readDelta(projectDir, inj) {
 }
 
 /**
- * Mark a delta as delivered, exactly once, after the agent carrying it is up.
- * The rename is what makes "once" true across a crash: whoever renames the file
- * owns the delivery. knownBy moves at the same moment, never before, so a launch
- * that failed can never leave context recorded as though it had arrived.
+ * Record observed delivery only while this exact injection is still pending.
+ * Rename precedes the state write; a crash between them can leave pending state
+ * requiring recovery. This is not a transactional exactly-once receipt.
  */
 function commitDelivery(projectDir, inj) {
   if (!inj?.deltaFile) return;
@@ -625,19 +624,21 @@ function commitDelivery(projectDir, inj) {
 }
 
 function commitDeliveryOwned(projectDir, inj) {
-  requireClosingComplete(loadPinned(projectDir)?.pendingInjection);
-  const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
-  if (!deltaPath) return; // a deltaFile that escapes .bridge is never renamed
-  try {
-    fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
-  } catch {
-    // Already renamed, or gone. Either way it is not ours to commit.
-    return;
-  }
-  if (!loadPinned(projectDir)) return;
   mutateState(projectDir, launcherLane, (st) => {
+    // The child can answer after a replacement handoff or unlink changed state.
+    // Its old observation cannot acknowledge that newer delivery or rewind marks.
+    if (JSON.stringify(st.pendingInjection) !== JSON.stringify(inj)) return;
+    requireClosingComplete(st.pendingInjection);
+    const deltaPath = safeCheckpointPath(projectDir, inj.deltaFile);
+    if (!deltaPath) return;
+    try {
+      fs.renameSync(deltaPath, deltaPath + CONSUMED_SUFFIX);
+    } catch {
+      // Already renamed, or gone. Either way it is not ours to commit.
+      return;
+    }
     commitKnown(st, inj);
-    if (st.pendingInjection?.deltaFile === inj.deltaFile) st.pendingInjection = null;
+    st.pendingInjection = null;
   });
 }
 

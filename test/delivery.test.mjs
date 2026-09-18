@@ -348,6 +348,31 @@ test("an agent that answers consumes the delta, and only once", () => {
   assert.ok(fs.existsSync(safeCheckpointPath(project, deltaFile + ".consumed")), "an answered handoff is a delivered one");
   assert.ok(!fs.existsSync(safeCheckpointPath(project, deltaFile)), "and it must not still be pending, or it ships twice");
   assert.equal(loadState(project).pendingInjection, null);
+
+  const stale = pendingDelta("prompt", "OLD DELIVERY");
+  const oldState = loadState(stale.project);
+  oldState.pendingInjection.sources = { claude: "old-progress" };
+  saveState(stale.project, oldState);
+  const replacement = stale.deltaFile.replace(/\.md$/, "-replacement.md");
+  fs.writeFileSync(safeCheckpointPath(stale.project, replacement), "NEW DELIVERY");
+  fs.writeFileSync(path.join(scratch, "codex"), `#!${process.execPath}
+    const fs = require('node:fs');
+    (async () => {
+      const { mutateState } = await import(${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)});
+      mutateState(process.cwd(), 'main', st => {
+        st.pendingInjection = {...st.pendingInjection, deltaFile: ${JSON.stringify(replacement)}};
+        st.knownBy = {codex: {claude: 'new-progress'}};
+      });
+      fs.appendFileSync('rollout.jsonl', ${JSON.stringify(row + "\n")});
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `, { mode: 0o755 });
+  const changed = spawnSync(process.execPath, [BRIDGE_BIN, "codex"], {
+    cwd: stale.project, encoding: "utf8", env: { ...cleanEnv(), PATH: scratch }, timeout: 15000,
+  });
+  assert.equal(changed.status, 0, changed.stdout + changed.stderr);
+  assert.equal(loadState(stale.project).knownBy.codex.claude, "new-progress", "stale observer must not overwrite newer progress");
+  assert.equal(loadState(stale.project).pendingInjection.deltaFile, replacement);
+  assert.ok(fs.existsSync(safeCheckpointPath(stale.project, stale.deltaFile)), "stale evidence must not be renamed");
 });
 
 // The evidence of delivery is the model *answering*, never the delta *echoing*.
