@@ -14,14 +14,13 @@
 // that separation the same empty array carries three different meanings and a
 // reader cannot tell them apart — which is exactly how Codex discovery stayed
 // dead for weeks, a failed parse being indistinguishable from an empty result.
-import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { adapterFor } from "./agents/index.mjs";
-import { checkpointRel, safeCheckpointsDir, safeCheckpointPath, latestCheckpoint, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
-import { ensureRuntimeStore, gitMetadata } from "./storage.mjs";
+import { writeCheckpoint, latestCheckpoint, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
+import { gitMetadata } from "./storage.mjs";
 import { assertCheckpointName } from "./checkpoint-kinds.mjs";
-import { writeFileExclusive, BridgeError, transcriptStamp } from "./util.mjs";
+import { BridgeError, transcriptStamp } from "./util.mjs";
 
 export const MANIFEST_VERSION = 1;
 
@@ -98,16 +97,7 @@ function withinProject(projectDir, paths) {
 /** Write it beside its delta, sharing the stem so the pair is obvious on disk. */
 export function writeManifest(projectDir, lane, stem, manifest) {
   assertCheckpointName(stem);
-  // Same write boundary as writeCheckpoint: refuse to create a manifest through a
-  // symlinked lane directory that would land it outside the project.
-  if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
-  const dir = safeCheckpointsDir(projectDir, lane);
-  const rel = checkpointRel(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`);
-  const file = safeCheckpointPath(projectDir, rel);
-  if (!file) throw new Error(`Refusing to write audit manifest outside bridge storage: ${rel}`);
-  fs.mkdirSync(dir, { recursive: true });
-  writeFileExclusive(file, JSON.stringify(manifest, null, 2));
-  return rel;
+  return writeCheckpoint(projectDir, lane, `${stem}${CHECKPOINT_KINDS.audit}`, JSON.stringify(manifest, null, 2));
 }
 
 /** The newest manifest in one lane, which is what `bridge inspect` defaults to. */

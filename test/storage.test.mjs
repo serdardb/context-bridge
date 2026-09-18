@@ -560,6 +560,23 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
         assert.equal(result.status, 0, result.stderr);
       }
       assert.equal(fs.statSync(guard).ino, before.ino);
+      const { writeManifest } = await import(${JSON.stringify(new URL("../src/audit.mjs", import.meta.url).href)});
+      const mkdir = fs.mkdirSync;
+      let publicationChecks = 0;
+      fs.mkdirSync = (dir, ...args) => {
+        if (String(dir).endsWith(path.sep + 'checkpoints')) {
+          publicationChecks++;
+          const contender = run('const { withProjectRuntimeLock } = await import(' +
+            JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
+            '); withProjectRuntimeLock(' + JSON.stringify(project) + ', () => {});');
+          assert.equal(contender.status, 1, 'audit publication must retain project ownership through directory creation');
+          assert.match(contender.stderr, /BRIDGE_LOCK_TIMEOUT/);
+        }
+        return mkdir(dir, ...args);
+      };
+      try { writeManifest(project, 'main', '2026-09-17T02-00-00-000Z-audit', { complete: true }); }
+      finally { fs.mkdirSync = mkdir; }
+      assert.ok(publicationChecks > 0);
       const moved = project + '-moved';
       const adoption = 'const { adoptProject } = await import(' +
         JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
