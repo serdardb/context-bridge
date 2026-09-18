@@ -88,6 +88,13 @@ async function verifyWindowsRegistryPermissions() {
   ensureState(project);
   writeCheckpoint(project, "main", "2026-09-18T00-00-00-000Z-claude-to-codex.md", "ACL fixture evidence\n");
   const id = projectIdentity(project).id, store = projectStoreDir(project);
+  const caseAlias = path.join(root, "ACL-PROJECT");
+  assert.equal(fs.realpathSync(caseAlias), fs.realpathSync(project), "the native fixture must expose a real case alias");
+  const stateBeforeAlias = fs.readFileSync(statePath(project));
+  ensureState(caseAlias);
+  assert.equal(projectIdentity(caseAlias).id, id, "case aliases must not split one physical project");
+  assert.equal(projectStoreDir(caseAlias), store);
+  assert.deepEqual(fs.readFileSync(statePath(project)), stateBeforeAlias);
   const checkpoints = checkpointsDir(project), relative = path.relative(store, checkpoints);
   const registry = path.join(env.CONTEXT_BRIDGE_HOME, "projects.json");
   const originalState = fs.readFileSync(statePath(project));
@@ -128,7 +135,7 @@ async function verifyWindowsRegistryPermissions() {
   assert.equal(command("purge", id, "--apply", "--confirm", id, "--json").status, 0);
   assert.equal(fs.existsSync(archive), false);
   assert.equal(fs.existsSync(project), false);
-  return { nativeDenial: true, refusedMutationsPreserveEvidence: true, missingProjectLifecycle: true };
+  return { nativeCaseAlias: true, nativeDenial: true, refusedMutationsPreserveEvidence: true, missingProjectLifecycle: true };
 }
 
 let client, sharingServer, sharingClosed;
