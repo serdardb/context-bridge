@@ -149,40 +149,72 @@ class Evidence:
 def interruptible_http_reads():
     """Yield to Python signals without reducing HTTPcore's read deadline."""
     import httpcore
-    from httpcore._backends.sync import SyncStream
+    from httpcore._backends.sync import SyncStream, TLSinTLSStream
 
     if importlib.metadata.version("httpcore") != "1.0.9":
         raise RuntimeError("Windows Aider interrupt support requires httpcore 1.0.9.")
     original = SyncStream.read
+    original_tls = TLSinTLSStream.read
     owner = threading.get_ident()
 
-    def read(stream, max_bytes, timeout=None):
-        if threading.get_ident() != owner or (timeout is not None and timeout <= 0):
-            return original(stream, max_bytes, timeout)
+    def poll(operation, sock, timeout, timeout_error):
         deadline = None if timeout is None else time.monotonic() + timeout
-        sock = stream.get_extra_info("socket")
         try:
             while True:
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
-                    raise httpcore.ReadTimeout("The read operation timed out")
+                    raise timeout_error("The read operation timed out")
                 try:
-                    return original(stream, max_bytes, 0.2 if remaining is None else min(0.2, remaining))
-                except httpcore.ReadTimeout:
+                    return operation(0.2 if remaining is None else min(0.2, remaining))
+                except timeout_error:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise
         finally:
             if sock.fileno() >= 0:
                 sock.settimeout(timeout)
 
+    def read(stream, max_bytes, timeout=None):
+        if threading.get_ident() != owner or (timeout is not None and timeout <= 0):
+            return original(stream, max_bytes, timeout)
+        return poll(lambda wait: original(stream, max_bytes, wait),
+                    stream.get_extra_info("socket"), timeout, httpcore.ReadTimeout)
+
+    def read_tls(stream, max_bytes, timeout=None):
+        if threading.get_ident() != owner or (timeout is not None and timeout <= 0):
+            return original_tls(stream, max_bytes, timeout)
+        sock = stream.get_extra_info("socket")
+        receive = sock.recv
+        had_override = "recv" in sock.__dict__
+        previous = sock.__dict__.get("recv")
+
+        def recv(*args, **kwargs):
+            if threading.get_ident() != owner:
+                return receive(*args, **kwargs)
+
+            def operation(wait):
+                sock.settimeout(wait)
+                return receive(*args, **kwargs)
+
+            return poll(operation, sock, sock.gettimeout(), socket.timeout)
+
+        # Retry only the owned socket's recv, never the TLS BIO drain/sendall.
+        sock.recv = recv
+        try:
+            return original_tls(stream, max_bytes, timeout)
+        finally:
+            if had_override:
+                sock.recv = previous
+            else:
+                del sock.recv
+
     # Keep HTTPX/LiteLLM's existing clients, proxy selection and TLS contexts.
-    # TLSinTLSStream is deliberately not wrapped: its read also drains a BIO
-    # into sendall, which cannot safely be replayed after a partial write.
     SyncStream.read = read
+    TLSinTLSStream.read = read_tls
     try:
         yield
     finally:
         SyncStream.read = original
+        TLSinTLSStream.read = original_tls
 
 
 def observe(coder, evidence):

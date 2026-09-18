@@ -142,6 +142,8 @@ jobs:
           node test/integration/aider-native.mjs "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe" --cross-device
       - name: Diagnose native terminal interrupt delivery
         run: |
+          & "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe" -I -B test/integration/aider-read-deadline.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:BRIDGE_TEST_PTY_MODULE = "$env:RUNNER_TEMP/bridge-test-pty/node_modules/node-pty/lib/index.js"
           node test/integration/windows-interrupt.mjs "$env:RUNNER_TEMP/bridge-native-aider/Scripts/python.exe"
       - name: Actual native SDK acceptance with a local fixture provider

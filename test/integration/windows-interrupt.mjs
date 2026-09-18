@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 assert.equal(process.platform, "win32");
 const python = process.argv[2];
 const probe = fileURLToPath(new URL("windows-interrupt.py", import.meta.url));
+const tlsProbe = fileURLToPath(new URL("aider-read-deadline.py", import.meta.url));
 const terminal = fileURLToPath(new URL("native-conpty.mjs", import.meta.url));
 const wrapper = `const {spawn}=require('node:child_process');
 const child=spawn(process.argv[1],process.argv.slice(2),{stdio:'inherit'});
@@ -16,6 +17,7 @@ for (const [name, command] of [
   ["direct-python", [python, "-I", probe, "sleep"]],
   ["node-wrapper", [process.execPath, "-e", wrapper, python, "-I", probe, "sleep"]],
   ["blocked-socket", [python, "-I", probe, "socket"]],
+  ["nested-tls-read", [python, "-I", "-B", tlsProbe, "--interrupt"]],
   ...(process.argv.includes("--console")
     ? [["console-handler-socket", [python, "-I", probe, "console"]]] : []),
   // Exploratory primitive, not an established Windows capability.
