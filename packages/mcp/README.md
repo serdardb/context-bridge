@@ -1,8 +1,7 @@
 # Context Bridge MCP companion
 
 Optional official-SDK stdio transport for Context Bridge MCP API 1. Install
-alongside a compatible Context Bridge (the published core 0.12.4 predates this
-API; this companion is being prepared with the next core release):
+alongside Context Bridge 0.13.0 or a later compatible core (0.12.4 predates this API):
 
 ```sh
 npm install -g @serdardb/context-bridge @serdardb/context-bridge-mcp

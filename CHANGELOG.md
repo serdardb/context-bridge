@@ -6,6 +6,62 @@ Entries say what changed and, where it matters, why. Most of the fixes here came
 from something failing quietly, and the reasoning is usually the interesting
 half.
 
+## [0.13.0] — 2026-09-19
+
+### Upgrade Notes
+
+- **Runtime state moves out of your project.** Bridge now uses a machine-local
+  store with registered project identities instead of requiring `.bridge/` in
+  each repository: `~/Library/Application Support/context-bridge` on macOS,
+  the local application-data directory on Windows, and
+  `$XDG_STATE_HOME/context-bridge` (default `~/.local/state/context-bridge`) on
+  Linux. Existing project-local state is migrated on mutating use,
+  with verified backups and retained recovery evidence. Run `bridge storage plan`
+  for a read-only preview, `bridge storage migrate` for explicit migration, and
+  `bridge storage cleanup-ignore` to remove an obsolete ignore entry after
+  migration. Unrecognized files are preserved, not deleted. Ordinary projects
+  do not need Git installed; Git worktree operations still require Git.
+- **MCP is optional and separately installed.** Install
+  `@serdardb/context-bridge-mcp` alongside the core for `bridge mcp`. The core
+  keeps one runtime dependency, `koffi`, for native locking and exclusive file
+  publication. If its native backend is unavailable, mutations refuse with an
+  actionable error; read-only inspection remains available.
+
+### Added
+
+- **Project lifecycle and code-isolated lanes.** Project inspection, adoption,
+  recovery, retirement, restoration and purge commands manage the global store.
+  Existing conversation lanes gain optional Git worktree creation and attachment.
+- **Portable and sealed context.** Artifact export, validation, import and cache
+  commands support hashed context bundles; sealing adds authenticated encryption.
+  Optional sharing commands exchange sealed bundles with an authenticated,
+  loopback-bound server. Keep encryption keys separate from shared bundles.
+- **Bounded search and read-only observation.** `bridge search` queries local
+  evidence, `bridge watch` reports metadata changes, and the MCP companion
+  exposes metadata by default with content search only through `--allow-content`.
+- **Adapter SDK and explicit experimental adapters.** API-v1 manifests load
+  operator-selected adapter modules. Aider and Pi wrappers are opt-in; the
+  default five-agent set is unchanged. Aider authenticated-provider acceptance
+  was not completed and is not claimed by this release.
+- **Context evaluation and bound release evidence.** Deterministic and live
+  context evaluations complement native workflow checks. Release preparation
+  binds successful gates to the exact commit, toolchain and both package hashes;
+  publish-time verification rejects missing, stale or changed evidence.
+
+### Fixed
+
+- **Safer state and checkpoint operations.** Kernel locks, exclusive publication,
+  durable writes and migration recovery protect shared runtime updates. Unsafe
+  checkpoint links and incomplete source reads fail explicitly instead of being
+  treated as empty evidence. These checks are not a physical power-loss guarantee.
+- **More reliable delivery and session continuity.** Handoff preparation and
+  closing-word recovery preserve pending work; replayed history cannot acknowledge
+  a new delivery. Agent readers handle revised history and bound transcript reads.
+  Delivered context is framed as historical evidence, not new authorization.
+- **Direct first launches work again.** `bridge codex` and other unlinked agents
+  can start a fresh session without first receiving a handoff. The launcher links
+  the resulting session for subsequent resumes without treating startup as delivery.
+
 ## [0.12.4] — 2026-09-16
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "@serdardb/context-bridge-mcp",
-  "version": "0.1.0",
+  "version": "0.13.0",
   "description": "Optional official-SDK MCP stdio transport for Context Bridge",
   "type": "module",
   "exports": "./index.mjs",

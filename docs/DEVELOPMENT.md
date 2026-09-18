@@ -471,7 +471,7 @@ network filesystems or power-loss durability, even after the job passes.
 5. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
 6. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
 7. Hygiene scan: no machine-specific paths, no credentials, and no tracked runtime state.
-8. Version bumps kept in sync across all three manifests: `package.json`, `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`. The CLI reads its version from `package.json`; it is not a fourth source.
+8. Coordinate the core and MCP companion versions in `package.json` and `packages/mcp/package.json`, and refresh the lockfile. Keep the core version in sync with `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`. The CLI reads its version from `package.json`; it is not another source. Prepare and publish both packages from the same accepted commit and toolchain.
 9. Update README and docs if user-visible behaviour changed. The published package is `@serdardb/context-bridge`, because the plain name belongs to an unrelated library; publishing needs `--access public`.
 
 ### Changelog Attribution

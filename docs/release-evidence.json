@@ -1,0 +1,106 @@
+{
+  "version": "0.13.0",
+  "baseTag": "v0.12.4",
+  "baseCommit": "656a1823c897ac42b2296612f34bdbc8ea61949a",
+  "entries": [
+    {
+      "sha256": "620937ac701d3c65c0d049612be5d88d1d9191fd7bd30cd386ae79b7148ccb5c",
+      "files": [
+        "src/storage.mjs",
+        "src/project-lifecycle.mjs",
+        "src/cli.mjs"
+      ],
+      "rationale": "Introduces machine-local storage, identity registry, migration and cleanup commands."
+    },
+    {
+      "sha256": "10dcb28a3bdbf5990b560024d6b8fc0bfde2ff6285e93bd63ef0b4c885c32663",
+      "files": [
+        "src/mcp.mjs",
+        "packages/mcp/package.json",
+        "src/locking.mjs",
+        "src/publication.mjs",
+        "package.json"
+      ],
+      "rationale": "Separates SDK transport and provides native fail-closed mutation boundaries."
+    },
+    {
+      "sha256": "f00caed77be77f94fdedc53a80876d27c048c98f8a50172cd861e33896b1cf93",
+      "files": [
+        "src/project-inspect.mjs",
+        "src/project-lifecycle.mjs",
+        "src/worktree.mjs"
+      ],
+      "rationale": "Adds lifecycle operations and worktree-backed lanes, not the preexisting lane feature."
+    },
+    {
+      "sha256": "6550ad2307261f6fcb30e24fa25d26ae2dbcadb424f075f285007d34b26e1382",
+      "files": [
+        "src/artifact.mjs",
+        "src/sealed-artifact.mjs",
+        "src/remote-artifact.mjs"
+      ],
+      "rationale": "New portable bundle, sealing and bounded sharing implementation."
+    },
+    {
+      "sha256": "e0184d17d8a93fde37f34ce847507da9acc74f9776e9aa045af30a4b3c2878d2",
+      "files": [
+        "src/search.mjs",
+        "src/watch.mjs",
+        "packages/mcp/index.mjs",
+        "src/mcp.mjs"
+      ],
+      "rationale": "New search/watch and opt-in MCP content boundary."
+    },
+    {
+      "sha256": "09d7d9e0eed2538acfc3a66cc8ee2f4b5191dd680c125665cc00d6253d1047c5",
+      "files": [
+        "src/adapter-sdk.mjs",
+        "src/adapter-contract.mjs",
+        "src/experimental/aider.mjs",
+        "src/experimental/pi.mjs",
+        "docs/ADAPTERS.md"
+      ],
+      "rationale": "Introduces opt-in adapter API and experimental wrappers without changing built-in set."
+    },
+    {
+      "sha256": "3789960614296d3ca2bd23591310f60777af321578d02956dffb0664938e4fbe",
+      "files": [
+        "src/eval.mjs",
+        "src/live-eval.mjs",
+        "src/release-evidence.mjs",
+        "src/release-provenance.mjs"
+      ],
+      "rationale": "Adds evaluation and exact pair-artifact release gates; not the existing verify command."
+    },
+    {
+      "sha256": "21d40fe138079a826922815b8a99729f9a3d82693aab8a1595c02a3024e78fdd",
+      "files": [
+        "src/locking.mjs",
+        "src/publication.mjs",
+        "src/util.mjs",
+        "src/storage.mjs",
+        "src/seed.mjs"
+      ],
+      "rationale": "Implements locked/durable publication, safe migration and explicit unsafe checkpoint refusal."
+    },
+    {
+      "sha256": "b42603b6a3887432f0f943ae57eaa21c4b4854306dd1983eb58183b5cb5f73f0",
+      "files": [
+        "src/preparation.mjs",
+        "src/closing.mjs",
+        "src/launcher.mjs",
+        "src/delta.mjs",
+        "src/delivery.mjs",
+        "src/agents/grok.mjs"
+      ],
+      "rationale": "Improves recovery, replay-aware acknowledgment, bounded source reads and trust framing."
+    },
+    {
+      "sha256": "8fa270ec568a5d2ffec439e28554e122e2dee54051a9f584d5a1d5f180395ba0",
+      "files": [
+        "src/launcher.mjs"
+      ],
+      "rationale": "Removes the no-linked-session first-launch rejection while preserving adoption and delivery evidence."
+    }
+  ]
+}
