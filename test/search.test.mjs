@@ -91,6 +91,13 @@ test("search CLI keeps option values out of the query and searches consumed inbo
   assert.deepEqual(JSON.parse(result.stdout).results.map((entry) => entry.file), [names[2], names[1]]);
   const invalid = spawnSync(process.execPath, [cli, "search", "migration", "--lane"], { cwd: project, encoding: "utf8" });
   assert.notEqual(invalid.status, 0, "missing flag values must not silently broaden the search");
+  const unicodeName = "2026-09-18T00-00-00-000Z-claude-to-codex.md";
+  writeCheckpoint(project, "main", unicodeName, `${"\u0130".repeat(80)}\nTARGET evidence\nOther line`);
+  const unicode = spawnSync(process.execPath, [cli, "search", "target", "--json"], {
+    cwd: project, env: { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" }, encoding: "utf8",
+  });
+  assert.equal(unicode.status, 0, unicode.stderr);
+  assert.deepEqual(JSON.parse(unicode.stdout).results[0].matches, [{ line: 2, text: "TARGET evidence" }]);
 });
 
 test("search refuses invalid date ranges and discloses unreadable or unsafe evidence", (t) => {

@@ -33,14 +33,16 @@ function dateBoundary(value, end = false) {
 function matches(text, needle) {
   const lower = text.toLocaleLowerCase();
   const wanted = needle.toLocaleLowerCase();
+  const lines = text.split("\n");
   const found = [];
   let from = 0;
   while (true) {
     const at = lower.indexOf(wanted, from);
     if (at < 0) break;
-    const lineStart = text.lastIndexOf("\n", at - 1) + 1;
-    const lineEnd = text.indexOf("\n", at);
-    found.push({ line: text.slice(0, at).split("\n").length, text: text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd).trim().slice(0, 300) });
+    // Case conversion can expand characters; offsets only belong to `lower`.
+    // Newlines survive conversion, so their count still identifies the source line.
+    const line = lower.slice(0, at).split("\n").length;
+    found.push({ line, text: lines[line - 1].trim().slice(0, 300) });
     from = at + Math.max(1, wanted.length);
     if (found.length >= 20) break;
   }
