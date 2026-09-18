@@ -73,7 +73,7 @@ test("work done in other projects stays out of this project's manifest", () => {
 test("audit manifests distinguish unavailable and partial sources from empty records", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "audit-unavailable-"));
   const file = path.join(project, "source.jsonl");
-  const read = fs.readFileSync;
+  const read = fs.readSync;
   try {
     for (const id of ["claude", "codex", "grok", "antigravity"]) {
       const record = {
@@ -88,7 +88,7 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
         if (mode.startsWith("hunk-")) fs.writeFileSync(hunkFile, JSON.stringify({ authorType: "agent", filePath: path.join(project, "changed.txt") }) + "\n");
         if (mode === "missing") fs.rmSync(file, { force: true });
         else fs.writeFileSync(file, mode === "malformed" ? JSON.stringify(record) + "\n{broken" : "");
-        fs.readFileSync = (...args) => {
+        fs.readSync = (...args) => {
           const sourceRead = args[0] === file || (typeof args[0] === "number" && fs.existsSync(file) &&
             fs.fstatSync(args[0]).ino === fs.statSync(file).ino);
           if (sourceRead && mode === "denied") throw Object.assign(new Error("private-path-secret"), { code: "EACCES" });
@@ -115,7 +115,7 @@ test("audit manifests distinguish unavailable and partial sources from empty rec
     const m = buildManifest(project, { source: "codex", target: "grok", sources: { codex: null } });
     assert.deepEqual(Object.keys(m.agents), [], "a null session is skipped quietly");
   } finally {
-    fs.readFileSync = read;
+    fs.readSync = read;
     fs.rmSync(project, { recursive: true, force: true });
   }
 });

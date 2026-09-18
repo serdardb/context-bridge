@@ -357,24 +357,31 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   s.activeAgent = "grok";
   saveState(project, s);
 
-  const originalRead = fs.readFileSync;
+  handoff(project, "codex", { from: "grok", checkTarget: () => {} });
+  const complete = loadState(project);
+  const completeDelta = fs.readFileSync(safeCheckpointPath(project, complete.pendingInjection.deltaFile), "utf8");
+  assert.match(completeDelta, /From Claude Code/);
+  assert.match(completeDelta, /From Grok/);
+  assert.match(completeDelta, /grok found the bug/);
+  saveState(project, s);
+
+  const originalRead = fs.readSync;
   let arriving = 0, out;
-  fs.readFileSync = (file, ...args) => {
+  fs.readSync = (file, ...args) => {
     const content = originalRead(file, ...args);
     if (file === grokChat || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(grokChat).ino)) fs.appendFileSync(grokChat,
       JSON.stringify({ type: "assistant", content: `Arrived during extraction ${++arriving}` }) + "\n");
     return content;
   };
   try { out = handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
-  finally { fs.readFileSync = originalRead; }
+  finally { fs.readSync = originalRead; }
   assert.match(out, /including catch-up from Claude Code/);
 
   const after = loadState(project);
   const delta = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile), "utf8");
-  assert.match(delta, /From Claude Code/, "Claude's side must be attributed");
-  assert.match(delta, /From Grok/, "Grok's side must be attributed");
+  assert.match(delta, /### Claude Code/, "the surviving source must still be attributed");
   assert.match(delta, /claude decided the architecture/, "what Claude said reaches Codex through Grok");
-  assert.match(delta, /grok found the bug/);
+  assert.match(delta, /Grok: source could not be read reliably/);
   const full = fs.readFileSync(safeCheckpointPath(project, after.pendingInjection.deltaFile.replace(/\.md$/, "-full.md")), "utf8");
   const acknowledged = fs.readFileSync(grokChat, "utf8").trim().split("\n").map(JSON.parse)
     .slice(0, after.pendingInjection.sources.grok?.rows ?? 0);
@@ -408,21 +415,25 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     saveState(project, s);
     fs.writeFileSync(claudeTranscript, sourceBytes);
     let reads = 0;
-    fs.readFileSync = (file, ...args) => {
+    fs.readSync = (file, ...args) => {
       const sourceRead = file === claudeTranscript || (typeof file === "number" &&
         fs.fstatSync(file).ino === fs.statSync(claudeTranscript).ino);
-      if (sourceRead && ++reads >= failAt) {
+      if (sourceRead && args[1] === 0 && ++reads >= failAt) {
         if (fault === "rewrite") {
           fs.writeFileSync(claudeTranscript, "");
           return originalRead(file, ...args);
         }
-        if (fault === "malformed") return originalRead(file, ...args) + "\n{unfinished";
+        if (fault === "malformed") {
+          const length = originalRead(file, ...args);
+          if (length) args[0][length - 1] = 123;
+          return length;
+        }
         throw Object.assign(new Error("private I/O detail"), { code: "EIO" });
       }
       return originalRead(file, ...args);
     };
     try { handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
-    finally { fs.readFileSync = originalRead; }
+    finally { fs.readSync = originalRead; }
     assert.ok(reads >= failAt, "failure must occur after a successful shape read");
     const failedRead = loadState(project);
     assert.equal(Object.hasOwn(failedRead.pendingInjection.sources, "claude"), false,
@@ -430,10 +441,10 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
     const file = safeCheckpointPath(project, failedRead.pendingInjection.deltaFile);
     for (const p of [file, file.replace(/\.md$/, "-full.md")]) {
       const body = fs.readFileSync(p, "utf8");
-      assert.match(body, failAt === 5 ? /Claude Code: audit evidence is incomplete or changed/ : fault === "io"
+      assert.match(body, failAt === 5 ? /Claude Code: audit evidence is incomplete or changed/ : fault !== "malformed"
         ? /Claude Code: source could not be read reliably/
         : /Claude Code: source was only partially readable/);
-      if (fault === "malformed") assert.match(body, /claude decided the architecture/);
+      if (fault === "malformed") assert.match(body, /start the work/, "the earlier intact row survives a malformed final row");
       assert.doesNotMatch(body, /private I\/O detail/);
     }
     if (failAt === 5) {
@@ -449,18 +460,18 @@ test("a chain carries what the target missed from EVERY agent, labelled by sourc
   const events = path.join(path.dirname(grokChat), "events.jsonl");
   const eventBytes = fs.readFileSync(events);
   let eventReads = 0;
-  fs.readFileSync = (file, ...args) => {
+  fs.readSync = (file, ...args) => {
     const eventRead = file === events || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(events).ino);
-    if (eventRead && ++eventReads === 3) fs.writeFileSync(events, "");
+    if (eventRead && args[1] === 0 && ++eventReads === 3) fs.writeFileSync(events, "");
     return originalRead(file, ...args);
   };
   try { handoff(project, "codex", { from: "grok", checkTarget: () => {} }); }
-  finally { fs.readFileSync = originalRead; fs.writeFileSync(events, eventBytes); }
+  finally { fs.readSync = originalRead; fs.writeFileSync(events, eventBytes); }
   assert.ok(eventReads >= 3);
   const changedEvents = loadState(project);
   assert.equal(Object.hasOwn(changedEvents.pendingInjection.sources, "grok"), false,
     "unchanged chat must not conceal a rewritten event stream");
-  assert.match(fs.readFileSync(safeCheckpointPath(project, changedEvents.pendingInjection.deltaFile), "utf8"), /Grok: source was only partially readable/);
+  assert.match(fs.readFileSync(safeCheckpointPath(project, changedEvents.pendingInjection.deltaFile), "utf8"), /Grok: source could not be read reliably/);
 
   const grok = (await import("../src/agents/index.mjs")).adapterFor("grok");
   const ref = grok.hydrate(project, s.agents.grok);
@@ -618,9 +629,9 @@ test("closing words move the packed mark, so they are delivered once and only on
     const deltaFile = safeCheckpointPath(project, pending.pendingInjection.deltaFile);
     const fullFile = deltaFile.replace(/\.md$/, "-full.md");
     const deltaBefore = fs.readFileSync(deltaFile), fullBefore = fs.readFileSync(fullFile);
-    const originalRead = fs.readFileSync;
+    const originalRead = fs.readSync;
     let changed = false;
-    fs.readFileSync = (file, ...args) => {
+    fs.readSync = (file, ...args) => {
       const content = originalRead(file, ...args);
       const chatRead = file === grokChat || (typeof file === "number" && fs.fstatSync(file).ino === fs.statSync(grokChat).ino);
       if (chatRead && !changed) {
@@ -632,7 +643,7 @@ test("closing words move the packed mark, so they are delivered once and only on
       return content;
     };
     try { appendFinalWords(project, pending, "grok"); }
-    finally { fs.readFileSync = originalRead; }
+    finally { fs.readSync = originalRead; }
     assert.equal(changed, true);
     assert.deepEqual(loadState(project), pending, "changing closing sources must not advance delivery progress");
     assert.deepEqual(fs.readFileSync(deltaFile), deltaBefore);
