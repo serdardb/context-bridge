@@ -11,6 +11,8 @@ import stat
 import socket
 import sys
 import threading
+import time
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 
 
@@ -143,6 +145,46 @@ class Evidence:
         self.history_prefix = history
 
 
+@contextmanager
+def interruptible_http_reads():
+    """Yield to Python signals without reducing HTTPcore's read deadline."""
+    import httpcore
+    from httpcore._backends.sync import SyncStream
+
+    if importlib.metadata.version("httpcore") != "1.0.9":
+        raise RuntimeError("Windows Aider interrupt support requires httpcore 1.0.9.")
+    original = SyncStream.read
+    owner = threading.get_ident()
+
+    def read(stream, max_bytes, timeout=None):
+        if threading.get_ident() != owner or (timeout is not None and timeout <= 0):
+            return original(stream, max_bytes, timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        sock = stream.get_extra_info("socket")
+        try:
+            while True:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise httpcore.ReadTimeout("The read operation timed out")
+                try:
+                    return original(stream, max_bytes, 0.2 if remaining is None else min(0.2, remaining))
+                except httpcore.ReadTimeout:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise
+        finally:
+            if sock.fileno() >= 0:
+                sock.settimeout(timeout)
+
+    # Keep HTTPX/LiteLLM's existing clients, proxy selection and TLS contexts.
+    # TLSinTLSStream is deliberately not wrapped: its read also drains a BIO
+    # into sendall, which cannot safely be replayed after a partial write.
+    SyncStream.read = read
+    try:
+        yield
+    finally:
+        SyncStream.read = original
+
+
 def observe(coder, evidence):
     send, run_one = coder.send, coder.run_one
     state = None
@@ -152,7 +194,8 @@ def observe(coder, evidence):
         if state is not None and not state["messages"]:
             state["messages"].append({"role": "user", "text": input_text})
         try:
-            yield from send(*args, **kwargs)
+            with interruptible_http_reads() if os.name == "nt" else nullcontext():
+                yield from send(*args, **kwargs)
         except BaseException:
             if state is not None:
                 state["failed"] = True

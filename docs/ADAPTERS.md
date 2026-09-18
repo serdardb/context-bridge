@@ -225,6 +225,13 @@ remain a separate unclassified fragment, not invented user/assistant messages.
 The runtime resolver requires `CONTEXT_BRIDGE_AIDER_PYTHON` to name an absolute
 interpreter in a trusted environment containing `aider-chat==0.86.2` and Python
 3.10-3.12. It never installs packages or guesses an interpreter from PATH.
+The experimental Windows driver additionally requires `httpcore==1.0.9` for
+its scoped interruptible read integration. During a model send, ordinary
+HTTPcore socket reads yield periodically to Python signal handling while
+preserving the caller's total read timeout and existing client/proxy/TLS setup.
+This does not yet establish interrupt support for TLS-in-TLS proxy streams;
+those retain the vendor's original read behavior. Native Windows interactive
+acceptance is still required before treating this candidate as supported.
 The configured path is invoked unchanged: resolving a virtualenv's Python
 symlink to its base executable can silently select the wrong environment.
 Probe and driver use Python isolated mode (`-I`), excluding cwd, `PYTHONPATH`
