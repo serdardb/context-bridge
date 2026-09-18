@@ -53,15 +53,19 @@ def read_regular(file):
     before = os.lstat(file)
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise RuntimeError("Unsafe Aider session file.")
-    fd = os.open(file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         opened = os.fstat(fd)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
             raise RuntimeError("Aider session file changed while opening.")
         with os.fdopen(fd, "rb", closefd=False) as source:
             content = source.read()
         after = os.fstat(fd)
-        if (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+        if (not stat.S_ISREG(after.st_mode) or after.st_nlink != 1
+                or (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                != (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                or len(content) != opened.st_size):
             raise RuntimeError("Aider session file changed while reading.")
         content.decode("utf-8")
         return content
@@ -115,7 +119,8 @@ class Evidence:
                   "history": {"version": 1, "bytes": len(history),
                               "sha256": hashlib.sha256(history).hexdigest()}}
         data = (json.dumps(record) + "\n").encode("utf-8")
-        fd = os.open(self.file, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(self.file, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
         try:
             opened = os.fstat(fd)
             if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
