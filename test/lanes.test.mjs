@@ -635,6 +635,34 @@ test("bridge lane rm refuses while a launcher is alive, so a live session cannot
   assert.match(res.stdout, /launcher is running on lane/i);
   assert.ok(loadState(project).lanes.feature, "the lane is still there, not half-removed");
 
+  const initial = loadState(project);
+  delete initial.launcher;
+  delete initial.launchers;
+  fs.writeFileSync(statePath(project), JSON.stringify(initial));
+  const plugin = path.join(project, 'startup-probe.mjs');
+  fs.writeFileSync(plugin, `
+    import {spawnSync} from 'node:child_process';
+    import assert from 'node:assert/strict';
+    import {defineAdapter} from ${JSON.stringify(new URL('../src/adapter-sdk.mjs', import.meta.url).href)};
+    import * as base from ${JSON.stringify(new URL('../src/agents/claude.mjs', import.meta.url).href)};
+    export default defineAdapter({...base,id:'startupcheck',displayName:'Startup Check',startCommand() {
+      const removed=spawnSync(process.execPath,[${JSON.stringify(BRIDGE_BIN)},'lane','rm','feature','--yes'],
+        {cwd:${JSON.stringify(project)},env:process.env,encoding:'utf8',timeout:5000});
+      assert.equal(removed.status,1,'lane must be protected before adapter command construction');
+      assert.match(removed.stdout,/launcher is running/);
+      throw new Error('startup ownership verified');
+    }});
+  `);
+  const manifest = path.join(project, 'startup-adapters.json');
+  fs.writeFileSync(manifest, JSON.stringify({apiVersion:1,modules:[plugin]}));
+  const startup = spawnSync(process.execPath, ['--input-type=module','-e', `
+    import assert from 'node:assert/strict';
+    import {runLoop} from ${JSON.stringify(new URL('../src/launcher.mjs', import.meta.url).href)};
+    await assert.rejects(runLoop(${JSON.stringify(project)},'startupcheck',{lane:'feature'}), /startup ownership verified/);
+  `], {cwd:project,encoding:'utf8',timeout:10000,env:{...process.env,CONTEXT_BRIDGE_ADAPTERS:manifest}});
+  assert.equal(startup.status, 0, startup.stdout + startup.stderr);
+  assert.ok(loadState(project).lanes.feature);
+
   fs.rmSync(project, { recursive: true });
 });
 

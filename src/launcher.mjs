@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawn, execFileSync } from "node:child_process";
-import { ensureState, loadState, mutateState, agentSlot, commitKnown, safeCheckpointPath, recordLauncher, liveLaunchers, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
+import { ensureState, loadState, mutateState, mutateProject, agentSlot, commitKnown, safeCheckpointPath, recordLauncher, liveLaunchers, STATE_VERSION, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { adapterFor, AGENT_IDS } from "./agents/index.mjs";
 import { filterAgentArgs, argumentSummary } from "./agentargs.mjs";
 import { resolveArgs, saveArgs, clearArgs, savedArgs, loadConfig, isDangerous } from "./config.mjs";
@@ -62,6 +62,12 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
   const wantLane = workspace.lane;
   let s = ensureState(projectDir);
   launcherLane = wantLane ?? s.activeLane ?? DEFAULT_LANE;
+  // Command construction may read sessions or prepare native context. Protect
+  // the lane before that work, not only immediately before spawning the agent.
+  s = mutateProject(projectDir, disk => {
+    if (!disk.lanes?.[launcherLane]) throw new Error("The selected lane disappeared before launcher startup; nothing was launched.");
+    recordLauncher(disk, process.pid, launcherLane);
+  });
   s.activeLane = launcherLane;
   let agent = startAgent || s.activeAgent || "claude";
 
