@@ -19,6 +19,7 @@ import { latestManifest } from "./audit.mjs";
 import { nowIso, BridgeError } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
+import { beginPreparation, recoverPreparations, finishPreparation } from "./preparation.mjs";
 
 const stamp = () => nowIso().replace(/[:.]/g, "-");
 
@@ -153,6 +154,11 @@ function writeSeedOwned(projectDir, newLane, prepared) {
       code: "BRIDGE_SEED_TARGET_OCCUPIED", operation: "write lane seed",
     });
   }
+  recoverPreparations(projectDir, newLane);
+  const journal = beginPreparation(projectDir, newLane, prepared.stem, {
+    [CHECKPOINT_KINDS.fullContext]: prepared.doc,
+    [CHECKPOINT_KINDS.delta]: prepared.doc,
+  });
   writeCheckpoint(projectDir, newLane, `${prepared.stem}${CHECKPOINT_KINDS.fullContext}`, prepared.doc);
   const deltaRel = writeCheckpoint(projectDir, newLane, `${prepared.stem}${CHECKPOINT_KINDS.delta}`, prepared.doc);
   const now = nowIso();
@@ -166,6 +172,9 @@ function writeSeedOwned(projectDir, newLane, prepared) {
       createdAt: now,
     };
   });
+  // The pending reference protects the committed files if cleanup must retry.
+  try { finishPreparation(projectDir, journal); }
+  catch { process.stderr.write("Bridge: Seed committed; preparation journal cleanup remains pending until recovery.\n"); }
   return deltaRel;
 }
 

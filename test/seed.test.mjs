@@ -192,6 +192,18 @@ test("bindSeed gives the seed to the first opener and refuses a second racer", (
 test("writeSeed writes the seed as both a delta and a full-context checkpoint, so an oversized one can be trimmed", () => {
   const project = seededProject();
   const prepared = prepareSeed(project, "main");
+  const stopped = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+    import { writeSeed } from ${JSON.stringify(new URL("../src/seed.mjs", import.meta.url).href)};
+    const publish = publication.renameExclusive;
+    publication.renameExclusive = (from, to) => {
+      publish(from, to);
+      if (to.endsWith('-full.md')) process.exit(79);
+    };
+    writeSeed(${JSON.stringify(project)}, 'target', ${JSON.stringify(prepared)});
+  `], { env: process.env, encoding: "utf8", timeout: 10000 });
+  assert.equal(stopped.status, 79, stopped.stderr);
+  assert.equal(loadState(project).lanes.target.pendingInjection, null);
   const deltaRel = writeSeed(project, "target", prepared);
   const fullRel = deltaRel.replace(/\.md$/, "-full.md");
 
