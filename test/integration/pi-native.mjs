@@ -18,7 +18,6 @@ if (interactiveRequested && (windows ? !process.env.BRIDGE_TEST_PTY_MODULE :
   !["darwin", "linux"].includes(process.platform) || !fs.existsSync("/usr/bin/expect"))) {
   throw new Error("PTY acceptance requires expect on POSIX or an isolated BRIDGE_TEST_PTY_MODULE on Windows.");
 }
-if (windows && bridgeRequested) throw new Error("Windows launcher acceptance is separate from native ConPTY continuity.");
 const version = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8", timeout: 15000 });
 assert.equal(version.status, 0, "the supplied native CLI must start");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-pi-native-"));
@@ -98,15 +97,23 @@ try {
   if (bridgeRequested) {
     const bin = path.join(root, "bin");
     fs.mkdirSync(bin);
-    fs.symlinkSync(process.execPath, path.join(bin, "node"));
-    fs.symlinkSync(cli, path.join(bin, "pi"));
+    let commandPath = bin;
+    if (windows) {
+      const vendorBin = process.env.BRIDGE_TEST_PI_BIN;
+      assert.ok(vendorBin && path.isAbsolute(vendorBin) && fs.existsSync(path.join(vendorBin, "pi.cmd")),
+        "Windows launcher acceptance must use the actual installed npm command");
+      commandPath = [vendorBin, path.dirname(process.execPath)].join(path.delimiter);
+    } else {
+      fs.symlinkSync(process.execPath, path.join(bin, "node"));
+      fs.symlinkSync(cli, path.join(bin, "pi"));
+    }
     const plugin = path.join(root, "plugin.mjs"), manifest = path.join(root, "plugins.json");
     fs.writeFileSync(plugin, `import {defineAdapter} from ${JSON.stringify(new URL("../../src/adapter-sdk.mjs", import.meta.url).href)};
       import * as pi from ${JSON.stringify(new URL("../../src/agents/pi.mjs", import.meta.url).href)}; export default defineAdapter(pi);`);
     fs.writeFileSync(manifest, JSON.stringify({ apiVersion: 1, modules: [plugin] }));
     const bridge = fileURLToPath(new URL("../../bin/bridge.mjs", import.meta.url));
     const env = { CONTEXT_BRIDGE_HOME: path.join(root, "bridge-home"), CONTEXT_BRIDGE_STORAGE: "",
-      CONTEXT_BRIDGE_ADAPTERS: manifest, CODEX_THREAD_ID: "", CONTEXT_BRIDGE_LANE: "", PATH: bin };
+      CONTEXT_BRIDGE_ADAPTERS: manifest, CODEX_THREAD_ID: "", CONTEXT_BRIDGE_LANE: "", PATH: commandPath };
     const run = (args) => {
       const result = spawnSync(process.execPath, args, { cwd: project, env: { ...process.env, ...env }, encoding: "utf8", timeout: 15000 });
       assert.equal(result.status, 0, result.stderr);
@@ -114,8 +121,9 @@ try {
     };
     const stateModule = new URL("../../src/state.mjs", import.meta.url).href;
     const codex = path.join(root, "codex.jsonl");
+    const literalContext = "BRIDGE_LITERAL_%PATH%_&_PIPE|";
     fs.writeFileSync(codex, JSON.stringify({ timestamp: new Date().toISOString(), type: "event_msg",
-      payload: { type: "agent_message", message: "BRIDGE_NATIVE_LAUNCHER_EVIDENCE_7329" } }) + "\n");
+      payload: { type: "agent_message", message: `BRIDGE_NATIVE_LAUNCHER_EVIDENCE_7329\n${literalContext}` } }) + "\n");
     run(["--input-type=module", "-e", `import {defaultState,saveState} from ${JSON.stringify(stateModule)};
       const s=defaultState(process.cwd()); s.activeAgent='codex';
       s.agents.codex={id:'fixture-codex',transcriptPath:${JSON.stringify(codex)},mark:null,idle:false};
@@ -158,6 +166,7 @@ try {
     await execute(resumeArgs, true, bridge, env);
     assert.equal(requests.length, 3);
     assert.ok(JSON.stringify(requests[2]).includes("BRIDGE_NATIVE_LAUNCHER_EVIDENCE_7329"));
+    assert.ok(JSON.stringify(requests[2]).includes(literalContext), "context remains literal data, not shell-expanded text");
     assert.ok(JSON.stringify(requests[2]).includes("BRIDGE_FIRST_CONTEXT_8271"));
     if (relocationRoot) {
       assert.ok(requests[2].messages.some((message) => message.role === "system" &&

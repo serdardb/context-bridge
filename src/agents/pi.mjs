@@ -3,7 +3,7 @@ import { readPiSession, piMark, piActivity, piAudit } from "./pi-records.mjs";
 import { isBridgeProtocolNoise } from "../delta.mjs";
 import path from "node:path";
 import fs from "node:fs";
-import { tryExec, REPO_ROOT, readJson } from "../util.mjs";
+import { tryExec, REPO_ROOT, readJson, BridgeError } from "../util.mjs";
 import { AdapterResultError } from "../adapter-contract.mjs";
 
 export const id = "pi";
@@ -47,10 +47,41 @@ export function bridgeInstructions() {
     "For that handoff, use this packaged protocol rather than a same-name bridge skill.\n\n" +
     fs.readFileSync(bridgeSkillPath(), "utf8");
 }
-export const startCommand = (extraArgs = []) => ({ cmd: "pi", args: ["--append-system-prompt", bridgeInstructions(), ...extraArgs] });
+// npm's Windows .cmd shim is not an executable. Resolve this known package's
+// declared entry point instead of interpolating conversation text into a shell.
+function piCommand(args) {
+  if (process.platform !== "win32") return { cmd: "pi", args };
+  const key = Object.keys(process.env).sort().find((name) => name.toLowerCase() === "path");
+  for (const value of (process.env[key] ?? "").split(path.delimiter).filter(Boolean)) {
+    const directory = path.resolve(value.replace(/^"(.*)"$/, "$1"));
+    const executable = path.join(directory, "pi.exe");
+    if (fs.existsSync(executable)) return { cmd: executable, args };
+    if (!fs.existsSync(path.join(directory, "pi.cmd"))) continue;
+    const packageRoot = path.basename(directory).toLowerCase() === ".bin"
+      ? path.join(directory, "..", "@earendil-works", "pi-coding-agent")
+      : path.join(directory, "node_modules", "@earendil-works", "pi-coding-agent");
+    try {
+      const manifest = path.join(packageRoot, "package.json");
+      if (fs.statSync(manifest).size > 64 * 1024) throw new Error();
+      const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
+      const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.pi;
+      if (pkg.name !== "@earendil-works/pi-coding-agent" || typeof bin !== "string" || path.isAbsolute(bin)) throw new Error();
+      const entry = path.resolve(packageRoot, bin), relative = path.relative(packageRoot, entry);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ||
+          !/\.[cm]?js$/i.test(entry) || !fs.statSync(entry).isFile()) throw new Error();
+      const localNode = path.join(directory, "node.exe");
+      return { cmd: fs.existsSync(localNode) ? localNode : process.execPath, args: [entry, ...args] };
+    } catch (cause) {
+      throw new BridgeError("The Windows Pi npm entry point could not be resolved safely. Reinstall the trusted Pi package.",
+        { code: "BRIDGE_PI_ENTRYPOINT", operation: "resolve Pi command", cause });
+    }
+  }
+  return { cmd: "pi", args };
+}
+export const startCommand = (extraArgs = []) => piCommand(["--append-system-prompt", bridgeInstructions(), ...extraArgs]);
 export function resumeCommand(ref, extraArgs = []) {
   if (!ref?.transcriptPath) throw new Error("Pi resume requires a verified session file.");
-  return { cmd: "pi", args: ["--session", ref.transcriptPath, "--append-system-prompt", bridgeInstructions(), ...extraArgs] };
+  return piCommand(["--session", ref.transcriptPath, "--append-system-prompt", bridgeInstructions(), ...extraArgs]);
 }
 export const promptArgs = (delta) => ["--", delta];
 export const currentMark = (ref) => piMark(readPiSession(ref.transcriptPath));
@@ -88,18 +119,22 @@ export function discoveryProbe(projectDir = process.cwd()) {
   return { status: !examined ? "none" : sessions.length ? "readable" : "blind", examined, recognised: sessions.length };
 }
 export function health() {
-  const version = tryExec("pi", ["--version"]);
+  const execute = (args) => {
+    try { const command = piCommand(args); return tryExec(command.cmd, command.args); }
+    catch { return null; }
+  };
+  const version = execute(["--version"]);
   const settings = { ...readJson(path.join(piAgentDirectory(), "settings.json")),
     ...readJson(path.join(process.cwd(), ".pi", "settings.json")) };
   const provider = typeof settings.defaultProvider === "string" && settings.defaultProvider.trim() ? settings.defaultProvider : null;
   let auth = null;
-  if (version && provider) try { auth = JSON.parse(tryExec("pi", ["auth", "check", "--provider", provider, "--json", "--no-refresh"])); } catch {}
+  if (version && provider) try { auth = JSON.parse(execute(["auth", "check", "--provider", provider, "--json", "--no-refresh"])); } catch {}
   return { version, ready: Boolean(version && auth?.status === "ready"),
     auth: { ok: auth?.status === "ready", via: "pi auth check (no refresh)", account: null },
     extras: provider ? [] : [{ ok: false, info: true, label: "No Pi defaultProvider is configured; authentication has not been checked for a provider." }],
     installHint: "npm install -g @earendil-works/pi-coding-agent (Node >=22.19)" };
 }
-export const smokeCommand = () => ({ cmd: "pi", args: ["--print", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--", "Reply with exactly: bridge-ok"] });
+export const smokeCommand = () => piCommand(["--print", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--", "Reply with exactly: bridge-ok"]);
 
 // Native v3 evidence, not a claim that every tool uses these fields. Shell
 // side effects and truncated vendor output remain structurally incomplete.

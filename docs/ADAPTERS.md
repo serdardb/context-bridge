@@ -371,6 +371,13 @@ skill. That evidence does not establish external-model comprehension, account
 authentication, or model-driven invocation of the handoff command. Those remain
 separate acceptance requirements. Pi itself is not a bridge dependency.
 
+On Windows, npm's `pi.cmd` cannot be launched as a native executable. The
+adapter resolves the installed package's declared JavaScript entry point from
+the matching PATH directory and runs it with Node, keeping context as literal
+arguments rather than shell text. Standard npm global and `node_modules/.bin`
+layouts are recognized; an unrecognized shim fails with an explicit error.
+A native `pi.exe` remains executable directly. Use a Node version supported by Pi.
+
 For an already-linked Pi session, `bridge project adopt <id>` also authorizes
 its recorded old working directory when that directory is absent and belongs
 to this project's adoption history. Session ID verification remains mandatory;
