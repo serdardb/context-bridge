@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import {
   injectionSql,
   preResume,
@@ -571,6 +573,19 @@ exit 1
   try {
     assert.equal(discover("/tmp/no-open-code-session", { allowServerFallback: false, timeout: 100 }), null);
     assert.equal(fs.existsSync(marker), false, "bounded source discovery must not spawn a server fallback");
+    fs.unlinkSync(path.join(bin, "opencode"));
+    process.env.PATH = bin;
+    const execute = childProcess.execFileSync;
+    let fallback = false;
+    try {
+      childProcess.execFileSync = (command, ...args) => {
+        if (command === "/bin/bash") { fallback = true; throw new Error("unexpected server fallback"); }
+        return execute(command, ...args);
+      };
+      syncBuiltinESMExports();
+      assert.equal(discover("/tmp/no-open-code-session", { timeout: 1000 }), null);
+      assert.equal(fallback, false, "a missing executable cannot be recovered by starting its server");
+    } finally { childProcess.execFileSync = execute; syncBuiltinESMExports(); }
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;

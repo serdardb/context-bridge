@@ -112,7 +112,15 @@ function exportSession(sessionId, { snapshot = false } = {}) {
  * every probe inside it is bounded so a timeout takes its server down with it.
  */
 function listSessions({ allowServerFallback = true, timeout = 10000 } = {}) {
-  const raw = tryExec("opencode", ["session", "list", "--format", "json"], { timeout });
+  let raw;
+  try {
+    raw = execFileSync("opencode", ["session", "list", "--format", "json"], {
+      encoding: "utf8", timeout, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch (error) {
+    // The server uses the same executable; absence cannot be repaired by polling.
+    if (error.code === "ENOENT") return [];
+  }
   if (raw) {
     const start = raw.indexOf("[");
     if (start >= 0) {
