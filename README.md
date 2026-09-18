@@ -91,7 +91,7 @@ agents, not in tool count.
 | Chains (A → B → C) | C receives B's work *and* the A context B was given, labelled by source | pair only | not modelled |
 | Trigger | `/bridge <agent>` | command | git commit / checkout / merge hook |
 | Tool calls | left in the source session | translated `tool_use` ↔ `function_call` | not applicable |
-| Language / deps | Node, zero deps | TypeScript | TypeScript, zero deps |
+| Language / deps | Node; 4 runtime dependencies, including native locking | TypeScript | TypeScript, zero deps |
 | License | MIT | MIT | MIT |
 | Last commit | 2026-08-03 | 2026-06-03 | 2026-03-02 |
 

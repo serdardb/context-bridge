@@ -89,7 +89,11 @@ async function verifyWindowsRegistryPermissions() {
   writeCheckpoint(project, "main", "2026-09-18T00-00-00-000Z-claude-to-codex.md", "ACL fixture evidence\n");
   const id = projectIdentity(project).id, store = projectStoreDir(project);
   const caseAlias = path.join(root, "ACL-PROJECT");
-  assert.equal(fs.realpathSync(caseAlias), fs.realpathSync(project), "the native fixture must expose a real case alias");
+  const originalIdentity = fs.statSync(project, { bigint: true });
+  const aliasIdentity = fs.statSync(caseAlias, { bigint: true });
+  assert.deepEqual([aliasIdentity.dev, aliasIdentity.ino, aliasIdentity.birthtimeNs],
+    [originalIdentity.dev, originalIdentity.ino, originalIdentity.birthtimeNs],
+    "the native fixture must expose one physical directory through both spellings");
   const stateBeforeAlias = fs.readFileSync(statePath(project));
   ensureState(caseAlias);
   assert.equal(projectIdentity(caseAlias).id, id, "case aliases must not split one physical project");
