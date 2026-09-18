@@ -150,9 +150,9 @@ export function untrimmedPointer(fullContextRel) {
  * notice that gets trimmed away reports the loss to nobody, which is the failure
  * it exists to prevent.
  */
-export function closingWordsNotice(displayName) {
+export function closingWordsNotice(displayName, replayed = false) {
   return (
-    `\n\nClosing words from ${displayName} did not fit in this delta. ` +
+    `\n\n${replayed ? "Replayed context" : "Closing words"} from ${displayName} did not fit in this delta. ` +
     "They are whole in the full context checkpoint, and only there.\n"
   );
 }
@@ -169,7 +169,7 @@ export function deliverableBudget(road, fullContextRel, displayName = null) {
   return (
     road -
     Buffer.byteLength(untrimmedPointer(fullContextRel)) -
-    (displayName ? Buffer.byteLength(closingWordsNotice(displayName)) : 0)
+    (displayName ? Math.max(...[false, true].map(replayed => Buffer.byteLength(closingWordsNotice(displayName, replayed)))) : 0)
   );
 }
 

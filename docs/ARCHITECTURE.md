@@ -449,6 +449,9 @@ bounded detection; this is not a vendor transaction.
 Grok's new compound marks also hash the parsed chat prefix. If that prefix is
 rewritten between handoffs, or the chat shrinks below the saved row count, the
 adapter replays the current readable conversation and handoff labels the replay.
+If this happens during closing collection, the appended section is labelled
+`Replayed context`, not `Closing words`; the full checkpoint explains why earlier
+messages recur. Composition reserves the larger possible overflow notice.
 Appending rows preserves the usual tail-only behavior. Older marks without the
 hash can detect shrinking but not same-length edits; audit timestamps remain an
 independent stream. This does not establish rewrite detection for all vendors.

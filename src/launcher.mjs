@@ -718,7 +718,11 @@ function appendFinalWordsOwned(projectDir, s, agent) {
   // rule written by hand in a file nobody was looking at. The departing agent's
   // last answer is the substantive one often enough that appending it at all was
   // a deliberate fix, and clipping it undid most of that fix in silence.
-  const verbatim = tail.messages.map((m) => messageBlock(m, adapter.displayName)).join("\n\n");
+  const heading = `${tail.sourceRewritten ? "Replayed context" : "Closing words"} from ${adapter.displayName}`;
+  const replayNotice = tail.sourceRewritten
+    ? "The previously marked conversation changed after preparation. This is the current readable conversation, not only new closing words; earlier context may repeat.\n\n"
+    : "";
+  const verbatim = replayNotice + tail.messages.map((m) => messageBlock(m, adapter.displayName)).join("\n\n");
 
   // The full context checkpoint takes them first and always, because it has no
   // budget over it and because the delta may not be able to hold them.
@@ -749,14 +753,14 @@ function appendFinalWordsOwned(projectDir, s, agent) {
     inj.via === "hook" ? HOOK_DELTA_BYTES : PROMPT_DELTA_BYTES,
     fullContextFor(projectDir, inj.deltaFile)
   );
-  const block = `\n\nClosing words from ${adapter.displayName}\n\n${verbatim}\n`;
-  // Guaranteed to fit: the handoff reserved exactly this string before it
-  // composed anything, using the same function.
-  const pointer = closingWordsNotice(adapter.displayName);
+  const block = `\n\n${heading}\n\n${verbatim}\n`;
+  // The handoff reserved the longer of the normal and replay notices before
+  // composing, so either wording fits without cutting the warning.
+  const pointer = closingWordsNotice(adapter.displayName, tail.sourceRewritten);
   appendClosing(projectDir, launcherLane, s, agent, finalMark,
-    `\n## Closing words from ${adapter.displayName}\n\n${verbatim}\n`,
+    `\n## ${heading}\n\n${verbatim}\n`,
     used => used + Buffer.byteLength(block) <= road ? block : pointer);
-  log(dim(`→ Added ${tail.messages.length} closing message(s) from ${agent} to the handoff.`));
+  log(dim(`→ Added ${tail.messages.length} ${tail.sourceRewritten ? "replayed" : "closing"} message(s) from ${agent} to the handoff.`));
 }
 
 /**

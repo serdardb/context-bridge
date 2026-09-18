@@ -91,6 +91,7 @@ test("hook delivery is only considered when hooks are installed and have run rec
 
 test("a handoff to a Codex session whose hook has run takes the measured hook road", async () => {
   const { handoff } = await import("../src/handoff.mjs");
+  const { SummaryTooLarge } = await import("../src/delta.mjs");
   const { installHooks } = await import("../src/agents/codex.mjs");
 
   const previous = process.env.CODEX_HOME;
@@ -125,13 +126,20 @@ test("a handoff to a Codex session whose hook has run takes the measured hook ro
     state.activeAgent = "claude";
     saveState(project, state);
 
-    handoff(project, "codex", {
+    const options = {
       from: "claude",
-      summary: "s".repeat(HOOK_DELTA_BYTES - 1500),
       decisions: "the hook road is live",
       next: "deliver it through the hook",
       checkTarget: () => {},
+    };
+    let summaryRoom;
+    assert.throws(() => handoff(project, "codex", { ...options, summary: "s".repeat(HOOK_DELTA_BYTES) }), error => {
+      assert.ok(error instanceof SummaryTooLarge);
+      summaryRoom = error.budget;
+      assert.ok(summaryRoom > 0 && summaryRoom < HOOK_DELTA_BYTES);
+      return true;
     });
+    handoff(project, "codex", { ...options, summary: "s".repeat(summaryRoom) });
 
     const after = loadState(project);
     const inj = after.pendingInjection;

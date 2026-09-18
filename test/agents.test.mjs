@@ -499,6 +499,24 @@ test("closing words that cannot fit the delta are pointed at rather than cut off
     fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8").includes(lastWord),
     "the words themselves are never lost; the checkpoint has no budget over it"
   );
+  const chat = fs.readFileSync(ref.transcriptPath, "utf8").trim().split("\n").map(JSON.parse);
+  chat[0] = { type: "user", content: "REVISED_BEFORE_CLOSING" };
+  fs.writeFileSync(ref.transcriptPath, chat.map(JSON.stringify).join("\n") + "\n");
+  for (const bounded of [true, false]) {
+    saveState(project, s);
+    fs.writeFileSync(safeCheckpointPath(project, deltaRel), bounded ? "x".repeat(composerRoom) : "short delta\n");
+    fs.writeFileSync(safeCheckpointPath(project, fullRel), "# Bridge full context\n");
+    appendFinalWords(project, loadState(project), "grok");
+    const body = promptBody(fs.readFileSync(safeCheckpointPath(project, deltaRel), "utf8"), fullContextFor(project, deltaRel));
+    assert.ok(Buffer.byteLength(body) <= PROMPT_DELTA_BYTES);
+    assert.doesNotMatch(body, /trimmed to fit|Closing words from Grok/);
+    assert.match(body, /Replayed context from Grok/);
+    const checkpoint = fs.readFileSync(safeCheckpointPath(project, fullRel), "utf8");
+    assert.match(checkpoint, /REVISED_BEFORE_CLOSING/);
+    assert.match(checkpoint, /not only new closing words/);
+    if (bounded) assert.match(body, /did not fit in this delta/);
+    else assert.match(body, /REVISED_BEFORE_CLOSING/);
+  }
 });
 
 test("closing words written after the handoff still reach the other agent", async () => {
