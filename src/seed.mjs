@@ -18,6 +18,7 @@ import { gitDelta, readFullContextSections } from "./delta.mjs";
 import { latestManifest } from "./audit.mjs";
 import { nowIso, BridgeError } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
+import { withProjectRuntimeLock } from "./storage.mjs";
 
 const stamp = () => nowIso().replace(/[:.]/g, "-");
 
@@ -142,6 +143,16 @@ export function prepareSeed(projectDir, sourceLane) {
  * launcher binds to whichever agent opens the lane first. Returns the delta's path.
  */
 export function writeSeed(projectDir, newLane, prepared) {
+  return withProjectRuntimeLock(projectDir, () => writeSeedOwned(projectDir, newLane, prepared));
+}
+
+function writeSeedOwned(projectDir, newLane, prepared) {
+  const target = loadState(projectDir, { readOnly: true })?.lanes?.[newLane];
+  if (!target || target.pendingInjection || Object.values(target.agents ?? {}).some(slot => slot?.id || slot?.pendingId)) {
+    throw new BridgeError("The seed target must still be an empty lane with no pending delivery or linked session. Existing work was preserved.", {
+      code: "BRIDGE_SEED_TARGET_OCCUPIED", operation: "write lane seed",
+    });
+  }
   writeCheckpoint(projectDir, newLane, `${prepared.stem}${CHECKPOINT_KINDS.fullContext}`, prepared.doc);
   const deltaRel = writeCheckpoint(projectDir, newLane, `${prepared.stem}${CHECKPOINT_KINDS.delta}`, prepared.doc);
   const now = nowIso();

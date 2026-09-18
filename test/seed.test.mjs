@@ -198,6 +198,14 @@ test("writeSeed writes the seed as both a delta and a full-context checkpoint, s
   assert.ok(fs.existsSync(safeCheckpointPath(project, fullRel)), "the full-context checkpoint was written beside the delta");
   assert.equal(path.resolve(project, fullContextFor(project, deltaRel)), safeCheckpointPath(project, fullRel), "delivery can point a road-trimmed seed at the full one");
 
+  const before = fs.readFileSync(statePath(project));
+  const dir = path.dirname(safeCheckpointPath(project, deltaRel));
+  const files = fs.readdirSync(dir).sort();
+  assert.throws(() => writeSeed(project, "target", { ...prepared, stem: prepared.stem.replace(/Z-/, "Z-retry-") }),
+    /pending|occupied|empty/, "preparing a seed does not authorize replacing a later pending delivery");
+  assert.deepEqual(fs.readFileSync(statePath(project)), before);
+  assert.deepEqual(fs.readdirSync(dir).sort(), files);
+
   fs.rmSync(project, { recursive: true });
 });
 
