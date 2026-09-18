@@ -13,6 +13,9 @@ contents must be 32-128 cryptographically random URL-safe characters; for
 example, use Node's `crypto.randomBytes(32).toString('hex')`, stored with mode
 0600. Do not put tokens in command arguments, URLs, source control or logs.
 The server directory must already exist with mode0700 on POSIX.
+Startup acquires and releases the store's stable `.share.guard` before listening.
+Missing native locking or an unusable guard refuses startup with a diagnostic;
+the server does not report readiness and defer that failure to the first upload.
 
 ```sh
 bridge share serve --dir /private/share-store --token-file /private/share-token --port 8787

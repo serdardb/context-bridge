@@ -134,6 +134,8 @@ export async function startArtifactServer({ directory, tokenFile, port = 0, quot
     assertIdentity();
     return withKernelLockSync(guard, () => { assertIdentity(); return fn(); });
   };
+  // Do not announce readiness when the store's ownership mechanism is unusable.
+  owned(() => {});
   const read = hash => {
     const bytes = readOwnedFile(path.join(identity, hash), { maxBytes: MAX_RECORD_BYTES, missing: true });
     if (!bytes) return null;

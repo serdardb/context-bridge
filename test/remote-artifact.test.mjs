@@ -69,6 +69,23 @@ test("real remote CLI keeps sharing explicit, opaque, expiring and separate from
   const f = fixture();
   let service;
   try {
+    const unavailable = path.join(f.root, "missing-native.cjs");
+    fs.writeFileSync(unavailable, `const Module = require('node:module');
+const load = Module._load;
+Module._load = function(name, ...args) {
+  if (name === 'koffi') throw Object.assign(new Error('synthetic missing native backend'), { code: 'MODULE_NOT_FOUND' });
+  return load.call(this, name, ...args);
+};`);
+    const refused = await cli(f.project, ["share", "serve", "--dir", f.directory,
+      "--token-file", f.tokenFile, "--json"], {
+      NODE_OPTIONS: `--require=${unavailable}`, CONTEXT_BRIDGE_HOME: path.join(f.root, "unused-runtime"),
+    });
+    assert.equal(refused.status, 1, "unusable storage must refuse before reporting a listening server");
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /Native locking is unavailable/);
+    assert.match(refused.stderr, /bridge doctor --json/);
+    assert.equal(refused.stderr.includes("synthetic missing native backend"), false);
+    assert.deepEqual(fs.readdirSync(f.directory), []);
     const started = await cliServer(f); service = started;
     const options = { endpoint: started.endpoint, tokenFile: f.tokenFile, allowLoopbackHttp: true };
     const env = { CONTEXT_BRIDGE_HOME: path.join(f.root, "unused-runtime") };
@@ -76,7 +93,7 @@ test("real remote CLI keeps sharing explicit, opaque, expiring and separate from
     const preview = await cli(f.project, ["share", "send", f.sealedFile, ...common], env);
     assert.equal(preview.status, 0, preview.stderr);
     assert.equal(JSON.parse(preview.stdout).applied, false);
-    assert.deepEqual(fs.readdirSync(f.directory), []);
+    assert.deepEqual(fs.readdirSync(f.directory), [".share.guard"]);
     const sent = await cli(f.project, ["share", "send", f.sealedFile, ...common, "--apply"], env);
     assert.equal(sent.status, 0, sent.stderr);
     const hash = JSON.parse(sent.stdout).hash;
