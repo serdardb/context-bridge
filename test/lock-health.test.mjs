@@ -70,6 +70,7 @@ test("a stalled native backend cannot hang diagnostics", { timeout: 15000 }, () 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-stall-"));
   try {
     fs.copyFileSync(path.join(repo, "src/locking.mjs"), path.join(root, "locking.mjs"));
+    fs.copyFileSync(path.join(repo, "src/util.mjs"), path.join(root, "util.mjs"));
     fs.copyFileSync(path.join(repo, "src/publication.mjs"), path.join(root, "publication.mjs"));
     fs.mkdirSync(path.join(root, "node_modules/koffi"), { recursive: true });
     fs.writeFileSync(path.join(root, "node_modules/koffi/index.js"),
@@ -89,6 +90,7 @@ test("native acquisition errors retain errno without leaking a stack", { skip: p
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-native-error-"));
   try {
     fs.copyFileSync(path.join(repo, "src/locking.mjs"), path.join(root, "locking.mjs"));
+    fs.copyFileSync(path.join(repo, "src/util.mjs"), path.join(root, "util.mjs"));
     fs.copyFileSync(path.join(repo, "src/publication.mjs"), path.join(root, "publication.mjs"));
     fs.mkdirSync(path.join(root, "node_modules/koffi"), { recursive: true });
     fs.writeFileSync(path.join(root, "node_modules/koffi/index.js"),

@@ -4,7 +4,7 @@
 // pending markers — never transcripts.
 import fs from "node:fs";
 import path from "node:path";
-import { writeJsonAtomic, writeFileExclusive, readOwnedFile, nowIso, fileExists, log, dim, OK, processAlive, BridgeError } from "./util.mjs";
+import { createDirDurable, writeJsonAtomic, writeFileExclusive, readOwnedFile, nowIso, fileExists, log, dim, OK, processAlive, BridgeError } from "./util.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX, assertCheckpointName } from "./checkpoint-kinds.mjs";
@@ -723,8 +723,8 @@ function ensureStateOwned(projectDir) {
     }
     s = defaultState(projectDir);
     saveState(projectDir, s);
-    fs.mkdirSync(safeCheckpointsDir(projectDir, DEFAULT_LANE), { recursive: true });
-    fs.mkdirSync(logsDir(projectDir), { recursive: true });
+    createDirDurable(safeCheckpointsDir(projectDir, DEFAULT_LANE));
+    createDirDurable(logsDir(projectDir));
     // Global runtime storage has no project-tree footprint, so it must not
     // modify the user's Git configuration as a side effect of first use.
     if (process.env.CONTEXT_BRIDGE_STORAGE === "project") ensureGitignore(projectDir);
@@ -774,7 +774,7 @@ function withStateLock(projectDir, fn, { staleMs = 15000 } = {}) {
 }
 
 function withStatePidLock(lock, fn, staleMs) {
-  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  createDirDurable(path.dirname(lock));
   let held = false;
   for (;;) {
     let fd;
@@ -1090,7 +1090,7 @@ export function writeCheckpoint(projectDir, lane, name, content) {
   return withProjectRuntimeLock(projectDir, () => {
     if (process.env.CONTEXT_BRIDGE_STORAGE !== "project") ensureRuntimeStore(projectDir);
     const dir = safeCheckpointsDir(projectDir, lane);
-    fs.mkdirSync(dir, { recursive: true });
+    createDirDurable(dir);
     const file = path.join(dir, name);
     writeFileExclusive(file, content);
     return checkpointRel(projectDir, lane, name);

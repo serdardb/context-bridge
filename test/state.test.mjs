@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureState, loadState, STATE_VERSION, safeCheckpointPath, statePath, bridgeDir, checkpointsDir } from "../src/state.mjs";
-import { writeJsonAtomic, writeFileExclusive, processAlive } from "../src/util.mjs";
+import { createDirDurable, writeJsonAtomic, writeFileExclusive, processAlive } from "../src/util.mjs";
 
 test("process ownership requires ESRCH before treating a valid owner as dead", () => {
   const kill = process.kill;
@@ -145,6 +145,62 @@ test("atomic publication syncs new directory parents including the existing ance
       assert.deepEqual(fs.readdirSync(leaf), ["state.json"], "post-publication failure must retain the destination only");
       for (const fd of descriptors) assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
     } finally { t.mock.restoreAll(); }
+  }
+});
+
+test("runtime directory creation persists ancestors, avoids existing-directory syncs and retains failures", { skip: process.platform === "win32" }, (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-runtime-dirs-")));
+  const savedHome = process.env.CONTEXT_BRIDGE_HOME;
+  const savedStorage = process.env.CONTEXT_BRIDGE_STORAGE;
+  const open = fs.openSync, sync = fs.fsyncSync;
+  const paths = new Map(), synced = [];
+  let failAt = null;
+  t.mock.method(fs, "openSync", (file, ...args) => {
+    const fd = open(file, ...args);
+    paths.set(fd, path.resolve(String(file)));
+    return fd;
+  });
+  t.mock.method(fs, "fsyncSync", fd => {
+    if (fs.fstatSync(fd).isDirectory()) {
+      const dir = paths.get(fd);
+      synced.push(dir);
+      if (dir === failAt) throw Object.assign(new Error("directory sync failed"), { code: "EIO" });
+    }
+    return sync(fd);
+  });
+  try {
+    const first = path.join(root, "fresh"), leaf = path.join(first, "nested");
+    createDirDurable(leaf);
+    assert.deepEqual(synced, [first, root], "include the FIRST EXISTING ancestor before returning");
+    synced.length = 0;
+    createDirDurable(leaf);
+    assert.deepEqual(synced, [], "existing directories must cause no fsync");
+    failAt = root;
+    const failed = path.join(root, "failed", "nested");
+    assert.throws(() => createDirDurable(failed), error => {
+      assert.equal(error.code, "BRIDGE_DIRECTORY_UNCERTAIN");
+      assert.notEqual(error.published, true, "no dependent file was published");
+      assert.match(error.message, /retained/);
+      return true;
+    });
+    assert.deepEqual(fs.readdirSync(failed), [], "retain directories without publishing files");
+    for (const fd of paths.keys()) assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    failAt = null;
+    synced.length = 0;
+    const project = path.join(root, "project"), home = path.join(root, "home");
+    fs.mkdirSync(project);
+    process.env.CONTEXT_BRIDGE_HOME = home;
+    delete process.env.CONTEXT_BRIDGE_STORAGE;
+    ensureState(project);
+    assert.ok(synced.includes(root), "first runtime home entry must be synced by real initialization");
+    assert.ok(synced.includes(path.join(home, "projects")), "real store creation must persist the UUID entry");
+    assert.ok(fs.existsSync(statePath(project)));
+    assert.equal(fs.existsSync(path.join(project, ".bridge")), false);
+  } finally {
+    t.mock.restoreAll();
+    if (savedHome === undefined) delete process.env.CONTEXT_BRIDGE_HOME; else process.env.CONTEXT_BRIDGE_HOME = savedHome;
+    if (savedStorage === undefined) delete process.env.CONTEXT_BRIDGE_STORAGE; else process.env.CONTEXT_BRIDGE_STORAGE = savedStorage;
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
 

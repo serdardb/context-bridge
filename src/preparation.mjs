@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { safeCheckpointsDir, safeCheckpointPath, checkpointRel, withProjectStateReadLock,
   CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
-import { writeFileExclusive, readOwnedFile } from "./util.mjs";
+import { createDirDurable, writeFileExclusive, readOwnedFile } from "./util.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
 
 const STEM = new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")})$`);
@@ -39,7 +39,7 @@ export function beginPreparation(projectDir, lane, stem, contents) {
   return withProjectStateReadLock(projectDir, () => {
     const dir = safeCheckpointsDir(projectDir, lane);
     const journal = path.join(dir, journalName(stem));
-    fs.mkdirSync(dir, { recursive: true });
+    createDirDurable(dir);
     for (const { suffix } of files) {
       try { fs.lstatSync(path.join(dir, stem + suffix)); }
       catch (error) { if (error.code === "ENOENT") continue; throw error; }

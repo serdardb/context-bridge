@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { ensureRuntimeStore, gitRoot, projectIdentity, storageHome, withProjectRuntimeLock } from "./storage.mjs";
 import { ensureState, loadState, mutateState, withProjectStateReadLock, latestCheckpoint, writeCheckpoint, checkpointRel, safeCheckpointPath, isValidLaneName, CHECKPOINT_KINDS, DEFAULT_LANE } from "./state.mjs";
-import { writeJsonAtomic, writeFileExclusive, readOwnedFile, readRegularFile, BridgeError } from "./util.mjs";
+import { createDirDurable, syncPublishedDirectory, writeJsonAtomic, writeFileExclusive, readOwnedFile, readRegularFile, BridgeError } from "./util.mjs";
 import { readFullContextSections, transformFullContext } from "./delta.mjs";
 import { withKernelLockSync, waitForLock } from "./locking.mjs";
 
@@ -17,7 +17,7 @@ function withImportLock(hash, fn) {
 
 function withImportPidLock(hash, fn) {
   const dir = path.join(storageHome(), "imports");
-  fs.mkdirSync(dir, { recursive: true });
+  createDirDurable(dir);
   const lock = path.join(dir, `${hash}.lock`);
   for (;;) {
     try {
@@ -206,7 +206,7 @@ export function exportArtifact(projectDir, outputPath, { lane = DEFAULT_LANE, si
   if (key) artifact.signature = { algorithm: "Ed25519", keyId: keyId(key),
     value: crypto.sign(null, signingData(payload), key).toString("base64") };
   const destination = path.resolve(outputPath);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  createDirDurable(path.dirname(destination));
   const temp = `${destination}.tmp-${process.pid}`;
   let fd;
   let owned = false;
@@ -218,6 +218,7 @@ export function exportArtifact(projectDir, outputPath, { lane = DEFAULT_LANE, si
     fs.closeSync(fd);
     fd = undefined;
     fs.renameSync(temp, destination);
+    syncPublishedDirectory(destination);
   } finally {
     if (fd !== undefined) try { fs.closeSync(fd); } catch {}
     if (owned) try { fs.rmSync(temp, { force: true }); } catch {}
@@ -253,11 +254,11 @@ export function decodeArtifact(bytes, { verifyKey = null } = {}) {
 
 function artifactStore(create = false) {
   let dir = storageHome();
-  if (create) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (create) createDirDurable(dir, { mode: 0o700 });
   for (const part of ["artifacts", "sha256"]) {
     dir = path.join(dir, part);
     if (create) {
-      try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+      createDirDurable(dir, { mode: 0o700 });
     }
     const stat = fs.lstatSync(dir);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe artifact store directory; refusing linked or non-directory storage.");

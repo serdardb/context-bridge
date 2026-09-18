@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { writeJsonAtomic, writeFileExclusive, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
+import { createDirDurable, writeJsonAtomic, writeFileExclusive, readOwnedFile, processAlive as processIsAlive, BridgeError } from "./util.mjs";
 import { CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./checkpoint-kinds.mjs";
 import { withKernelLockSync, waitForLock, processCreationToken } from "./locking.mjs";
 import { directoryIdentity as fileIdentity, isVerifiedDirectoryIdentity } from "./directory-identity.mjs";
@@ -133,7 +133,7 @@ export function withProjectOperation(projectDir, operation, fn) {
     const { id } = projectIdentity(projectDir);
     projectOperations(id); // validate existing parents before creating anything
     const dir = path.join(storageHome(), "operations", id);
-    fs.mkdirSync(dir, { recursive: true });
+    createDirDurable(dir);
     const file = path.join(dir, `${crypto.randomUUID()}.json`);
     const ownerCreationToken = processCreationToken(process.pid);
     if (process.platform === "win32" && !ownerCreationToken) {
@@ -244,7 +244,7 @@ function readRegistry() {
 }
 
 function writeRegistry(registry) {
-  fs.mkdirSync(storageHome(), { recursive: true });
+  createDirDurable(storageHome());
   writeJsonAtomic(registryPath(), registry);
 }
 
@@ -272,7 +272,7 @@ function withRegistryLock(fn) {
 }
 
 function withRegistryPidLock(fn) {
-  fs.mkdirSync(storageHome(), { recursive: true });
+  createDirDurable(storageHome());
   const lock = registryLockPath();
   let held = false;
   for (;;) {
@@ -311,7 +311,7 @@ function withMigrationLock(projectId, fn) {
 
 function withMigrationPidLock(projectId, fn) {
   const dir = path.join(storageHome(), "migrations");
-  fs.mkdirSync(dir, { recursive: true });
+  createDirDurable(dir);
   const lock = path.join(dir, `${projectId}.lock`);
   let held = false;
   for (;;) {
@@ -543,7 +543,7 @@ export function runtimeStoreDir(projectDir, { createIdentity = false } = {}) {
 export function ensureProjectStore(projectDir) {
   return withProjectRuntimeLock(projectDir, () => {
     const dir = projectStoreDir(projectDir, { createIdentity: true });
-    fs.mkdirSync(dir, { recursive: true });
+    createDirDurable(dir);
     return dir;
   });
 }
@@ -552,7 +552,7 @@ export function ensureProjectStore(projectDir) {
 export function ensureRuntimeStore(projectDir) {
   if (process.env.CONTEXT_BRIDGE_STORAGE === "project") {
     const dir = legacyBridgeDir(projectDir);
-    fs.mkdirSync(dir, { recursive: true });
+    createDirDurable(dir);
     return dir;
   }
   return withProjectRuntimeLock(projectDir, () => {

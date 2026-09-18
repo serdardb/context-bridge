@@ -5,6 +5,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
+import { createDirDurable } from "./util.mjs";
 
 const require = createRequire(import.meta.url);
 const entered = new Set();
@@ -197,7 +198,7 @@ export function withKernelLockSync(file, fn) {
 
 function acquireKernelLock(file, fn) {
   const native = lockBackend();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  createDirDurable(path.dirname(file));
   let key = path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
   let existing;
   try { existing = fs.lstatSync(key); } catch (error) { if (error.code !== "ENOENT") throw error; }

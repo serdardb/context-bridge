@@ -82,6 +82,7 @@ test("legacy free-form checkpoints export whole without guessing structured fiel
 test("export preserves an existing staging file and cleans only its own failed write", () => {
   const source = project();
   const write = fs.writeFileSync;
+  const sync = fs.fsyncSync;
   try {
     const output = path.join(source, "context.cbctx");
     const temp = `${output}.tmp-${process.pid}`;
@@ -105,8 +106,21 @@ test("export preserves an existing staging file and cleans only its own failed w
     exportArtifact(source, output);
     assert.equal(verifyArtifact(output).kind, "context-bridge-context");
     assert.equal(fs.existsSync(temp), false);
+    if (process.platform !== "win32") {
+      fs.fsyncSync = fd => {
+        if (fs.fstatSync(fd).isDirectory()) {
+          assert.equal(verifyArtifact(output).kind, "context-bridge-context", "sync follows publication");
+          throw Object.assign(new Error("export directory sync failed"), { code: "EIO" });
+        }
+        return sync(fd);
+      };
+      assert.throws(() => exportArtifact(source, output), { code: "BRIDGE_PUBLICATION_UNCERTAIN", published: true });
+      assert.equal(verifyArtifact(output).kind, "context-bridge-context", "uncertain publication must retain complete output");
+      assert.equal(fs.existsSync(temp), false);
+    }
   } finally {
     fs.writeFileSync = write;
+    fs.fsyncSync = sync;
     fs.rmSync(source, { recursive: true, force: true });
   }
 });

@@ -19,6 +19,11 @@ test("artifact cache is global, idempotent, content-addressed and verifies every
     exportArtifact(source, file);
     const original = fs.readFileSync(file);
     const cached = cacheArtifact(file);
+    if (process.platform !== "win32") {
+      for (const dir of [home, path.join(home, "artifacts"), path.join(home, "artifacts", "sha256")]) {
+        assert.equal(fs.statSync(dir).mode & 0o777, 0o700, "durable cache creation retains private directory permissions");
+      }
+    }
     assert.equal(cached.reference, `sha256:${crypto.createHash("sha256").update(original).digest("hex")}`);
     assert.equal(cached.path, path.join(home, "artifacts", "sha256", cached.reference.slice(7) + ".cbctx"));
     assert.equal(cached.created, true);

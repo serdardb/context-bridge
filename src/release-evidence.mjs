@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { storageHome } from "./storage.mjs";
-import { BridgeError, readOwnedFile, writeJsonAtomic } from "./util.mjs";
+import { createDirDurable, BridgeError, readOwnedFile, writeJsonAtomic } from "./util.mjs";
 
 // A local acceptance receipt, not a signature or a substitute for human review.
 export const RELEASE_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -90,7 +90,7 @@ export function prepareReleaseEvidence(root, { execute = runGate } = {}) {
     throw refusal("Release preparation exceeded the acceptance window; no receipt was written.");
   }
   const receipt = { schema: 2, root, startedAt, completedAt, binding, gates };
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  createDirDurable(path.dirname(file), { mode: 0o700 });
   writeJsonAtomic(file, receipt);
   return { passed: true, file, binding, completedAt };
 }

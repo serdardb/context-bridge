@@ -332,6 +332,27 @@ export function syncPublishedDirectory(file) {
   }
 }
 
+function syncCreatedDirectoryParents(directory, firstCreated) {
+  if (!firstCreated || process.platform === "win32") return;
+  const first = path.resolve(firstCreated);
+  for (let dir = path.resolve(directory);; dir = path.dirname(dir)) {
+    syncPublishedDirectory(dir);
+    if (dir === first) break;
+  }
+}
+
+/** Persist newly created entries only; existing directories need no extra sync. */
+export function createDirDurable(directory, { mode } = {}) {
+  const firstCreated = fs.mkdirSync(directory, { recursive: true, mode });
+  try { syncCreatedDirectoryParents(directory, firstCreated); }
+  catch (cause) {
+    throw new BridgeError("Directory creation could not be durably confirmed. Created directories were retained; dependent file publication was not started by this operation.", {
+      code: "BRIDGE_DIRECTORY_UNCERTAIN", operation: "create runtime directory", cause,
+    });
+  }
+  return firstCreated;
+}
+
 /** Publish complete evidence without replacing an existing destination. */
 export function writeFileExclusive(file, content) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomUUID()}`);
@@ -375,14 +396,7 @@ export function writeFileAtomic(p, content) {
     fd = undefined;
     fs.renameSync(tmp, p);
     syncPublishedDirectory(p);
-    if (firstCreated && process.platform !== "win32") {
-      const first = path.resolve(firstCreated);
-      // Sync each new directory's parent, including the first existing ancestor.
-      for (let dir = path.resolve(path.dirname(p));; dir = path.dirname(dir)) {
-        syncPublishedDirectory(dir);
-        if (dir === first) break;
-      }
-    }
+    syncCreatedDirectoryParents(path.dirname(p), firstCreated);
   } finally {
     // Remove only this invocation's temporary file. After a successful rename,
     // later sync errors must leave the already-published destination untouched.
