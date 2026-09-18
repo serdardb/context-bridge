@@ -8,31 +8,25 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { seedLane, prepareSeed, writeSeed, bindSeed, unbindSeed, composeSeed, sectionBody, seedBinding } from "../src/seed.mjs";
 import { fullContextFor } from "../src/delivery.mjs";
+import { composeFullContext } from "../src/delta.mjs";
 import { loadState, statePath, bridgeDir, checkpointsDir, safeCheckpointPath, emptyLane, STATE_VERSION } from "../src/state.mjs";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BRIDGE = path.join(ROOT, "bin", "bridge.mjs");
 
-const FULL = [
-  "# Context",
-  "## Summary",
-  "did the thing",
-  "## Conversation",
-  "a long chat that must not cross into the seed",
-  "## Decisions",
-  "- use mutateProject",
-  "- reject bad names",
-  "## Work",
-  "- uncommitted: M src/x.mjs",
-  "## Next",
-  "- finish the seed",
-].join("\n");
+const FULL = composeFullContext({ fromAgent: "claude", summary: "did the thing",
+  conversation: [{ role: "assistant", at: "2026-08-04T00:00:00.000Z",
+    text: "a long chat that must not cross into the seed\n## Decisions\nCONVERSATION_NOT_A_DECISION\n## Next\nCONVERSATION_NOT_A_NEXT_STEP" }],
+  decisions: ["use mutateProject", "reject bad names"], work: ["uncommitted: M src/x.mjs"], next: ["finish the seed"],
+});
 
 test("sectionBody extracts a section and treats the empty placeholder as nothing", () => {
   assert.equal(sectionBody(FULL, "Decisions"), "- use mutateProject\n- reject bad names");
   assert.equal(sectionBody(FULL, "Next"), "- finish the seed");
   assert.equal(sectionBody(FULL, "Nope"), "", "an absent section is empty");
-  assert.equal(sectionBody("## Decisions\n\nNo explicit decisions were recorded.", "Decisions"), "", "the placeholder is not copied forward");
+  assert.equal(sectionBody(composeFullContext({ decisions: [], next: [], work: [] }), "Decisions"), "", "the placeholder is not copied forward");
+  assert.throws(() => sectionBody("## Decisions\nlegacy ambiguous content", "Decisions"), /index/i);
+  assert.throws(() => sectionBody(FULL.replace("reject bad names", "reject bad dates"), "Decisions"), /index/i);
 });
 
 test("composeSeed carries decisions, next, git and files but never the conversation", () => {
@@ -79,6 +73,7 @@ test("seedLane writes a seed doc without the conversation and leaves an unbound 
   assert.match(doc, /- use mutateProject/, "decisions crossed into the seed");
   assert.match(doc, /- finish the seed/, "next crossed");
   assert.doesNotMatch(doc, /a long chat that must not cross/, "the conversation did NOT cross");
+  assert.doesNotMatch(doc, /CONVERSATION_NOT_A_/, "conversation headings are never seed fields");
 
   fs.rmSync(project, { recursive: true });
 });
@@ -111,10 +106,12 @@ test("bridge lane new --seed validates the source before creating anything", () 
   fs.writeFileSync(secret, "## Decisions\nPRIVATE_OUTSIDE_EVIDENCE\n");
   const full = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-full.md");
   const audit = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-audit.json");
-  for (const mode of ["symlink", "hardlink", "directory", "invalid-audit", "link-during-read", "rewrite-during-read"]) {
+  for (const mode of ["symlink", "hardlink", "directory", "invalid-audit", "legacy-headings", "invalid-index", "link-during-read", "rewrite-during-read"]) {
     if (mode === "symlink") fs.symlinkSync(secret, full);
     else if (mode === "hardlink") fs.linkSync(secret, full);
     else if (mode === "directory") fs.mkdirSync(full);
+    else if (mode === "legacy-headings") fs.writeFileSync(full, "## Conversation\n## Decisions\nPRIVATE_OUTSIDE_EVIDENCE\n");
+    else if (mode === "invalid-index") fs.writeFileSync(full, FULL.replace("reject bad names", "reject bad dates"));
     else { fs.writeFileSync(full, FULL); if (mode === "invalid-audit") fs.writeFileSync(audit, "{broken"); }
     fs.utimesSync(full, new Date("2020-01-01"), new Date("2020-01-01"));
     const linked = path.join(project, "concurrent-link");
@@ -143,9 +140,13 @@ test("bridge lane new --seed validates the source before creating anything", () 
     fs.rmSync(linked, { force: true });
   }
 
+  fs.writeFileSync(full, FULL);
   const ok = run("new", "feature", "--seed", "main");
   assert.equal(ok.status, 0, "seeding from an existing lane works");
   assert.ok(loadState(project).lanes.feature.pendingInjection?.seed, "feature carries an unbound seed");
+  const deliveredSeed = fs.readFileSync(safeCheckpointPath(project, loadState(project).lanes.feature.pendingInjection.deltaFile), "utf8");
+  assert.match(deliveredSeed, /use mutateProject/);
+  assert.doesNotMatch(deliveredSeed, /CONVERSATION_NOT_A_/);
 
   fs.rmSync(project, { recursive: true });
 });

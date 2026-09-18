@@ -463,6 +463,10 @@ The source lane is an explicit launch link, not a second owner of those sessions
 `status --json` follows that link for pending/delivery diagnostics without changing
 lanes. Run handoff and context-management commands from the worktree itself.
 Seeding from a linked worktree lane is likewise done inside that worktree.
+Seed fields are read from the checkpoint's validated section index, not Markdown
+headings inside a conversation. If an older checkpoint has no index, create a
+new handoff on the source lane before seeding. An invalid index refuses seeding
+before a new lane is created; the original evidence remains untouched.
 If seed creation fails, automatic rollback removes only a still-empty lane
 record with no live launcher. Existing files are retained for inspection, not
 recursively deleted. A changed lane or failed state write is reported as an

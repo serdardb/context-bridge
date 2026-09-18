@@ -14,7 +14,7 @@ import {
   mutateState,
   CHECKPOINT_KINDS,
 } from "./state.mjs";
-import { gitDelta } from "./delta.mjs";
+import { gitDelta, readFullContextSections } from "./delta.mjs";
 import { latestManifest } from "./audit.mjs";
 import { nowIso, BridgeError } from "./util.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
@@ -22,21 +22,21 @@ import { AGENT_IDS } from "./agents/index.mjs";
 const stamp = () => nowIso().replace(/[:.]/g, "-");
 
 /**
- * The body under `## <name>` up to the next `## ` heading, trimmed. Decisions and
- * Next are not stored as data anywhere — they live only as text the departing agent
- * wrote into the full-context checkpoint — so a seed reads them back from our own
- * known layout. Returns "" when the section is absent or was the empty placeholder.
+ * Extract a writer-indexed section, never a heading inside conversation content.
+ * Legacy unindexed context is ambiguous and cannot safely supply seed fields.
  */
 export function sectionBody(text, name) {
   if (!text) return "";
-  const head = new RegExp(`^## ${name}\\s*$`, "m").exec(text);
-  if (!head) return "";
-  const after = text.slice(head.index + head[0].length);
-  const nextHead = /^## /m.exec(after);
-  const body = (nextHead ? after.slice(0, nextHead.index) : after).trim();
+  let sections;
+  try { sections = readFullContextSections(text); }
+  catch (cause) {
+    throw new BridgeError("The source checkpoint section index is invalid; no seed was created.", { cause });
+  }
+  if (!sections) throw new BridgeError("The source checkpoint has no section index. Create a new handoff on the source lane before seeding; no conversation headings were treated as decisions.");
+  const body = (sections[name.toLowerCase()] ?? "").trim();
   // The composers write a placeholder line when a section is empty; a seed should
   // treat that as nothing rather than copy the placeholder forward.
-  if (/^_?No .*recorded\.?_?$/i.test(body) || /^_?Nothing was flagged.*_?$/i.test(body)) return "";
+  if (/^(?:- )?_?No .*recorded\.?_?$/i.test(body) || /^(?:- )?_?Nothing was flagged.*_?$/i.test(body)) return "";
   return body;
 }
 
