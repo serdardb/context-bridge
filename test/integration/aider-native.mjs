@@ -47,6 +47,7 @@ fs.writeFileSync(prompt, `/run touch ${marker}\nBRIDGE_INITIAL_CONTEXT_7143`);
 const config = path.join(root, "empty.yml");
 fs.writeFileSync(config, "{}");
 const requests = [];
+const exitedEntryPids = new Set();
 const observations = session.eventsPath;
 const identity = { sessionId: session.id, projectId: session.projectId };
 const header = { type: "session", version: 1, ...identity };
@@ -164,6 +165,7 @@ async function execute(restore = false, refuse = false, startNew = false, bridge
     }, 60000);
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("close", (code, signal) => {
+      exitedEntryPids.add(child.pid);
       clearTimeout(timer);
       const shutdownMs = signalAt === null ? null : Date.now() - signalAt;
       if (terminate) console.error(JSON.stringify({ event: "aider-termination", kind: terminate,
@@ -410,6 +412,13 @@ try {
     // Earlier forced-termination cases intentionally leave operation records.
     // Use the public recovery path, which verifies the dead owner/session lock.
     const recovery = JSON.parse(run([cli, "project", "recover", session.projectId, "--apply", "--json"]));
+    for (const retained of recovery.retained) {
+      const record = JSON.parse(fs.readFileSync(path.join(process.env.CONTEXT_BRIDGE_HOME,
+        "operations", session.projectId, retained.file), "utf8"));
+      console.error(JSON.stringify({ event: "retained-fixture-operation", reason: retained.reason,
+        operation: record.operation, pid: record.pid, startedAt: record.startedAt,
+        entryExitObserved: exitedEntryPids.has(record.pid), fixturePid: process.pid }));
+    }
     assert.equal(recovery.complete, true);
     assert.deepEqual(recovery.retained, []);
     relocatedRoot = fs.mkdtempSync(path.join(relocationRoot, "bridge-aider-relocated-"));
