@@ -152,7 +152,11 @@ try {
       migrated = JSON.parse(run(["--input-type=module", "-e", `import fs from 'node:fs'; import path from 'node:path';
         import {loadState,bridgeDir,safeCheckpointPath} from ${JSON.stringify(stateModule)};
         const s=loadState(process.cwd(),{readOnly:true}); const delta=fs.readFileSync(safeCheckpointPath(process.cwd(),s.pendingInjection.deltaFile),'utf8');
-        fs.renameSync(bridgeDir(process.cwd()),path.join(process.cwd(),'.bridge'));
+        // Fixture preparation may cross devices after adoption. All writers
+        // have exited; preserve the bytes before retiring this owned copy.
+        const store=bridgeDir(process.cwd()), legacy=path.join(process.cwd(),'.bridge');
+        fs.cpSync(store,legacy,{recursive:true,errorOnExist:true,force:false});
+        fs.rmSync(store,{recursive:true});
         // The published legacy store predates kernel guards. All fixture
         // writers have exited; do not mislabel a new guard as legacy data.
         fs.rmSync(path.join(process.cwd(),'.bridge','state.json.lock.guard'),{force:true});
