@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadState, laneDirsOnDisk, isValidLaneName, readableCheckpointsDir, CHECKPOINT_KINDS, CONSUMED_SUFFIX, DEFAULT_LANE } from "./state.mjs";
 import { AGENT_IDS } from "./agents/index.mjs";
-import { readOwnedFile } from "./util.mjs";
+import { readOwnedFile, BridgeError } from "./util.mjs";
 
 function lanesFor(projectDir, wanted, issues) {
-  if (wanted) {
-    if (!isValidLaneName(wanted)) throw new Error(`Invalid lane name '${wanted}'.`);
+  if (wanted !== null) {
+    if (!isValidLaneName(wanted)) throw new BridgeError(`Invalid lane name '${wanted}'.`);
     return [wanted];
   }
   const state = loadState(projectDir, { readOnly: true });
@@ -51,7 +51,7 @@ function matches(text, needle) {
 
 export function searchProject(projectDir, query, { lane = null, agent = null, branch = null, since = null, until = null } = {}) {
   if (typeof query !== "string" || !query.trim()) throw new Error("Search needs a non-empty query.");
-  if (agent && !AGENT_IDS.includes(agent)) throw new Error(`Unknown search agent '${agent}'.`);
+  if (agent !== null && !AGENT_IDS.includes(agent)) throw new BridgeError(`Unknown search agent '${agent}'.`);
   if (branch !== null && (typeof branch !== "string" || !branch.trim())) throw new Error("Search branch must not be empty.");
   const lower = dateBoundary(since);
   const upper = dateBoundary(until, true);

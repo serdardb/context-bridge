@@ -91,6 +91,12 @@ test("search CLI keeps option values out of the query and searches consumed inbo
   assert.deepEqual(JSON.parse(result.stdout).results.map((entry) => entry.file), [names[2], names[1]]);
   const invalid = spawnSync(process.execPath, [cli, "search", "migration", "--lane"], { cwd: project, encoding: "utf8" });
   assert.notEqual(invalid.status, 0, "missing flag values must not silently broaden the search");
+  for (const name of ["lane", "agent"]) {
+    const empty = spawnSync(process.execPath, [cli, "search", "migration", `--${name}=`, "--json"], { cwd: project, encoding: "utf8" });
+    assert.equal(empty.status, 1, `empty ${name} must not remove the search filter`);
+    assert.equal(empty.stdout, "", "refused filters must not emit evidence");
+    assert.throws(() => searchProject(project, "migration", { [name]: "" }), /Invalid lane|Unknown search agent/);
+  }
   const unicodeName = "2026-09-18T00-00-00-000Z-claude-to-codex.md";
   writeCheckpoint(project, "main", unicodeName, `${"\u0130".repeat(80)}\nTARGET evidence\nOther line`);
   const unicode = spawnSync(process.execPath, [cli, "search", "target", "--json"], {
