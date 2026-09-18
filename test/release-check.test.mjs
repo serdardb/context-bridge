@@ -158,6 +158,7 @@ test("CI verification requires the latest exact-HEAD run and successful nonempty
       calls.push(args);
       assert.equal(command, "gh");
       assert.equal(options.timeout, 30000);
+      assert.equal(options.killSignal, "SIGKILL");
       return JSON.stringify(args[1] === "list" ? runs : { ...good, ...overrides });
     } });
     assert.equal(result.passed, expected);
@@ -177,4 +178,27 @@ test("release check reports all release gates", () => {
   assert.ok(report.checks.some((item) => item.name === "previous-tag"));
   assert.ok(report.checks.some((item) => item.name === "changelog-provenance"));
   assert.equal(report.checks.find((item) => item.name === "ci-head").passed, false, "a workflow file is not CI evidence");
+  const probe = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const calls = [];
+    cp.execFileSync = (command, args, options) => {
+      calls.push({ command, timeout: options.timeout, killSignal: options.killSignal });
+      throw Object.assign(new Error('synthetic command timeout'), { code: 'ETIMEDOUT' });
+    };
+    syncBuiltinESMExports();
+    const { releaseChecks } = await import(${JSON.stringify(new URL("../src/release.mjs", import.meta.url).href)});
+    console.log(JSON.stringify({ calls, report: releaseChecks(${JSON.stringify(root)}) }));
+  `], { encoding: "utf8", timeout: 5000 });
+  assert.equal(probe.status, 0, probe.stderr);
+  const timedOut = JSON.parse(probe.stdout);
+  assert.ok(timedOut.calls.some(call => call.command === "npm"));
+  assert.ok(timedOut.calls.some(call => call.command === "git"));
+  for (const call of timedOut.calls) {
+    assert.equal(call.timeout, call.command === "npm" ? 120000 : 30000);
+    assert.equal(call.killSignal, "SIGKILL");
+  }
+  for (const name of ["previous-tag", "working-tree", "package-files", "package-private-files", "changelog-provenance"]) {
+    assert.equal(timedOut.report.checks.find(item => item.name === name).passed, false, name);
+  }
 });

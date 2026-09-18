@@ -34,7 +34,9 @@ export function verifyChangelogProvenance(root) {
   try {
     const notes = changelogEvidenceEntries(fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8"));
     const evidence = JSON.parse(fs.readFileSync(path.join(root, "docs/release-evidence.json"), "utf8"));
-    const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000 });
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL",
+    });
     const baseTag = `v${notes.previousVersion}`;
     const base = git("rev-parse", "--verify", `${baseTag}^{commit}`).trim();
     git("merge-base", "--is-ancestor", base, "HEAD");

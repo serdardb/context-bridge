@@ -20,7 +20,9 @@ export function releaseChecks(root, { verifyCI = false } = {}) {
   const changelog = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
   let packageFiles = null;
   try {
-    const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 120000, killSignal: "SIGKILL",
+    });
     packageFiles = JSON.parse(raw)[0]?.files?.map((entry) => entry.path) ?? [];
   } catch {
     packageFiles = null;
@@ -50,7 +52,7 @@ export function releaseChecks(root, { verifyCI = false } = {}) {
 export function verifyReleaseCI(root, { run = execFileSync } = {}) {
   const head = git(root, ["rev-parse", "HEAD"]);
   if (!head) return check("ci-head", false, "Cannot resolve HEAD for CI verification.");
-  const options = { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 };
+  const options = { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000, killSignal: "SIGKILL" };
   try {
     const runs = JSON.parse(run("gh", ["run", "list", "--workflow", "ci.yml", "--commit", head,
       "--limit", "100", "--json", "databaseId,headSha,createdAt,attempt"], options));
@@ -73,7 +75,9 @@ export function verifyReleaseCI(root, { run = execFileSync } = {}) {
 
 function git(root, args) {
   try {
-    return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync("git", ["-C", root, ...args], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL",
+    }).trim();
   } catch {
     return null;
   }
