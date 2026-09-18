@@ -111,6 +111,43 @@ for (const failure of ["none", "file", ...(process.platform === "win32" ? [] : [
   assert.deepEqual(fs.readdirSync(dir), ["state.json"]);
 });
 
+test("atomic publication syncs new directory parents including the existing ancestor", { skip: process.platform === "win32" }, (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-ancestor-flush-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const originalSync = fs.fsyncSync;
+  for (const fail of [false, true]) {
+    const first = path.join(root, fail ? "failure" : "success");
+    const leaf = path.join(first, "nested"), file = path.join(leaf, "state.json");
+    const synced = [];
+    const descriptors = new Set();
+    t.mock.method(fs, "fsyncSync", (fd) => {
+      descriptors.add(fd);
+      const stat = fs.fstatSync(fd);
+      if (stat.isDirectory()) {
+        const dir = [leaf, first, root].find(candidate => {
+          const expected = fs.statSync(candidate);
+          return expected.dev === stat.dev && expected.ino === stat.ino;
+        });
+        assert.ok(dir, "only the new chain and its existing parent should be synced");
+        synced.push(dir);
+        assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { published: true });
+        if (fail && dir === root) throw Object.assign(new Error("ancestor sync failed"), { code: "EIO" });
+      }
+      return originalSync(fd);
+    });
+    try {
+      if (fail) assert.throws(() => writeJsonAtomic(file, { published: true }), {
+        code: "BRIDGE_PUBLICATION_UNCERTAIN", published: true,
+      });
+      else writeJsonAtomic(file, { published: true });
+      assert.deepEqual(synced, [leaf, first, root], "the FIRST EXISTING ancestor must also be synced");
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { published: true });
+      assert.deepEqual(fs.readdirSync(leaf), ["state.json"], "post-publication failure must retain the destination only");
+      for (const fd of descriptors) assert.throws(() => fs.fstatSync(fd), { code: "EBADF" });
+    } finally { t.mock.restoreAll(); }
+  }
+});
+
 test("exclusive publication retains linked bytes if directory sync fails", { skip: process.platform === "win32" }, (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-link-flush-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

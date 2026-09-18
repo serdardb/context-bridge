@@ -354,14 +354,15 @@ export function writeFileExclusive(file, content) {
 }
 
 /** Flush content, replace atomically, then sync its parent on POSIX.
- * Newly created ancestors and multi-file ordering require a separate protocol.
+ * Also sync parents of directories created here; caller-created directories
+ * and multi-file ordering require a separate protocol.
  */
 export function writeJsonAtomic(p, obj) {
   return writeFileAtomic(p, JSON.stringify(obj, null, 2) + "\n");
 }
 
 export function writeFileAtomic(p, content) {
-  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const firstCreated = fs.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = `${p}.tmp-${process.pid}-${randomUUID()}`;
   let fd;
   let owned = false;
@@ -374,6 +375,14 @@ export function writeFileAtomic(p, content) {
     fd = undefined;
     fs.renameSync(tmp, p);
     syncPublishedDirectory(p);
+    if (firstCreated && process.platform !== "win32") {
+      const first = path.resolve(firstCreated);
+      // Sync each new directory's parent, including the first existing ancestor.
+      for (let dir = path.resolve(path.dirname(p));; dir = path.dirname(dir)) {
+        syncPublishedDirectory(dir);
+        if (dir === first) break;
+      }
+    }
   } finally {
     // Remove only this invocation's temporary file. After a successful rename,
     // later sync errors must leave the already-published destination untouched.
