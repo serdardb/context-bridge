@@ -764,7 +764,21 @@ export async function main(argv) {
     }
 
     case "clean": {
-      if (flags.has("--staging") && ["--all", "--keep", "--days"].some((flag) => flags.has(flag))) {
+      let values;
+      try {
+        ({ values } = parseArgs({ args: argv.slice(1), allowPositionals: false, strict: true,
+          options: { staging: { type: "boolean" }, all: { type: "boolean" },
+            "dry-run": { type: "boolean" }, keep: { type: "string" }, days: { type: "string" }, lane: { type: "string" } } }));
+      } catch (cause) { throw new BridgeError("Invalid clean options; nothing was pruned.", { cause }); }
+      for (const name of ["keep", "days"]) {
+        if (values[name] === undefined) continue;
+        if (!/^\d+$/.test(values[name]) || !Number.isSafeInteger(Number(values[name]))) {
+          throw new BridgeError(`--${name} requires a nonnegative whole number; nothing was pruned.`);
+        }
+        values[name] = Number(values[name]);
+      }
+      if (values.lane !== undefined && !isValidLaneName(values.lane)) throw new BridgeError("Invalid --lane; nothing was pruned.");
+      if (values.staging && ["all", "keep", "days"].some((name) => values[name] !== undefined)) {
         throw new Error("Use clean --staging [--dry-run] [--lane NAME] separately from checkpoint retention options.");
       }
       // --lane scopes the prune to one lane; without it, every lane is pruned.
@@ -772,7 +786,7 @@ export async function main(argv) {
       // it must fall through to pruneCheckpoints, whose fail-closed path reports it
       // clearly and deletes nothing. Only a readable state with the lane genuinely
       // absent is an 'unknown lane' error.
-      const laneFlag = valueOf(argv, "--lane") || null;
+      const laneFlag = values.lane ?? null;
       if (laneFlag) {
         let known = null;
         try {
@@ -787,11 +801,11 @@ export async function main(argv) {
         }
       }
       const res = pruneCheckpoints(projectDir, {
-        staging: flags.has("--staging"),
-        keep: intFlag(argv, "--keep"),
-        days: intFlag(argv, "--days"),
-        all: flags.has("--all"),
-        dryRun: flags.has("--dry-run"),
+        staging: values.staging,
+        keep: values.keep,
+        days: values.days,
+        all: values.all,
+        dryRun: values["dry-run"],
         lane: laneFlag,
       });
       if (
@@ -852,7 +866,20 @@ export async function main(argv) {
         log(parsed.values.json ? JSON.stringify(result, null, 2) : `${OK} Lane ${result.lane}: ${result.path}`);
         return;
       }
-      process.exitCode = runLane(projectDir, args.slice(1), flags, valueOf(argv, "--seed"));
+      let parsed;
+      try {
+        parsed = parseArgs({ args: argv.slice(1), allowPositionals: true, strict: true,
+          options: { seed: { type: "string" }, yes: { type: "boolean" }, "dry-run": { type: "boolean" } } });
+      } catch (cause) { throw new BridgeError("Invalid lane options; no lane operation was performed.", { cause }); }
+      const action = parsed.positionals[0];
+      const allowed = { new: ["seed"], switch: [], rm: ["yes", "dry-run"] };
+      if ((action === undefined && Object.keys(parsed.values).length) ||
+          (action !== undefined && (!Object.hasOwn(allowed, action) || parsed.positionals.length !== 2 ||
+            Object.keys(parsed.values).some(key => !allowed[action].includes(key))))) {
+        throw new BridgeError("Invalid lane action or options; no lane operation was performed.");
+      }
+      process.exitCode = runLane(projectDir, parsed.positionals,
+        new Set(Object.keys(parsed.values).map(key => `--${key}`)), parsed.values.seed);
       return;
     }
 
@@ -893,12 +920,6 @@ function tailAfter(argv, cmd) {
   if (!cmd) return [...argv];
   const i = argv.indexOf(cmd);
   return i === -1 ? [...argv] : [...argv.slice(0, i), ...argv.slice(i + 1)];
-}
-
-function intFlag(argv, name) {
-  const v = valueOf(argv, name);
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 

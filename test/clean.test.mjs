@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { pruneCheckpoints, supersedePending } from "../src/clean.mjs";
 import { AGENT_IDS } from "../src/agents/index.mjs";
 import { defaultState, saveState, loadState, checkpointsDir, bridgeDir } from "../src/state.mjs";
@@ -707,6 +708,20 @@ test("clean --lane deletes only the named lane's checkpoints and leaves the othe
   const s = loadState(project);
   s.lanes.feature = { title: null, activeAgent: null, agents: {}, knownBy: {}, pendingHandoff: null, pendingInjection: null, git: { sha: null, recordedAt: null } };
   saveState(project, s);
+
+  for (const options of [["--all", "--dryrun"], ["--days", "1.5"], ["--keep", "2oops"]]) {
+    const invalid = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url)),
+      "clean", "--lane", "feature", ...options], { cwd: project, encoding: "utf8", timeout: 5000 });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /nothing was pruned/);
+    assert.ok(fs.existsSync(ff));
+    assert.equal(remainingGroups(project), 2);
+  }
+  const preview = spawnSync(process.execPath, [fileURLToPath(new URL("../bin/bridge.mjs", import.meta.url)),
+    "clean", "--lane=feature", "--keep=0", "--days=0", "--dry-run"], { cwd: project, encoding: "utf8", timeout: 5000 });
+  assert.equal(preview.status, 0, preview.stderr);
+  assert.match(preview.stdout, /Would delete 1 checkpoint groups/);
+  assert.ok(fs.existsSync(ff), "equals-form preview must retain the evidence");
 
   const res = pruneCheckpoints(project, { all: true, lane: "feature" });
   assert.ok(!fs.existsSync(ff), "feature's old group was pruned");

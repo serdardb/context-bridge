@@ -551,6 +551,11 @@ test("bridge lane rm deletes the lane directory only after --yes, and never main
   fs.writeFileSync(path.join(laneDir, "2026-01-01T00-00-00-000Z-claude-to-codex.md"), "x");
   run("switch", "main"); // cannot remove the active lane
 
+  const invalid = run("rm", "feature", "--yes", "--dryrun");
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Invalid lane options/);
+  assert.ok(fs.existsSync(laneDir), "an unknown option must not authorize deletion");
+
   const refused = run("rm", "feature"); // no --yes
   assert.equal(refused.status, 1, "rm without --yes refuses");
   assert.ok(fs.existsSync(laneDir), "and deletes nothing");
