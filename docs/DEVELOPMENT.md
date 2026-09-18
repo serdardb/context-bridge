@@ -243,6 +243,67 @@ Read the wording as load-bearing. A route says `CONFIGURED`, meaning installed, 
 
 `--json` prints the raw object; `--fix` offers confirmed bootstraps using official mechanisms only. Auth checks are existence-only (Keychain entry name, `codex login status` exit code) and never read or print secret values. Keep it that way.
 
+### Doctor output example
+
+```
+Context Bridge Doctor
+
+Claude Code
+  ✓ Installed: 2.1.216 (Claude Code)
+  ✓ Authenticated (you@example.com)
+  ✓ context-bridge plugin installed (provides /bridge and the session hooks)
+  ✓ Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)
+  ✓ Session readable by this version of the bridge (884 messages)
+
+Codex
+  ✓ Installed: codex-cli 0.144.6
+  ✓ Authenticated (Logged in using ChatGPT)
+  ⚠ Session hooks not installed (optional: they make Codex session linking exact)
+  ✓ $bridge skill installed and current (~/.agents/skills/bridge)
+  ✓ bridge command pre-allowed in Codex rules
+  ✓ Session readable by this version of the bridge (417 messages)
+
+Grok
+  ✓ Installed: grok 0.2.106
+  ✓ Authenticated
+  ✓ $bridge skill installed and current (~/.agents/skills/bridge)
+  ✓ Session readable by this version of the bridge (104 messages)
+
+Antigravity
+  ✓ Installed: 1.1.10
+  ✓ Authenticated
+  ✓ Conversation history readable
+  ✓ Session readable by this version of the bridge (47 messages)
+
+OpenCode
+  ✓ Installed: 1.18.12
+  ✓ Authenticated
+  ✓ Authentication configured
+  ✓ sqlite3 present (used to inject a handoff into OpenCode's session store)
+  ✓ Session readable by this version of the bridge
+
+Bridge
+  ✓ bridge on PATH (hooks can reach it)
+  ✓ Project state: linked claude, codex, grok, antigravity, opencode
+
+Available routes
+  claude->codex      ✓ CONFIGURED  first switch: official import
+  claude->grok       ✓ CONFIGURED  first switch: delta-seeded
+  claude->antigravity ✓ CONFIGURED  first switch: delta-seeded
+  claude->opencode   ✓ CONFIGURED  first switch: delta-seeded
+  … and 16 more — every ordered pair of the five agents, twenty directions in all
+
+CONFIGURED means installed, configured, and its session still parses. It does not mean the agent answers: run `bridge doctor --deep` to ask each one a real question.
+```
+
+On a fresh machine the plugin/skill rows start as `✗` with the exact official command next to each; `--fix` offers to run them for you.
+
+The wording is deliberate. `CONFIGURED` means installed, logged in, and *its session files still parse with this version of the bridge*. That last check runs by default and costs about 100ms, because it is the failure nobody would otherwise notice: session formats are internal to each vendor, so a renamed field ships in a point release and every handoff quietly returns an empty delta while the binary is still installed and still logged in. If that happens the row reads `Session UNREADABLE` and every route through that agent carries the reason.
+
+The same check covers the other reader. Finding a session and reading one are different pieces of code, and the second kind of failure is just as quiet: if sessions are stored on disk and not one of them can be named, discovery has gone blind and doctor says so. A project with nothing stored stays neutral.
+
+What `CONFIGURED` still cannot promise is that the agent answers. `bridge doctor --deep` asks each one a real one-line question and reports `LIVE` or `BROKEN`; it is not the default because it is slow and depends on the network.
+
 ## CLI exit codes
 
 The command-line contract is intentionally small and stable:

@@ -56,6 +56,18 @@ state lanes and diagnostics. Prompt delivery requires no core changes. Hook
 delivery additionally needs vendor-specific hook installation and trust; declaring
 `injection: "hook"` does not install or verify those hooks.
 
+### Adapter extensions
+
+Trusted local adapters can use `@serdardb/context-bridge/adapter-sdk` and
+default-export `defineAdapter(implementation)`. Enable them explicitly with
+`CONTEXT_BRIDGE_ADAPTERS=/absolute/path/to/plugins.json`; the manifest contains
+`{"apiVersion":1,"modules":["/absolute/path/to/adapter.mjs"]}`.
+`bridge adapters --json` lists built-in and configured adapters without probing
+vendors. Plugin code runs with your account's privileges, not in a sandbox;
+review it first. No project-local or remote code is discovered automatically.
+See [Adapter Contract](#registration) for API requirements, delivery limits,
+compatibility rules and real-agent acceptance checks.
+
 ## Packaged Experimental Candidates
 
 Aider and Pi ship as opt-in candidates, not built-in supported agents. Their

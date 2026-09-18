@@ -227,58 +227,14 @@ Context Bridge Doctor
 Claude Code
   ✓ Installed: 2.1.216 (Claude Code)
   ✓ Authenticated (you@example.com)
-  ✓ context-bridge plugin installed (provides /bridge and the session hooks)
-  ✓ Official OpenAI Codex plugin installed (seeds the first Claude→Codex switch)
   ✓ Session readable by this version of the bridge (884 messages)
-
-Codex
-  ✓ Installed: codex-cli 0.144.6
-  ✓ Authenticated (Logged in using ChatGPT)
-  ⚠ Session hooks not installed (optional: they make Codex session linking exact)
-  ✓ $bridge skill installed and current (~/.agents/skills/bridge)
-  ✓ bridge command pre-allowed in Codex rules
-  ✓ Session readable by this version of the bridge (417 messages)
-
-Grok
-  ✓ Installed: grok 0.2.106
-  ✓ Authenticated
-  ✓ $bridge skill installed and current (~/.agents/skills/bridge)
-  ✓ Session readable by this version of the bridge (104 messages)
-
-Antigravity
-  ✓ Installed: 1.1.10
-  ✓ Authenticated
-  ✓ Conversation history readable
-  ✓ Session readable by this version of the bridge (47 messages)
-
-OpenCode
-  ✓ Installed: 1.18.12
-  ✓ Authenticated
-  ✓ Authentication configured
-  ✓ sqlite3 present (used to inject a handoff into OpenCode's session store)
-  ✓ Session readable by this version of the bridge
 
 Bridge
   ✓ bridge on PATH (hooks can reach it)
   ✓ Project state: linked claude, codex, grok, antigravity, opencode
-
-Available routes
-  claude->codex      ✓ CONFIGURED  first switch: official import
-  claude->grok       ✓ CONFIGURED  first switch: delta-seeded
-  claude->antigravity ✓ CONFIGURED  first switch: delta-seeded
-  claude->opencode   ✓ CONFIGURED  first switch: delta-seeded
-  … and 16 more — every ordered pair of the five agents, twenty directions in all
-
-CONFIGURED means installed, configured, and its session still parses. It does not mean the agent answers: run `bridge doctor --deep` to ask each one a real question.
 ```
 
-On a fresh machine the plugin/skill rows start as `✗` with the exact official command next to each; `--fix` offers to run them for you.
-
-The wording is deliberate. `CONFIGURED` means installed, logged in, and *its session files still parse with this version of the bridge*. That last check runs by default and costs about 100ms, because it is the failure nobody would otherwise notice: session formats are internal to each vendor, so a renamed field ships in a point release and every handoff quietly returns an empty delta while the binary is still installed and still logged in. If that happens the row reads `Session UNREADABLE` and every route through that agent carries the reason.
-
-The same check covers the other reader. Finding a session and reading one are different pieces of code, and the second kind of failure is just as quiet: if sessions are stored on disk and not one of them can be named, discovery has gone blind and doctor says so. A project with nothing stored stays neutral.
-
-What `CONFIGURED` still cannot promise is that the agent answers. `bridge doctor --deep` asks each one a real one-line question and reports `LIVE` or `BROKEN`; it is not the default because it is slow and depends on the network.
+[Full example and interpretation](docs/DEVELOPMENT.md#doctor-output-example).
 
 ## First run
 
@@ -322,7 +278,7 @@ bridge lane rm <name> --yes    delete a lane and its checkpoints (--dry-run to p
 
 A new lane starts empty on purpose: a different line of work inherits nothing, which is the whole reason to open one. A bare `bridge` resumes the lane you were last in, so a project that only ever has one lane never has to think about them.
 
-**Ordinary lanes isolate context, not files.** They share one checkout, so switching an ordinary lane does not switch files. Two lanes editing the same files can collide. For code isolation, use the optional [worktree-backed lanes](#isolated-worktree-lanes) below. Only that feature requires Git; ordinary lanes and handoffs also work without Git installed.
+**Ordinary lanes isolate context, not files.** They share one checkout, so switching an ordinary lane does not switch files. Two lanes editing the same files can collide. For code isolation, use the optional [worktree-backed lanes](docs/ARCHITECTURE.md#isolated-worktree-lanes). Only that feature requires Git; ordinary lanes and handoffs also work without Git installed.
 
 ## Architecture
 
@@ -409,161 +365,26 @@ than leaving an empty column to be misread as nothing happened.
 - Codex stores its sessions by date rather than by project, so the discovery check for it is measured across the machine rather than for one project.
 - **This is an early developer preview — not production-ready.**
 
-## Roadmap
+## Further documentation
 
-- Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
-- Broader Linux and Windows native-agent/provider coverage beyond the selected acceptance scenarios
-- Optional MCP quick-question mode (ask the other agent without switching)
-
-### Isolated worktree lanes
-
-Normal lanes need no Git. For explicit code isolation in a Git repository:
-
-```sh
-bridge lane new experiment --worktree ../project-experiment
-bridge claude --resume experiment
-```
-
-The worktree starts from committed `HEAD`; uncommitted source edits are not
-copied. `--base <ref>` and `--branch <new-branch>` are optional. The destination
-must not exist and must be outside the source project; its parent must exist.
-Git is required for creation/attachment, not ordinary lanes or later launches.
-
-Each worktree has its own central project identity, native sessions and state.
-The source lane is an explicit launch link, not a second owner of those sessions.
-`status --json` follows that link for pending/delivery diagnostics without changing
-lanes. Run handoff and context-management commands from the worktree itself.
-Seeding from a linked worktree lane is likewise done inside that worktree.
-Seed fields are read from the checkpoint's validated section index, not Markdown
-headings inside a conversation. If an older checkpoint has no index, create a
-new handoff on the source lane before seeding. An invalid index refuses seeding
-before a new lane is created; the original evidence remains untouched.
-If seed creation fails, automatic rollback removes only a still-empty lane
-record with no live launcher. Existing files are retained for inspection, not
-recursively deleted. A changed lane or failed state write is reported as an
-incomplete rollback; inspect `bridge lane` and `bridge status` before retrying.
-If the lane record survived an interrupted creation, use
-`bridge lane seed <existing-lane> --seed <source-lane>` after inspection. This
-builds a fresh briefing from the source's current evidence, not a replay of the
-original snapshot. It does not switch lanes or roll back the existing target on
-failure. Pending deliveries, linked sessions, live launchers and worktree links
-refuse this operation. Unchanged orphan files from a dead seed writer are
-recovered through its hash-checked preparation journal; changed files are
-preserved and block recovery.
-Explicit `lane rm --yes` rechecks the live-launcher guard under the state lock
-and keeps that lock until checkpoint deletion finishes, excluding concurrent
-lane recreation. If files cannot be removed safely, it reports their retention.
-
-If creation succeeds but later state setup fails, the bridge preserves the code
-and branch. Reconnect with `bridge lane attach experiment --worktree ../project-experiment`;
-attachment validates Git ownership and does not choose or overwrite an unrelated
-existing lane. Missing/replaced directories fail closed on launch. To relocate a
-link, remove the source lane link first and attach the moved worktree explicitly.
-`bridge lane rm` removes the source link and its local checkpoints only; it never
-deletes the worktree's code, branch or independent bridge state. Remove an unwanted
-working tree separately with Git after checking its changes. No automatic merge,
-branch deletion, cross-process crash transaction or sandbox is implied.
-
-### Adapter extensions
-
-Trusted local adapters can use `@serdardb/context-bridge/adapter-sdk` and
-default-export `defineAdapter(implementation)`. Enable them explicitly with
-`CONTEXT_BRIDGE_ADAPTERS=/absolute/path/to/plugins.json`; the manifest contains
-`{"apiVersion":1,"modules":["/absolute/path/to/adapter.mjs"]}`.
-`bridge adapters --json` lists built-in and configured adapters without probing
-vendors. Plugin code runs with your account's privileges, not in a sandbox;
-review it first. No project-local or remote code is discovered automatically.
-See [Adapter Contract](docs/ADAPTERS.md) for API requirements, delivery limits,
-compatibility rules and real-agent acceptance checks.
-
-### Pending delivery diagnostics
-
-`bridge status --json` includes a `delivery` object for a pending injection, or
-`null` when none is recorded. It reports the selected route, its byte budget,
-checkpoint state (`pending`, `consumed`, `missing`, `unsafe`, or `unreadable`),
-and whether a regular full-context file is available. `deltaBytes` measures the
-stored text; `deliveredBytes` predicts the current delivery formatter's output,
-including its file pointer. `wouldTrim` reports whether that formatter would
-trim it. Unknown routes leave delivery size and budget unset.
-
-These are read-only local diagnostics, not proof that an agent read or understood
-the context. The output does not include conversation text or checkpoint paths.
-The `lanes` array contains the same diagnostics, linked agent names, pending work
-and up to five retained switch records for every lane, in name order. Top-level
-fields still describe the active lane. Inspection does not switch lanes or run
-agent probes. Local integrations can use `projectStatus(projectDir)` from
-`src/status.mjs`, the same read-only function used by the CLI; this internal API
-is not yet a versioned adapter SDK.
-
-### Status event stream
-
-`bridge watch --policy read-only` emits newline-delimited JSON status events.
-It requires this explicit policy and never starts agents, repairs state or
-acknowledges delivery. `--project /absolute/path` pins a different project at
-startup; `--interval 1000` controls polling in milliseconds (100 to 60000).
-No Git installation is required. SIGINT/SIGTERM stop the foreground process.
-
-The first event is `snapshot`; changed observations emit `change`. Read failures
-emit `unavailable` once, followed by `recovered` when the original directory can
-be read again. A replacement directory is not silently adopted. Events carry
-metadata only, using the same privacy boundary as `status --json`.
-
-Polling avoids relying on platform filesystem notifications and tolerates
-atomic file replacement. It can miss intermediate transitions between polls:
-this is not a durable journal, delivery receipt, or exactly-once subscription.
-Slow consumers apply backpressure rather than building an unbounded event queue.
-Restarting produces a fresh snapshot; there is no background daemon or cursor.
+- [Isolated worktree lanes](docs/ARCHITECTURE.md#isolated-worktree-lanes)
+- [Adapter extensions](docs/ADAPTERS.md#adapter-extensions)
+- [Pending delivery diagnostics](docs/ARCHITECTURE.md#pending-delivery-diagnostics)
+- [Status event stream](docs/ARCHITECTURE.md#status-event-stream)
 
 ### Read-only MCP
-
-Starting with 0.13.0, MCP is a separately installed companion. Install both
-packages in the same npm prefix:
 
 ```bash
 npm install -g @serdardb/context-bridge @serdardb/context-bridge-mcp
 ```
 
-Run `bridge mcp --project /absolute/project/path` from an MCP host using stdio.
-The project is fixed at startup; tools cannot choose another directory. By
-default only `bridge_status` and `bridge_adapters` are exposed. Neither starts
-agents, acknowledges delivery, nor initializes a missing project. No network
-listener is opened and Git is not required.
+[Setup, tools and security boundaries](https://www.npmjs.com/package/@serdardb/context-bridge-mcp#read-only-mcp).
 
-Add `--allow-content` explicitly to expose `bridge_search`. This lets the host
-and its model read potentially private checkpoint snippets. It returns at most
-100 matching records (20 by default), with omitted-result counts; snippets are
-not complete transcripts. The limit bounds output, not the underlying local
-scan. Search stays within the selected project's store; status can report
-explicitly linked worktree lanes. There is no general file-reading tool.
+## Roadmap
 
-Example host configuration (adjust executable and project paths):
-
-```json
-{
-  "mcpServers": {
-    "context-bridge": {
-      "command": "/absolute/path/to/bridge",
-      "args": ["mcp", "--project", "/absolute/path/to/project"]
-    }
-  }
-}
-```
-
-Local evidence is untrusted data, not instructions. Read-only tool annotations
-do not sandbox installed adapter plugins: `CONTEXT_BRIDGE_ADAPTERS`, when set,
-still loads trusted executable code at startup. Unset it for built-ins only.
-The companion uses the official MCP SDK, Zod and a Node18-compatible Hono pin;
-none are core runtime dependencies. Automatic discovery supports npm sibling
-installations. For isolated layouts (pnpm/Yarn PnP), set the MCP host environment
-`CONTEXT_BRIDGE_MCP_MODULE` to the trusted absolute companion `index.mjs` path,
-with that package's dependencies/loader available. Bridge does not search CWD
-or install code automatically. Missing, unloadable and incompatible companions
-produce distinct errors. Full pnpm/PnP setup is not claimed verified.
-
-The companion is trusted Node code, not a sandbox. Core withholds the search
-callback without content opt-in, but cannot prevent arbitrary installed code
-from reading files itself. MCP acceptance is not native-agent acceptance or a
-concurrent filesystem snapshot.
+- Flags given at handoff time, so a switch can arm the agent it is switching to (per-project defaults and `--cb-save-args` work today)
+- Broader Linux and Windows native-agent/provider coverage beyond the selected acceptance scenarios
+- Optional MCP quick-question mode (ask the other agent without switching)
 
 ## Development status
 

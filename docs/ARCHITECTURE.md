@@ -235,6 +235,25 @@ names the file the delta is still sitting in, and points at `/hooks`. Nothing is
 resent automatically; the next handoff supersedes that delta anyway. A delayed
 delta is a cost worth paying, a silent one is not.
 
+### Pending delivery diagnostics
+
+`bridge status --json` includes a `delivery` object for a pending injection, or
+`null` when none is recorded. It reports the selected route, its byte budget,
+checkpoint state (`pending`, `consumed`, `missing`, `unsafe`, or `unreadable`),
+and whether a regular full-context file is available. `deltaBytes` measures the
+stored text; `deliveredBytes` predicts the current delivery formatter's output,
+including its file pointer. `wouldTrim` reports whether that formatter would
+trim it. Unknown routes leave delivery size and budget unset.
+
+These are read-only local diagnostics, not proof that an agent read or understood
+the context. The output does not include conversation text or checkpoint paths.
+The `lanes` array contains the same diagnostics, linked agent names, pending work
+and up to five retained switch records for every lane, in name order. Top-level
+fields still describe the active lane. Inspection does not switch lanes or run
+agent probes. Local integrations can use `projectStatus(projectDir)` from
+`src/status.mjs`, the same read-only function used by the CLI; this internal API
+is not yet a versioned adapter SDK.
+
 ## The first switch is different, for everyone
 
 The target has no session yet, so something must be created. Claude → Codex uses
@@ -844,6 +863,74 @@ malformed link refuses launcher/handoff routing rather than falling back to the
 parent project. Status marks it unavailable. Seed preparation refuses parent
 workspace placeholders; seed inside the actual worktree, where its evidence lives.
 Only this opt-in workflow requires Git, not ordinary bridge operation.
+
+### Isolated worktree lanes
+
+Normal lanes need no Git. For explicit code isolation in a Git repository:
+
+```sh
+bridge lane new experiment --worktree ../project-experiment
+bridge claude --resume experiment
+```
+
+The worktree starts from committed `HEAD`; uncommitted source edits are not
+copied. `--base <ref>` and `--branch <new-branch>` are optional. The destination
+must not exist and must be outside the source project; its parent must exist.
+Git is required for creation/attachment, not ordinary lanes or later launches.
+
+Each worktree has its own central project identity, native sessions and state.
+The source lane is an explicit launch link, not a second owner of those sessions.
+`status --json` follows that link for pending/delivery diagnostics without changing
+lanes. Run handoff and context-management commands from the worktree itself.
+Seeding from a linked worktree lane is likewise done inside that worktree.
+Seed fields are read from the checkpoint's validated section index, not Markdown
+headings inside a conversation. If an older checkpoint has no index, create a
+new handoff on the source lane before seeding. An invalid index refuses seeding
+before a new lane is created; the original evidence remains untouched.
+If seed creation fails, automatic rollback removes only a still-empty lane
+record with no live launcher. Existing files are retained for inspection, not
+recursively deleted. A changed lane or failed state write is reported as an
+incomplete rollback; inspect `bridge lane` and `bridge status` before retrying.
+If the lane record survived an interrupted creation, use
+`bridge lane seed <existing-lane> --seed <source-lane>` after inspection. This
+builds a fresh briefing from the source's current evidence, not a replay of the
+original snapshot. It does not switch lanes or roll back the existing target on
+failure. Pending deliveries, linked sessions, live launchers and worktree links
+refuse this operation. Unchanged orphan files from a dead seed writer are
+recovered through its hash-checked preparation journal; changed files are
+preserved and block recovery.
+Explicit `lane rm --yes` rechecks the live-launcher guard under the state lock
+and keeps that lock until checkpoint deletion finishes, excluding concurrent
+lane recreation. If files cannot be removed safely, it reports their retention.
+
+If creation succeeds but later state setup fails, the bridge preserves the code
+and branch. Reconnect with `bridge lane attach experiment --worktree ../project-experiment`;
+attachment validates Git ownership and does not choose or overwrite an unrelated
+existing lane. Missing/replaced directories fail closed on launch. To relocate a
+link, remove the source lane link first and attach the moved worktree explicitly.
+`bridge lane rm` removes the source link and its local checkpoints only; it never
+deletes the worktree's code, branch or independent bridge state. Remove an unwanted
+working tree separately with Git after checking its changes. No automatic merge,
+branch deletion, cross-process crash transaction or sandbox is implied.
+
+## Status event stream
+
+`bridge watch --policy read-only` emits newline-delimited JSON status events.
+It requires this explicit policy and never starts agents, repairs state or
+acknowledges delivery. `--project /absolute/path` pins a different project at
+startup; `--interval 1000` controls polling in milliseconds (100 to 60000).
+No Git installation is required. SIGINT/SIGTERM stop the foreground process.
+
+The first event is `snapshot`; changed observations emit `change`. Read failures
+emit `unavailable` once, followed by `recovered` when the original directory can
+be read again. A replacement directory is not silently adopted. Events carry
+metadata only, using the same privacy boundary as `status --json`.
+
+Polling avoids relying on platform filesystem notifications and tolerates
+atomic file replacement. It can miss intermediate transitions between polls:
+this is not a durable journal, delivery receipt, or exactly-once subscription.
+Slow consumers apply backpressure rather than building an unbounded event queue.
+Restarting produces a fresh snapshot; there is no background daemon or cursor.
 
 ## Read-Only MCP
 
