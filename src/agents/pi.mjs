@@ -119,9 +119,10 @@ export function discoveryProbe(projectDir = process.cwd()) {
   return { status: !examined ? "none" : sessions.length ? "readable" : "blind", examined, recognised: sessions.length };
 }
 export function health() {
+  let commandError = null;
   const execute = (args) => {
     try { const command = piCommand(args); return tryExec(command.cmd, command.args); }
-    catch { return null; }
+    catch (error) { commandError ??= error; return null; }
   };
   const version = execute(["--version"]);
   const settings = { ...readJson(path.join(piAgentDirectory(), "settings.json")),
@@ -131,7 +132,10 @@ export function health() {
   if (version && provider) try { auth = JSON.parse(execute(["auth", "check", "--provider", provider, "--json", "--no-refresh"])); } catch {}
   return { version, ready: Boolean(version && auth?.status === "ready"),
     auth: { ok: auth?.status === "ready", via: "pi auth check (no refresh)", account: null },
-    extras: provider ? [] : [{ ok: false, info: true, label: "No Pi defaultProvider is configured; authentication has not been checked for a provider." }],
+    extras: [
+      ...(commandError ? [{ ok: false, label: commandError.message }] : []),
+      ...(provider ? [] : [{ ok: false, info: true, label: "No Pi defaultProvider is configured; authentication has not been checked for a provider." }]),
+    ],
     installHint: "npm install -g @earendil-works/pi-coding-agent (Node >=22.19)" };
 }
 export const smokeCommand = () => piCommand(["--print", "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-context-files", "--", "Reply with exactly: bridge-ok"]);
