@@ -1,4 +1,5 @@
 // Run in a disposable Linux environment without Git; no network or home mounts.
+import "../lane-environment.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -1,4 +1,5 @@
 // Opt-in real-process interruption matrix; no provider, Git or user store access.
+import "../lane-environment.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

@@ -1,4 +1,5 @@
 // Actual birthtime-free filesystem acceptance; isolated, no Git or agent accounts.
+import "../lane-environment.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";

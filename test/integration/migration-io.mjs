@@ -1,4 +1,5 @@
 // Opt-in fault matrix for the real global migration, not the unit-test loop.
+import "../lane-environment.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
