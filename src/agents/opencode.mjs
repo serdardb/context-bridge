@@ -196,7 +196,7 @@ function listSessionsViaServer(timeout = 10000) {
 export function bridgeTouchedSessionIds() {
   const dbPath = databasePath();
   if (!fileExists(dbPath)) return new Set();
-  const out = tryExec("sqlite3", [dbPath, "SELECT DISTINCT session_id FROM message WHERE id LIKE 'msg_bridge_%';"]);
+  const out = tryExec("sqlite3", ["-readonly", dbPath, "SELECT DISTINCT session_id FROM message WHERE id LIKE 'msg_bridge_%';"]);
   if (!out) return new Set();
   return new Set(out.split("\n").map((l) => l.trim()).filter(Boolean));
 }
@@ -639,7 +639,7 @@ export function schemaHealth() {
   for (const [table, columns] of Object.entries(REQUIRED_SCHEMA)) {
     const raw = tryExec(
       "sqlite3",
-      [dbPath, `SELECT group_concat(name, ',') FROM pragma_table_info('${table}');`],
+      ["-readonly", dbPath, `SELECT group_concat(name, ',') FROM pragma_table_info('${table}');`],
       { timeout: 2000 },
     );
     if (raw === null) return { status: "unreadable", missing: [], detail: table };
