@@ -447,6 +447,11 @@ network filesystems or power-loss durability, even after the job passes.
    The private receipt lives in the machine-local store's `release-evidence/` directory, outside the repository and tarball. It binds the exact commit and actual tarball SHA-256, package version, Node/npm versions, platform and architecture. The candidate is packed before and after the checks and must match. `prepublishOnly` now runs only `release-check --evidence --json`: it repacks locally and checks the receipt, without calling agents or GitHub. Missing/incomplete evidence, dirty state, different bytes/toolchain or evidence older than **24 hours from preparation start** refuses publication. This is an explicit freshness policy, not a guarantee that providers remain available. `prepack`, `prepare` and `postpack` lifecycle scripts are refused because they could rewrite bytes after verification; build before preparing acceptance.
    The receipt is trusted local evidence, not a cryptographic attestation against its owner. Keep the tree unchanged between acceptance and publish. Do not bypass the lifecycle with `--ignore-scripts`. This does not replace the native handoff exercise below: smoke checks verify responses and route configuration, not actual transfers. No command publishes or authorizes a release automatically.
 4. `npm pack --dry-run` includes `bin/`, `src/`, `plugin/`, `codex/`, `.claude-plugin/`, `docs/`.
+   Preserve the preparation toolchain through publication. In a measured Node
+   18.18/npm9 versus Node24/npm11 comparison, identical source produced different
+   gzip bytes while the decompressed tar was byte-identical, including headers.
+   Matching extracted files does not authorize substituting a different `.tgz`:
+   receipts bind the compressed artifact, not merely its source or file list.
 5. Fresh-install path works from a clean checkout: `npm install -g .` → `bridge doctor` → `--fix` → routes CONFIGURED. Worth doing from a packed tarball into an isolated prefix at least once per release, since `REPO_ROOT` resolves differently under `node_modules`.
 6. Full end-to-end handoff test, including the repeat-switch ledger check and one three-agent chain.
 7. Hygiene scan: no machine-specific paths, no credentials, and no tracked runtime state.
