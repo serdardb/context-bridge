@@ -13,6 +13,8 @@ import {
   BridgeError,
   tryExec,
   readJson,
+  readOwnedFile,
+  readRegularFile,
   fileExists,
   OK,
   BAD,
@@ -514,14 +516,14 @@ export function installCodexSkill() {
   const src = path.join(REPO_ROOT, "codex", "SKILL.md");
   const destination = sharedSkillPath();
   inspectInstallDestination(destination);
-  writeFileAtomic(destination, fs.readFileSync(src));
+  writeFileAtomic(destination, readRegularFile(src, null));
 }
 
 export function installCodexRule() {
   const dir = path.join(codexHome(), "rules");
   const file = path.join(dir, "bridge.rules");
   if (inspectInstallDestination(file)) {
-    if (fs.readFileSync(file, "utf8").trim() === BRIDGE_ALLOW_RULE.trim()) return;
+    if (readOwnedFile(file, { encoding: "utf8" }).trim() === BRIDGE_ALLOW_RULE.trim()) return;
     throw new BridgeError("Existing bridge.rules contains custom content. It was preserved; review it manually instead of replacing its permission policy.", { path: file });
   }
   fs.mkdirSync(dir, { recursive: true });
