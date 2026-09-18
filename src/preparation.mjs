@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { AGENT_IDS } from "./agents/index.mjs";
 import { safeCheckpointsDir, safeCheckpointPath, checkpointRel, withProjectStateReadLock,
   CHECKPOINT_KINDS, CONSUMED_SUFFIX } from "./state.mjs";
-import { writeFileExclusive } from "./util.mjs";
+import { writeFileExclusive, readOwnedFile } from "./util.mjs";
 import { withProjectRuntimeLock } from "./storage.mjs";
 
 const STEM = new RegExp(`^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z-(?:${AGENT_IDS.join("|")})-to-(?:${AGENT_IDS.join("|")})$`);
@@ -63,8 +63,7 @@ export function recoverPreparations(projectDir, lane) {
     try { names = fs.readdirSync(dir); } catch (error) { if (error.code === "ENOENT") return; throw error; }
     for (const name of names.filter((n) => n.startsWith(".handoff-") && n.endsWith(".json"))) {
       const journal = path.join(dir, name);
-      if (!fs.lstatSync(journal).isFile()) throw new Error("Unsafe handoff preparation journal.");
-      const record = JSON.parse(fs.readFileSync(journal, "utf8"));
+      const record = JSON.parse(readOwnedFile(journal, { encoding: "utf8" }));
       if (record.version !== 1 || record.lane !== lane || !STEM.test(record.stem) ||
           name !== journalName(record.stem) || !Number.isSafeInteger(record.pid) || record.pid < 1 ||
           !Array.isArray(record.files) || record.files.length < 2 || record.files.length > 3 ||
@@ -85,7 +84,7 @@ export function recoverPreparations(projectDir, lane) {
           if (!file) throw new Error("Unsafe handoff recovery path.");
           let stat;
           try { stat = fs.lstatSync(file); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
-          if (!stat.isFile() || hash(fs.readFileSync(file)) !== expected) {
+          if (!stat.isFile() || hash(readOwnedFile(file)) !== expected) {
             throw new Error("Handoff preparation evidence changed; refusing recovery cleanup.");
           }
           return file;

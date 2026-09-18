@@ -125,6 +125,18 @@ test("real handoff process exits recover unchanged evidence and preserve committ
       assert.equal(journals.length, 1);
       const afterExit = fs.readFileSync(stateFile);
       if (stage !== "state") assert.deepEqual(afterExit, before);
+      if (stage === "full") {
+        const evidence = fs.readdirSync(dir).find(name => name.endsWith("-full.md") && !previous.has(name));
+        const saved = new Map(fs.readdirSync(dir).map(name => [name, fs.readFileSync(path.join(dir, name))]));
+        for (const name of [journals[0], evidence]) {
+          const shared = path.join(home, "shared-recovery-evidence");
+          fs.linkSync(path.join(dir, name), shared);
+          assert.throws(() => recoverPreparations(project, "main"), /unsafe/i);
+          assert.deepEqual(fs.readFileSync(stateFile), afterExit);
+          for (const [leaf, bytes] of saved) assert.deepEqual(fs.readFileSync(path.join(dir, leaf)), bytes);
+          fs.unlinkSync(shared);
+        }
+      }
       if (stage === "retry") {
         handoff(project, "codex", { from: "grok", summary: "Successful retry", checkTarget: () => {} });
         const remaining = fs.readdirSync(dir);

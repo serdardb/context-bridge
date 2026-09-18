@@ -158,18 +158,19 @@ export function transcriptStamp(ref) {
 /** Read a bridge-owned regular leaf; only initial absence may return null. */
 export function readOwnedFile(file, { encoding = null, missing = false } = {}) {
   let before;
-  try { before = fs.lstatSync(file); }
+  try { before = fs.lstatSync(file, { bigint: true }); }
   catch (error) { if (missing && error.code === "ENOENT") return null; throw error; }
   const unsafe = () => Object.assign(new Error("Stored file is unsafe or changed during reading."), { code: "BRIDGE_UNSAFE_FILE" });
-  if (!before.isFile() || before.nlink !== 1) throw unsafe();
+  if (!before.isFile() || before.nlink !== 1n) throw unsafe();
   let fd;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== before.dev || opened.ino !== before.ino) throw unsafe();
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== before.dev || opened.ino !== before.ino) throw unsafe();
     const content = fs.readFileSync(fd, encoding);
-    const after = fs.fstatSync(fd);
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw unsafe();
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (!after.isFile() || after.nlink !== 1n || after.size !== opened.size ||
+        after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) throw unsafe();
     return content;
   } finally { if (fd !== undefined) fs.closeSync(fd); }
 }

@@ -111,18 +111,36 @@ test("bridge lane new --seed validates the source before creating anything", () 
   fs.writeFileSync(secret, "## Decisions\nPRIVATE_OUTSIDE_EVIDENCE\n");
   const full = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-full.md");
   const audit = path.join(checkpointsDir(project), "2026-09-17T00-00-00-000Z-claude-to-codex-audit.json");
-  for (const mode of ["symlink", "hardlink", "directory", "invalid-audit"]) {
+  for (const mode of ["symlink", "hardlink", "directory", "invalid-audit", "link-during-read", "rewrite-during-read"]) {
     if (mode === "symlink") fs.symlinkSync(secret, full);
     else if (mode === "hardlink") fs.linkSync(secret, full);
     else if (mode === "directory") fs.mkdirSync(full);
-    else { fs.writeFileSync(full, FULL); fs.writeFileSync(audit, "{broken"); }
-    const refused = run("new", "x", "--seed", "main");
+    else { fs.writeFileSync(full, FULL); if (mode === "invalid-audit") fs.writeFileSync(audit, "{broken"); }
+    fs.utimesSync(full, new Date("2020-01-01"), new Date("2020-01-01"));
+    const linked = path.join(project, "concurrent-link");
+    const refused = mode.endsWith("during-read") ? spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from 'node:fs';
+      const file = ${JSON.stringify(full)}, stat = fs.statSync(file), read = fs.readFileSync;
+      let changed = false;
+      fs.readFileSync = (fd, ...args) => {
+        const bytes = read(fd, ...args);
+        if (!changed && typeof fd === 'number' && fs.fstatSync(fd).ino === stat.ino) {
+          changed = true;
+          if (${JSON.stringify(mode)} === 'link-during-read') fs.linkSync(file, ${JSON.stringify(linked)});
+          else { fs.writeFileSync(file, Buffer.alloc(stat.size, 120)); fs.utimesSync(file, stat.atime, stat.mtime); }
+        }
+        return bytes;
+      };
+      process.argv = [process.execPath, ${JSON.stringify(BRIDGE)}, 'lane', 'new', 'x', '--seed', 'main'];
+      await import(${JSON.stringify(new URL("../bin/bridge.mjs", import.meta.url).href)});
+    `], { cwd: project, encoding: "utf8" }) : run("new", "x", "--seed", "main");
     assert.equal(refused.status, 1, `${mode} must not become starter context`);
     assert.doesNotMatch(refused.stdout + refused.stderr, /PRIVATE_OUTSIDE_EVIDENCE/);
     assert.deepEqual(fs.readFileSync(statePath(project)), before);
     assert.equal(fs.existsSync(path.join(bridgeDir(project), "lanes", "x")), false);
     fs.rmSync(full, { recursive: mode === "directory" });
     fs.rmSync(audit, { force: true });
+    fs.rmSync(linked, { force: true });
   }
 
   const ok = run("new", "feature", "--seed", "main");
