@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, work/global-runtime-hardening]
   pull_request:
 
 jobs:
