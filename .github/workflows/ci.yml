@@ -54,3 +54,19 @@ jobs:
         env:
           BRIDGE_ACCEPTANCE_PYTHON: ${{ steps.python.outputs.python-path }}
         run: npm run test:package
+
+  native-pi-windows:
+    name: native Pi 0.85.1 transport · windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Install bridge dependencies
+        run: npm ci --ignore-scripts --engine-strict
+      - name: Install pinned experimental vendor in a disposable prefix
+        run: npm install --prefix "$env:RUNNER_TEMP/bridge-native-pi" --ignore-scripts --engine-strict --no-audit --no-fund @earendil-works/pi-coding-agent@0.85.1
+      - name: Actual native CLI session continuity with a local fixture provider
+        run: node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
