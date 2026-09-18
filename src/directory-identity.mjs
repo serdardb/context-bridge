@@ -44,7 +44,7 @@ function linuxTmpfsIdentity(fd) {
 }
 
 export function isVerifiedDirectoryIdentity(value) {
-  return typeof value === "string" && (value.startsWith("v2:") || /^v3:linux-tmpfs:[a-f0-9]{64}$/.test(value));
+  return typeof value === "string" && (/^v2:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*):[1-9][0-9]*$/.test(value) || /^v3:linux-tmpfs:[a-f0-9]{64}$/.test(value));
 }
 
 export function directoryIdentity(directory) {

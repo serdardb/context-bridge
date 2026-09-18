@@ -96,6 +96,15 @@ test("project creation identity rejects recycled inodes and requires explicit le
     const registryPath = path.join(process.env.CONTEXT_BRIDGE_HOME, "projects.json");
     const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"));
     registry.projects = { [original.id]: registry.projects[original.id] };
+    for (const malformed of ["v2:", "v2:1:2", "v2:1:2:0", "v2:1:2:-1", "v2:1:2:3:extra", "v2:1:x:3"]) {
+      registry.projects[original.id].fileIdentity = malformed;
+      fs.writeFileSync(registryPath, JSON.stringify(registry));
+      const unchanged = fs.readFileSync(registryPath, "utf8");
+      assert.throws(() => projectIdentity(moved, { create: true }), { code: "BRIDGE_PROJECT_IDENTITY_UNVERIFIED" });
+      assert.equal(fs.readFileSync(registryPath, "utf8"), unchanged,
+        "malformed identity must not silently allocate a replacement project UUID");
+      assert.equal(registeredProjects()[0].availability, "unverified");
+    }
     registry.projects[original.id].fileIdentity = original.fileIdentity.split(":").slice(1, 3).join(":");
     fs.writeFileSync(registryPath, JSON.stringify(registry));
     const before = fs.readFileSync(registryPath, "utf8");

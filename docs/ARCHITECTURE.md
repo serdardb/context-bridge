@@ -521,6 +521,30 @@ existing uncertain associations are refused rather than exposing old context.
 This is an open filesystem compatibility limitation, not universal identity
 support or a guarantee against adversarial metadata forgery.
 
+The identity boundary assumes that the operating system and filesystem report
+honest, stable creation metadata. A nanosecond-valued API does not establish
+nanosecond precision: coarse birth times combined with inode reuse can collide.
+The bridge does not probe a filesystem's timestamp resolution by creating files
+in the project, and a positive birth time is not certification of every network,
+FUSE, restored-image or removable filesystem. Restoring a disk image may reproduce
+all identity fields; these fingerprints are not cryptographic proof of project
+ownership. Do not share the runtime store between machines or restore it against
+an unrelated project tree. Use explicit artifact import for cross-machine data.
+
+| Directory evidence | Automatic association | Limit |
+| --- | --- | --- |
+| Device, inode and positive birth time (`v2`) | Exact fingerprint match | Relies on creation metadata distinguishing directory instances; no protection against forged/replayed metadata |
+| Linux tmpfs with verified native handle (`v3`) | Exact boot/filesystem/handle match | Reviewed Linux 64-bit little-endian ABI; other filesystems do not use this fallback |
+| Missing or malformed stored fingerprint | No; explicit ownership review and adoption required | Version prefixes alone are not verification |
+| Neither supported mechanism available | No registration/adoption | No path hash, Git marker or inode-only downgrade |
+
+These are selection rules, not an atomic snapshot of the project directory.
+Registration rechecks identity around registry ownership and optional probes;
+an unrelated writer can still replace a path after the last check. Runtime
+locks serialize cooperating bridge processes, not arbitrary filesystem writers.
+Native Windows and untested filesystem/provider combinations remain acceptance
+requirements, not implied support from the format of a fingerprint.
+
 `launchers` records each live launcher by pid and the lane it opened. It exists
 because a launcher started before an upgrade cannot read a newer state file — it
 says so and asks to be restarted rather than waiting for a switch that can never
