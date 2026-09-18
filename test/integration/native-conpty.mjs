@@ -53,6 +53,7 @@ terminal.onData((data) => {
 });
 terminal.onExit(({ exitCode }) => {
   console.error(`${label} ConPTY: native exit ${exitCode}`);
+  if (process.env.BRIDGE_TEST_PTY_TRACE === "1") console.error(output);
   clearTimeout(timer);
   clearTimeout(quitTimer);
   clearTimeout(followTimer);
