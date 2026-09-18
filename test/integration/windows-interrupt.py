@@ -24,17 +24,26 @@ if mode == "console":
 
     @handler_type
     def console_handler(event):
+        print(f"CONSOLE_EVENT={event}", flush=True)
         if event != 0:  # Leave CTRL_BREAK, close and logoff to existing handlers.
             return False
         try:
             _thread.interrupt_main()
+            print("CONSOLE_INTERRUPT_SCHEDULED", flush=True)
             pair[0].shutdown(socket.SHUT_RDWR)
+            print("CONSOLE_SOCKET_SHUTDOWN", flush=True)
         finally:
             console_finished.set()
         return True
 
     if not set_handler(console_handler, True):
         raise ctypes.WinError(ctypes.get_last_error())
+
+    def observe_thread():
+        time.sleep(1)
+        print("DIAGNOSTIC_THREAD_RUNNING", flush=True)
+
+    threading.Thread(target=observe_thread, daemon=True).start()
 elif mode == "wakeup":
     wakeup_pair = socket.socketpair()
     wakeup_pair[1].setblocking(False)
