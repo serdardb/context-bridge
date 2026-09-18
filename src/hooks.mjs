@@ -202,14 +202,17 @@ function hookSessionStart(projectDir, s, input) {
     (inj.id == null || (input.source === "resume" && inj.id === input.session_id));
   if (injectHere) {
     if (consumeForHook(projectDir, s, inj, { raw: true })) return 0;
-    // Delta missing: never silently lose context — surface it in-session.
-    s.pendingInjection = null;
-    writeHookOutput("[Bridge] A Codex→Claude context delta was pending but its file could not be read. " +
-      `Context may be incomplete — ask the user what happened in Codex, or inspect the checkpoints at:\n${checkpointsDir(projectDir, s.activeLane)}`);
+    reportUnreadableHook(projectDir, s);
     return 0;
   }
 
   return 0;
+}
+
+function reportUnreadableHook(projectDir, s) {
+  writeHookOutput("[Bridge] A context delta is pending but its file could not be read. " +
+    "Context is incomplete. The pending handoff has been retained for retry, not acknowledged. " +
+    `Inspect the stored evidence before resuming again:\n${checkpointsDir(projectDir, s.activeLane)}`);
 }
 
 /**
@@ -342,6 +345,7 @@ function codexHook(projectDir, s, event, input) {
   if (event === "session-start" && inj?.agent === "codex" && inj.via === "hook" && addressedHere) {
     delivered = consumeForHook(projectDir, s, inj);
     if (delivered) dirty = true;
+    else reportUnreadableHook(projectDir, s);
   }
 
   // A finished turn is what the launcher waits for before switching away.

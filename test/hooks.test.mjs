@@ -109,7 +109,7 @@ test("production hooks link, deliver and finish turns without Git or project-loc
       assert.equal(loadState(project).agents[agent].idle, true);
       hook("user-prompt-submit");
       assert.equal(loadState(project).agents[agent].idle, false);
-      if (agent === "claude") {
+      {
         const missing = loadState(project);
         missing.pendingInjection = { agent, id, via: "hook", deltaFile: ".bridge/checkpoints/missing.md" };
         saveState(project, missing);
@@ -117,6 +117,12 @@ test("production hooks link, deliver and finish turns without Git or project-loc
         assert.match(notice, /could not be read/);
         assert.ok(notice.endsWith(checkpointsDir(project)), "recovery must name the real global directory");
         assert.doesNotMatch(notice, /\.bridge\/checkpoints/);
+        assert.deepEqual(loadState(project).pendingInjection, missing.pendingInjection,
+          "unreadable evidence must remain pending on both hook routes");
+        fs.writeFileSync(safeCheckpointPath(project, missing.pendingInjection.deltaFile), "recovered hook context");
+        const recovered = JSON.parse(hook("session-start")).hookSpecificOutput.additionalContext;
+        assert.match(recovered, /recovered hook context/);
+        assert.equal(loadState(project).pendingInjection, null);
       }
     }
   } finally {
