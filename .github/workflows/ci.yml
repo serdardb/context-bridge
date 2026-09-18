@@ -8,7 +8,7 @@ on:
 jobs:
   public-tls-acceptance:
     name: synthetic public TLS sharing acceptance
-    if: github.ref == 'refs/heads/work/global-runtime-hardening'
+    if: github.ref == 'refs/heads/work/global-runtime-hardening' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:

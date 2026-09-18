@@ -539,6 +539,12 @@ at `f9d7e3e793b518f3c98567607cc1d4f65ca57ec1`; the release candidate must pass i
 7. Hygiene scan: no machine-specific paths, no credentials, and no tracked runtime state.
 8. Coordinate the core and MCP companion versions in `package.json` and `packages/mcp/package.json`, and refresh the lockfile. Keep the core version in sync with `plugin/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`. The CLI reads its version from `package.json`; it is not another source. Prepare and publish both packages from the same accepted commit and toolchain.
 9. Update README and docs if user-visible behaviour changed. The published package is `@serdardb/context-bridge`, because the plain name belongs to an unrelated library; publishing needs `--access public`.
+10. Publish the accepted MCP companion first, verify its version is available in
+    the npm registry, then publish core with the same toolchain and unchanged
+    checkout. npm does not publish these two packages atomically. Core's README
+    links to the companion's npm documentation, so publishing core first would
+    expose an unavailable installation target. If either publication fails,
+    inspect registry state before retrying; do not assume both succeeded.
 
 ### Changelog Attribution
 
