@@ -77,6 +77,10 @@ jobs:
           node test/integration/pi-native.mjs "$env:RUNNER_TEMP/bridge-native-pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" --migrate
       - name: Actual Windows TLS sharing and bounded transfer acceptance
         run: node test/integration/remote-tls.mjs
+      - name: Actual Windows sealed publication interruption acceptance
+        run: node test/integration/sealed-crash.mjs
+      - name: Actual Windows shared quota and server recovery acceptance
+        run: node test/integration/remote-store.mjs
 
   native-aider-windows:
     name: native Aider 0.86.2 acceptance · windows-latest

@@ -107,7 +107,9 @@ if (process.argv[2] === "--worker") {
     assert.deepEqual(records, [first.hash]);
     assert.ok(fs.statSync(path.join(racing, first.hash)).size <= quota);
 
-    for (let fault = 1; fault <= 4; fault++) {
+    // Windows has file write/flush and exclusive rename, but no directory fsync.
+    const exitBoundaries = process.platform === "win32" ? 3 : 4;
+    for (let fault = 1; fault <= exitBoundaries; fault++) {
       const directory = path.join(root, `crash-${fault}`); fs.mkdirSync(directory, { mode: 0o700 });
       const crashed = await start(directory, tokenFile, 1024 * 1024, `crash-${fault}`);
       await assert.rejects(sendArtifact(first.sealedFile, crashed));
@@ -156,7 +158,7 @@ if (process.argv[2] === "--worker") {
     assert.deepEqual(fs.readdirSync(largeDirectory).sort(), [".share.guard", maximumSent.hash].sort());
     assert.deepEqual(fs.readdirSync(project), []);
     console.log(JSON.stringify({ passed: true, platform: process.platform, arch: process.arch, node: process.version,
-      crossProcessQuota: true, actualKernelContention: true, serverExitBoundaries: 4, restartRoundtrip: true,
+      crossProcessQuota: true, actualKernelContention: true, serverExitBoundaries: exitBoundaries, restartRoundtrip: true,
       maximumUploadRoundtripBytes: maximum.length, oversizedDeclaredAndChunked: "413 without publication",
       scope: "two cooperating processes, observed atomic publication boundaries; not distributed quota, hostile directory races or power loss" }, null, 2));
   } finally {
