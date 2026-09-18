@@ -115,6 +115,7 @@ ${cmd("project restore <id>")}Preview restoring its archived store (--apply; --j
 ${cmd("project purge <id>")}Preview permanent archive removal (--apply --confirm <id>; --json)
 ${cmd("status [--json]")}Show project bridge status
 ${cmd("lane new <name> --worktree <path>")}Create an isolated Git worktree lane (optional)
+${cmd("lane seed <name> --seed <source>")}Seed an existing empty lane after interrupted creation
 ${cmd("lane attach <name> --worktree <path>")}Connect an existing worktree without copying sessions
 ${cmd("adapters [--json]")}List registered adapters and their declared capabilities
 ${cmd("mcp [--allow-content]")}Serve read-only MCP over stdio for this project
@@ -890,7 +891,7 @@ export async function main(argv) {
           options: { seed: { type: "string" }, yes: { type: "boolean" }, "dry-run": { type: "boolean" } } });
       } catch (cause) { throw new BridgeError("Invalid lane options; no lane operation was performed.", { cause }); }
       const action = parsed.positionals[0];
-      const allowed = { new: ["seed"], switch: [], rm: ["yes", "dry-run"] };
+      const allowed = { new: ["seed"], seed: ["seed"], switch: [], rm: ["yes", "dry-run"] };
       if ((action === undefined && Object.keys(parsed.values).length) ||
           (action !== undefined && (!Object.hasOwn(allowed, action) || parsed.positionals.length !== 2 ||
             Object.keys(parsed.values).some(key => !allowed[action].includes(key))))) {
@@ -1029,6 +1030,22 @@ function runLane(projectDir, args, flags, seedSource) {
       log("");
       log(dim("  One lane. 'bridge lane new <name>' starts a second, separate line of work."));
     }
+    return 0;
+  }
+
+  if (sub === "seed") {
+    if (!isValidLaneName(name) || !seedSource || seedSource === name) {
+      log(`${BAD} Usage: bridge lane seed <existing-empty-lane> --seed <different-source-lane>`);
+      return 1;
+    }
+    try {
+      const prepared = prepareSeed(projectDir, seedSource);
+      writeSeed(projectDir, name, prepared);
+    } catch (e) {
+      log(`${BAD} Could not seed existing lane '${name}': ${e.message}`);
+      return 1;
+    }
+    log(`${OK} Seeded existing lane ${bold(name)} from the current briefing in ${bold(seedSource)}. The active lane was not changed.`);
     return 0;
   }
 

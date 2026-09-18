@@ -471,6 +471,14 @@ If seed creation fails, automatic rollback removes only a still-empty lane
 record with no live launcher. Existing files are retained for inspection, not
 recursively deleted. A changed lane or failed state write is reported as an
 incomplete rollback; inspect `bridge lane` and `bridge status` before retrying.
+If the lane record survived an interrupted creation, use
+`bridge lane seed <existing-lane> --seed <source-lane>` after inspection. This
+builds a fresh briefing from the source's current evidence, not a replay of the
+original snapshot. It does not switch lanes or roll back the existing target on
+failure. Pending deliveries, linked sessions, live launchers and worktree links
+refuse this operation. Unchanged orphan files from a dead seed writer are
+recovered through its hash-checked preparation journal; changed files are
+preserved and block recovery.
 Explicit `lane rm --yes` rechecks the live-launcher guard under the state lock
 and keeps that lock until checkpoint deletion finishes, excluding concurrent
 lane recreation. If files cannot be removed safely, it reports their retention.

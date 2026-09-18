@@ -9,6 +9,7 @@
 import {
   loadState,
   laneOf,
+  laneHasLiveLauncher,
   latestCheckpoint,
   writeCheckpoint,
   mutateState,
@@ -106,6 +107,9 @@ export function composeSeed(sourceLane, { decisions, next, gitLines, files }) {
 export function prepareSeed(projectDir, sourceLane) {
   const s = loadState(projectDir, { readOnly: true });
   const src = laneOf(s, sourceLane);
+  if (!src) throw new BridgeError("The source lane does not exist; no seed was prepared.", {
+    code: "BRIDGE_SEED_SOURCE_MISSING", operation: "prepare lane seed",
+  });
   if (src && Object.hasOwn(src, "worktree")) {
     throw new BridgeError("Seed from an isolated lane inside its worktree directory, where its context is stored.", {
       code: "BRIDGE_SEED_WORKSPACE", operation: "prepare lane seed",
@@ -148,8 +152,11 @@ export function writeSeed(projectDir, newLane, prepared) {
 }
 
 function writeSeedOwned(projectDir, newLane, prepared) {
-  const target = loadState(projectDir, { readOnly: true })?.lanes?.[newLane];
-  if (!target || target.pendingInjection || Object.values(target.agents ?? {}).some(slot => slot?.id || slot?.pendingId)) {
+  const state = loadState(projectDir, { readOnly: true });
+  const target = state?.lanes?.[newLane];
+  if (!target || target.pendingInjection || target.pendingHandoff || Object.hasOwn(target, "worktree") ||
+      Object.keys(target.knownBy ?? {}).length || laneHasLiveLauncher(state, newLane) ||
+      Object.values(target.agents ?? {}).some(slot => slot?.id || slot?.pendingId)) {
     throw new BridgeError("The seed target must still be an empty lane with no pending delivery or linked session. Existing work was preserved.", {
       code: "BRIDGE_SEED_TARGET_OCCUPIED", operation: "write lane seed",
     });

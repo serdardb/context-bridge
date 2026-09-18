@@ -221,7 +221,7 @@ test("writeSeed writes the seed as both a delta and a full-context checkpoint, s
   fs.rmSync(project, { recursive: true });
 });
 
-test("lane new --seed rolls the lane back if the seed write fails", () => {
+test("lane seed recovers interrupted creation without rolling back existing work", () => {
   const project = seededProject();
   // Sabotage: make .bridge/lanes/x a FILE so writeCheckpoint's mkdir fails after the
   // lane is created in state.
@@ -252,6 +252,40 @@ test("lane new --seed rolls the lane back if the seed write fails", () => {
   assert.match(refused.stdout, /automatic rollback could not be completed/);
   assert.ok(loadState(project).lanes.x, "failed state rollback leaves the record available for recovery");
   assert.equal(fs.readFileSync(path.join(bridgeDir(project), "lanes", "x"), "utf8"), "not a directory");
+
+  const stopped = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { publication } from ${JSON.stringify(new URL("../src/publication.mjs", import.meta.url).href)};
+    import { main } from ${JSON.stringify(new URL("../src/cli.mjs", import.meta.url).href)};
+    const publish = publication.renameExclusive;
+    publication.renameExclusive = (from, to) => {
+      publish(from, to);
+      if (to.endsWith('-full.md')) process.exit(79);
+    };
+    await main(['lane', 'new', 'interrupted', '--seed', 'main']);
+  `], { cwd: project, encoding: "utf8", timeout: 10000 });
+  assert.equal(stopped.status, 79, stopped.stderr);
+  assert.ok(loadState(project).lanes.interrupted);
+  assert.equal(loadState(project).lanes.interrupted.pendingInjection, null);
+  const beforeRecoveryLane = loadState(project).activeLane;
+  const unseededState = fs.readFileSync(statePath(project));
+  const missingSource = spawnSync(process.execPath,
+    [BRIDGE, 'lane', 'seed', 'interrupted', '--seed', 'absent'],
+    { cwd: project, encoding: 'utf8', timeout: 10000 });
+  assert.equal(missingSource.status, 1);
+  assert.deepEqual(fs.readFileSync(statePath(project)), unseededState);
+  const recover = () => spawnSync(process.execPath,
+    [BRIDGE, 'lane', 'seed', 'interrupted', '--seed', 'main'],
+    { cwd: project, encoding: "utf8", timeout: 10000 });
+  const recovered = recover();
+  assert.equal(recovered.status, 0, recovered.stdout + recovered.stderr);
+  assert.equal(loadState(project).activeLane, beforeRecoveryLane);
+  const injection = loadState(project).lanes.interrupted.pendingInjection;
+  assert.ok(injection?.seed);
+  assert.match(fs.readFileSync(safeCheckpointPath(project, injection.deltaFile), 'utf8'), /use mutateProject/);
+  const committedState = fs.readFileSync(statePath(project));
+  const occupied = recover();
+  assert.equal(occupied.status, 1);
+  assert.deepEqual(fs.readFileSync(statePath(project)), committedState, 'retry must not roll back an existing seeded lane');
 
   fs.rmSync(project, { recursive: true });
 });
