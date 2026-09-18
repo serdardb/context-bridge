@@ -396,6 +396,32 @@ test("a resume with the store present routes delivery through preResume", () => 
     assert.ok(built.preResume, "the delta is delivered by injection, not by the command line");
     assert.equal(built.preResume.cmd, "sqlite3");
     assert.ok(built.carries, "and it is carried, so the launcher commits it once the injection succeeds");
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const execute = cp.execFileSync;
+      const spawn = cp.spawn;
+      cp.execFileSync = (cmd, args, options) => {
+        if (cmd === 'sqlite3' && options?.stdio === 'ignore') {
+          return execute(process.execPath, ['-e',
+            "process.on('SIGTERM', () => {}); setTimeout(() => { require('node:fs').writeFileSync('helper-survived', 'yes'); process.exit(0); }, 1800);"
+          ], { ...options, timeout: 500 });
+        }
+        return execute(cmd, args, options);
+      };
+      cp.spawn = (cmd, args, options) => cmd === 'opencode'
+        ? spawn(process.execPath, ['-e', 'process.exit(0)'], options)
+        : spawn(cmd, args, options);
+      syncBuiltinESMExports();
+      const { main } = await import(${JSON.stringify(new URL("../src/cli.mjs", import.meta.url).href)});
+      await main(['opencode']);
+    `], { cwd: project, env: { ...process.env }, encoding: "utf8", timeout: 10000, killSignal: "SIGKILL" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /timed out.*stays pending/);
+    assert.equal(fs.existsSync(path.join(project, "helper-survived")), false,
+      "the helper must terminate at the deadline even when it ignores SIGTERM");
+    assert.deepEqual(loadState(project).pendingInjection, s.pendingInjection);
+    assert.ok(fs.existsSync(safeCheckpointPath(project, s.pendingInjection.deltaFile)));
   } finally {
     if (prev === undefined) delete process.env.OPENCODE_HOME;
     else process.env.OPENCODE_HOME = prev;

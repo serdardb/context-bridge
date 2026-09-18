@@ -2,7 +2,7 @@
 //   shell └── bridge └── exactly one active agent child
 // Auto-exit safety (spec §11): SIGTERM is sent ONLY to the exact child PID we
 // spawned, ONLY when a persisted handoff is ready AND the agent is idle.
-// Never SIGKILL. Never process-name matching. If idle is uncertain: tell the
+// Never SIGKILL the interactive agent. Never process-name matching. If idle is uncertain: tell the
 // user instead of terminating.
 import fs from "node:fs";
 import path from "node:path";
@@ -171,6 +171,9 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
           cwd: projectDir,
           env: childEnv(launcherLane),
           timeout: preResume.timeout ?? 15000,
+          // This bounded store helper is not the interactive agent. A helper
+          // ignoring SIGTERM must not hold the synchronous launcher forever.
+          killSignal: "SIGKILL",
         });
         injected = true;
       } catch (error) {
