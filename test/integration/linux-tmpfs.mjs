@@ -37,11 +37,17 @@ try {
     // the fallback's native filesystem/handle calls still run without mocks.
     const preload = path.join(root, "missing-birthtime.mjs");
     fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path';
-const original = fs.statSync, root = ${JSON.stringify(root)};
-fs.statSync = (file, ...args) => {
-  const info = original(file, ...args), resolved = path.resolve(String(file));
-  if (args[0]?.bigint && info.isDirectory() && (resolved === root || resolved.startsWith(root + path.sep))) info.birthtimeNs = 0n;
+const original = fs.statSync, originalFd = fs.fstatSync, root = ${JSON.stringify(root)};
+const hide = (info, file, options) => {
+  const resolved = path.resolve(String(file));
+  if (options?.bigint && info.isDirectory() && (resolved === root || resolved.startsWith(root + path.sep))) info.birthtimeNs = 0n;
   return info;
+};
+fs.statSync = (file, ...args) => {
+  return hide(original(file, ...args), file, args[0]);
+};
+fs.fstatSync = (fd, ...args) => {
+  return hide(originalFd(fd, ...args), fs.readlinkSync('/proc/self/fd/' + fd), args[0]);
 };\n`);
     const url = pathToFileURL(preload).href;
     await import(url);
