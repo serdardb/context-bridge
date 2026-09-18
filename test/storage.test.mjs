@@ -619,6 +619,16 @@ test("project runtime ownership excludes real state and checkpoint writers outsi
       });
       assert.deepEqual(projectOperations(id), []);
       assert.equal(run(adoptFinal).status, 0);
+      await withProjectOperation(final, 'handoff', async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.equal(projectOperations(id).length, 1, 'reservation must survive an async callback yield');
+      });
+      assert.deepEqual(projectOperations(id), []);
+      await assert.rejects(withProjectOperation(final, 'handoff', async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        throw new Error('async operation failed');
+      }), /async operation failed/);
+      assert.deepEqual(projectOperations(id), []);
       const interrupted = run('const { withProjectOperation } = await import(' +
         JSON.stringify(${JSON.stringify(new URL("../src/storage.mjs", import.meta.url).href)}) +
         '); withProjectOperation(' + JSON.stringify(final) + ', "handoff", () => process.exit(79));');

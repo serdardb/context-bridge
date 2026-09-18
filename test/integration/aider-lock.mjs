@@ -56,9 +56,17 @@ try {
   const evidence = spawnSync(python, ["-I", "-B", "-c", `
 import importlib.util,json,os,sys
 from pathlib import Path
+from types import SimpleNamespace
 s=importlib.util.spec_from_file_location('driver',sys.argv[1])
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 root=Path(sys.argv[2]);events=root/'events.jsonl'
+m.watch_parent=lambda: None
+args=SimpleNamespace(session_dir=str(root),reservation=str(root/'removed-operation.json'),session_id='session',project_id='project')
+try:
+    m.run(args)
+    raise AssertionError('a late child must refuse a recovered reservation')
+except FileNotFoundError as error:
+    assert error.filename == args.reservation
 events.write_text(json.dumps(dict(type='session',version=1,sessionId='session',projectId='project'))+'\\n')
 (root/'chat.md').write_text('')
 record=m.Evidence(root,'session','project')

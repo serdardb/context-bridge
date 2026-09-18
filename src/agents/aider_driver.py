@@ -240,6 +240,11 @@ def run(args):
     locks = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(locks)
     with locks.session_lock(str(directory / "session.lock")):
+        reservation = json.loads(read_regular(Path(args.reservation)))
+        if (reservation.get("version") != 1 or reservation.get("operation") != "aider"
+                or reservation.get("project") != args.project_id
+                or reservation.get("sessionId") != args.session_id):
+            raise RuntimeError("Aider project operation reservation is no longer valid.")
         meta = json.loads(read_regular(directory / "session.json"))
         if (meta.get("version") != 1 or meta.get("id") != args.session_id
                 or meta.get("projectId") != args.project_id or directory.name != args.session_id
@@ -291,6 +296,7 @@ if __name__ == "__main__":
     parser.add_argument("--session-dir", required=True)
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--project-id", required=True)
+    parser.add_argument("--reservation", required=True)
     parser.add_argument("--native-args", default="[]")
     parser.add_argument("--prompt")
     parser.add_argument("--once", action="store_true")

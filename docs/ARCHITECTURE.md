@@ -395,6 +395,15 @@ UUID guard and clears only safely read, schema-valid records with definitely
 absent process owners. Live/unknown owners and unsafe records remain. Recovery
 does not repair/undo handoffs or remove evidence; age alone is never authority.
 
+The Aider entry also reserves its entire asynchronous session lifetime, including
+launch metadata publication. Its reservation records the session UUID before
+spawning the Python writer. Normal child completion releases the reservation;
+after a wrapper crash, recovery must also acquire that session's kernel lock.
+The Python writer checks the reservation while holding the same lock before
+opening its SDK session, so a delayed child cannot write after recovery. A
+read-only recovery preview reports that this lock check requires `--apply`;
+an uncertain or still-running writer retains the record and blocks retirement.
+
 Project retirement takes the UUID runtime guard before registry ownership and
 rechecks quiescence. The registry itself journals `retiring` before renaming
 `projects/<UUID>` to `retired-projects/<UUID>`, then publishes `retired`.

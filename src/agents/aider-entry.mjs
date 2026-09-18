@@ -8,6 +8,7 @@ import { createAiderSession, aiderSessionRef } from "./aider-sessions.mjs";
 import { resolveAiderRuntime } from "./aider-runtime.mjs";
 import { writeJsonAtomic } from "../util.mjs";
 import { openAiderLifeline } from "./aider-lifeline.mjs";
+import { withProjectOperation } from "../storage.mjs";
 
 // New sessions are prepared in this child, not while constructing a command.
 // Their launch identity therefore belongs to the launcher's observation window.
@@ -41,7 +42,13 @@ export async function runAiderEntry(argv = process.argv.slice(2)) {
     throw new Error("Invalid Aider native argument list.");
   }
   const project = process.cwd();
+  return withProjectOperation(project, "aider", reservation => runOwnedEntry(project, values, native, reservation));
+}
+
+async function runOwnedEntry(project, values, native, reservation) {
+  if (!reservation) throw new Error("Aider requires machine-local project operation ownership.");
   const ref = values.new ? createAiderSession(project) : aiderSessionRef(project, values.session);
+  reservation.bindSession(ref.id);
   const runtime = resolveAiderRuntime({ env: { ...process.env,
     CONTEXT_BRIDGE_AIDER_PYTHON: process.env.CONTEXT_BRIDGE_AIDER_PYTHON ?? ref.python } });
   if (runtime.cmd !== ref.python) throw new Error("The linked Aider session belongs to a different Python environment.");
@@ -50,6 +57,7 @@ export async function runAiderEntry(argv = process.argv.slice(2)) {
     projectId: ref.projectId, pid: process.pid, at: new Date().toISOString() });
   const args = [...runtime.flags, fileURLToPath(new URL("aider_driver.py", import.meta.url)),
     "--session-dir", directory, "--session-id", ref.id, "--project-id", ref.projectId,
+    "--reservation", reservation.file,
     "--native-args", JSON.stringify(native)];
   if (values.prompt !== undefined) args.push("--prompt", values.prompt);
   if (values.once) args.push("--once");

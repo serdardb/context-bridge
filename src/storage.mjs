@@ -71,7 +71,8 @@ export function recoverProjectOperations(id, { apply = false } = {}) {
         if (!name.endsWith(".json") || !PROJECT_UUID.test(name.slice(0, -5))) throw new Error("Unknown operation record name.");
         const raw = readOwnedFile(file, { encoding: "utf8" });
         const record = JSON.parse(raw);
-        if (record?.version !== 1 || record.project !== id || record.operation !== "handoff" ||
+        if (record?.version !== 1 || record.project !== id || !["handoff", "aider"].includes(record.operation) ||
+            (record.operation === "aider" && record.sessionId !== null && !PROJECT_UUID.test(record.sessionId ?? "")) ||
             !Number.isSafeInteger(record.pid) || record.pid <= 0 || !Number.isFinite(Date.parse(record.startedAt))) {
           throw new Error("Invalid operation record.");
         }
@@ -79,15 +80,34 @@ export function recoverProjectOperations(id, { apply = false } = {}) {
           report.retained.push({ file: name, reason: "owner-live-or-unverifiable" });
           continue;
         }
-        report.recoverable.push(name);
-        if (apply) {
+        const recover = () => {
+          report.recoverable.push(name);
+          if (!apply) return;
           if (readOwnedFile(file, { encoding: "utf8" }) !== raw || processIsAlive(record.pid)) throw new Error("Operation ownership changed.");
           fs.unlinkSync(file);
           report.removed.push(name);
+        };
+        if (record.operation === "aider" && record.sessionId) {
+          if (!apply) {
+            report.retained.push({ file: name, reason: "session-lock-verification-required-on-apply" });
+            continue;
+          }
+          let dir = path.join(storageHome(), "projects");
+          for (const segment of [null, id, "agents", "aider", record.sessionId]) {
+            if (segment) dir = path.join(dir, segment);
+            const stat = fs.lstatSync(dir);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe Aider session directory.");
+          }
+          // The child checks this reservation after taking the same session lock.
+          // A late child therefore cannot write after recovery deletes the record.
+          withKernelLockSync(path.join(dir, "session.lock"), recover);
+        } else {
+          recover();
         }
-      } catch {
+      } catch (error) {
         report.complete = false;
-        report.retained.push({ file: name, reason: "unsafe-unreadable-or-changed-record" });
+        report.retained.push({ file: name, reason: error.code === "BRIDGE_LOCK_TIMEOUT"
+          ? "session-writer-live-or-unverifiable" : "unsafe-unreadable-or-changed-record" });
       }
     }
     return report;
@@ -95,8 +115,9 @@ export function recoverProjectOperations(id, { apply = false } = {}) {
   return apply ? withKernelLockSync(path.join(storageHome(), "locks", `${id}.runtime.guard`), scan) : scan();
 }
 
-/** Reserve a synchronous long operation without monopolizing state access. */
+/** Reserve an operation through completion, including a returned promise. */
 export function withProjectOperation(projectDir, operation, fn) {
+  if (!["handoff", "aider"].includes(operation)) throw new BridgeError("Unsupported project operation.");
   if (process.env.CONTEXT_BRIDGE_STORAGE === "project") return fn();
   const owned = withProjectRuntimeLock(projectDir, () => {
     const { id } = projectIdentity(projectDir);
@@ -104,13 +125,12 @@ export function withProjectOperation(projectDir, operation, fn) {
     const dir = path.join(storageHome(), "operations", id);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${crypto.randomUUID()}.json`);
-    writeFileExclusive(file, JSON.stringify({ version: 1, project: id, operation, pid: process.pid, startedAt: new Date().toISOString() }));
-    return { id, file };
+    const record = { version: 1, project: id, operation, pid: process.pid, startedAt: new Date().toISOString(),
+      ...(operation === "aider" ? { sessionId: null } : {}) };
+    writeFileExclusive(file, JSON.stringify(record));
+    return { id, file, record };
   });
-  let failure;
-  try { return fn(); }
-  catch (error) { failure = error; throw error; }
-  finally {
+  const cleanup = (failure) => {
     try {
       withKernelLockSync(path.join(storageHome(), "locks", `${owned.id}.runtime.guard`), () => fs.unlinkSync(owned.file));
     } catch (cause) {
@@ -119,7 +139,26 @@ export function withProjectOperation(projectDir, operation, fn) {
         code: "BRIDGE_OPERATION_CLEANUP_FAILED", cause, nextCommand: `bridge project inspect ${owned.id} --json`,
       });
     }
+  };
+  const reservation = {
+    file: owned.file,
+    bindSession(id) {
+      if (operation !== "aider" || !PROJECT_UUID.test(id)) throw new BridgeError("Invalid operation session identity.");
+      withProjectRuntimeLock(projectDir, () => {
+        if (owned.record.sessionId !== null) throw new BridgeError("Operation session is already bound.");
+        owned.record.sessionId = id;
+        writeJsonAtomic(owned.file, owned.record);
+      });
+    },
+  };
+  let result;
+  try { result = fn(reservation); }
+  catch (error) { cleanup(error); throw error; }
+  if (result && typeof result.then === "function") {
+    return Promise.resolve(result).then(value => { cleanup(); return value; }, error => { cleanup(error); throw error; });
   }
+  cleanup();
+  return result;
 }
 
 function git(projectDir, args) {
