@@ -184,7 +184,9 @@ try {
   await execute();
   assert.equal(requests.length, 2);
   assert.ok(JSON.stringify(requests[0]).includes("/run touch"));
-  const sharedSkill = fs.readFileSync(new URL("../../codex/SKILL.md", import.meta.url), "utf8");
+  // Python Path.read_text uses universal newlines, including on CRLF checkouts.
+  // This is a text-content assertion; evidence files remain byte-exact below.
+  const sharedSkill = fs.readFileSync(new URL("../../codex/SKILL.md", import.meta.url), "utf8").replace(/\r\n?/g, "\n");
   assert.ok(requests[0].messages.some((message) => message.role === "system" && message.content.includes(sharedSkill)));
   assert.ok(JSON.stringify(requests[1]).includes("BRIDGE_INITIAL_CONTEXT_7143"));
   assert.ok(JSON.stringify(requests[1]).includes("FOLLOW_UP_CONTEXT_8619"));
