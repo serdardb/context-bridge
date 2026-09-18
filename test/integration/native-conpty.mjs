@@ -34,7 +34,12 @@ terminal.onData((data) => {
   output += data;
   if (aider && !interrupted && output.includes("INTERRUPTED_STREAM_8741")) {
     interrupted = true;
-    terminal.write("\x03");
+    const win32Input = output.lastIndexOf("\x1b[?9001h") > output.lastIndexOf("\x1b[?9001l");
+    console.error(`${label} ConPTY: interrupt with win32-input-mode=${win32Input}`);
+    // Honor ConPTY's requested keyboard protocol: Ctrl down, C down/up, Ctrl up.
+    terminal.write(win32Input
+      ? "\x1b[17;29;0;1;8;1_\x1b[67;46;3;1;8;1_\x1b[67;46;3;0;8;1_\x1b[17;29;0;0;0;1_"
+      : "\x03");
   }
   if (aider && interrupted && !followed && output.includes("^C again to exit")) {
     followed = true;
