@@ -100,6 +100,8 @@ jobs:
         run: node test/integration/sealed-crash.mjs
       - name: Actual Windows shared quota and server recovery acceptance
         run: node test/integration/remote-store.mjs
+      - name: Existing migration I/O failure and idempotent recovery matrix
+        run: node test/integration/migration-io.mjs
 
   native-aider-windows:
     name: native Aider 0.86.2 acceptance · windows-latest
