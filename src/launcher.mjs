@@ -203,7 +203,7 @@ export async function runLoop(projectDir, startAgent = null, forward = []) {
       }
     }
     // A session we are about to create belongs to this project, and until it is
-    // written into state it cannot be resumed: `bridge <agent>` would refuse and
+    // written into state it cannot be resumed: `bridge <agent>` would start fresh and
     // the next handoff would mint yet another session. Claude records itself via
     // its SessionStart hook; every other agent needs the launcher to do it.
     const startedAt = nowIso();
@@ -503,16 +503,9 @@ export function buildCommand(projectDir, s, agent, extra = []) {
   const inj = s.pendingInjection;
   const seeding = !slot.id && inj?.agent === agent && inj.id == null;
   requireClosingComplete(inj);
-  if (!slot.id && !seeding && adapter.injection === "prompt") {
-    // Nothing to resume and no context waiting: starting blind would silently
-    // drop the user into an empty session that the bridge does not track.
-    return {
-      cmd: null,
-      args: [],
-      note: `No linked ${adapter.displayName} session yet. Hand off to it from another agent first.`,
-    };
-  }
   if (!slot.id) {
+    // A direct first launch needs no incoming handoff. The launcher links the
+    // new session through hooks or adoptStartedSession before the next resume.
     // A fresh session. Prompt-injecting agents get the delta as their opening
     // message; hook-injecting ones receive it through their own session hook.
     const { cmd, args } = adapter.startCommand(extra);

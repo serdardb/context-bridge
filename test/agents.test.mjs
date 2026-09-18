@@ -262,15 +262,22 @@ test("the launcher builds commands through adapters, including for grok", async 
   assert.match(built.note, /Resuming your Grok session/);
 });
 
-test("an unlinked prompt-injecting agent refuses to start, a hook-injecting one starts fresh", async () => {
+test("unlinked agents start fresh without requiring an incoming handoff", async () => {
   const { buildCommand } = await import("../src/launcher.mjs");
   const { defaultState } = await import("../src/state.mjs");
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bridge-unlinked-")));
   const s = defaultState(project);
 
   const grok = buildCommand(project, s, "grok");
-  assert.equal(grok.cmd, null, "no session to resume and no official import path");
-  assert.match(grok.note, /No linked Grok session yet/);
+  assert.equal(grok.cmd, "grok");
+  assert.deepEqual(grok.args, []);
+
+  const flags = ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"];
+  const codex = buildCommand(project, s, "codex", flags);
+  assert.equal(codex.cmd, "codex");
+  assert.deepEqual(codex.args, flags, "start fresh and preserve explicitly supplied vendor flags");
+  assert.equal(codex.carries, undefined, "starting is not proof of a context delivery");
+  assert.match(codex.note, /Starting a new Codex session/);
 
   const claude = buildCommand(project, s, "claude");
   assert.equal(claude.cmd, "claude");
