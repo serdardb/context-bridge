@@ -6,7 +6,8 @@ Bridge state used to live in a `.bridge/` directory inside each project. It now 
 
 ```
 macOS     ~/Library/Application Support/context-bridge
-others    $XDG_STATE_HOME/context-bridge   (default ~/.local/state/context-bridge)
+others    $XDG_STATE_HOME/context-bridge
+          (default ~/.local/state/context-bridge)
 override  CONTEXT_BRIDGE_HOME
 ```
 
