@@ -24,23 +24,31 @@ const PROJECT = "context-bridge";
 
 /** Which commands belong to which page, in reading order. */
 const PAGES = [
-  { slug: "requirements", title: "Requirements", match: [] },
-  { slug: "getting-started", title: "Getting started", match: [/^bridge$/, /^bridge (claude|codex|grok|antigravity|opencode)\b/] },
-  { slug: "health-checks", title: "Doctor, verify and eval", match: [/^bridge (doctor|verify|eval)\b/] },
-  { slug: "handoffs", title: "Handoffs", match: [/^bridge (handoff|inspect|unlink)\b/] },
-  { slug: "lanes", title: "Lanes and worktrees", match: [/^bridge lane\b/] },
-  { slug: "storage", title: "Storage and migration", match: [/^bridge storage\b/] },
-  { slug: "projects", title: "Project lifecycle", match: [/^bridge project\b/] },
-  { slug: "artifacts", title: "Portable and sealed context", match: [/^bridge artifact\b/] },
-  { slug: "sharing", title: "Sharing sealed bundles", match: [/^bridge share\b/] },
-  { slug: "observing", title: "Status, search and watch", match: [/^bridge (status|search|watch)\b/] },
-  { slug: "mcp", title: "MCP companion", match: [/^bridge mcp\b/] },
-  { slug: "releasing", title: "Release gates", match: [/^bridge release-/] },
-  { slug: "adapters", title: "Adapter contract", match: [/^bridge adapters\b/] },
-  { slug: "experimental-adapters", title: "Aider and Pi", match: [] },
-  { slug: "configuration", title: "Configuration and exit codes", match: [] },
-  { slug: "privacy", title: "Privacy and what is stored", match: [/^bridge clean\b/] },
-  { slug: "troubleshooting", title: "When something goes wrong", match: [] },
+  // Groups are the reading order made visible: what you need, what you do every
+  // day, where the data lives, moving it elsewhere, extending it, and the pages
+  // you reach for when something is wrong.
+  { group: "Start here", slug: "requirements", title: "Requirements", match: [] },
+  { group: "Start here", slug: "getting-started", title: "Getting started", match: [/^bridge$/, /^bridge (claude|codex|grok|antigravity|opencode)\b/] },
+
+  { group: "Everyday use", slug: "handoffs", title: "Handoffs", match: [/^bridge (handoff|inspect|unlink)\b/] },
+  { group: "Everyday use", slug: "lanes", title: "Lanes and worktrees", match: [/^bridge lane\b/] },
+  { group: "Everyday use", slug: "observing", title: "Status, search and watch", match: [/^bridge (status|search|watch)\b/] },
+  { group: "Everyday use", slug: "health-checks", title: "Doctor, verify and eval", match: [/^bridge (doctor|verify|eval)\b/] },
+
+  { group: "Your data", slug: "storage", title: "Storage and migration", match: [/^bridge storage\b/] },
+  { group: "Your data", slug: "projects", title: "Project lifecycle", match: [/^bridge project\b/] },
+  { group: "Your data", slug: "privacy", title: "Privacy and what is stored", match: [/^bridge clean\b/] },
+
+  { group: "Taking context elsewhere", slug: "artifacts", title: "Portable and sealed context", match: [/^bridge artifact\b/] },
+  { group: "Taking context elsewhere", slug: "sharing", title: "Sharing sealed bundles", match: [/^bridge share\b/] },
+
+  { group: "Extending", slug: "mcp", title: "MCP companion", match: [/^bridge mcp\b/] },
+  { group: "Extending", slug: "adapters", title: "Adapter contract", match: [/^bridge adapters\b/] },
+  { group: "Extending", slug: "experimental-adapters", title: "Aider and Pi", match: [] },
+
+  { group: "Reference", slug: "configuration", title: "Configuration and exit codes", match: [] },
+  { group: "Reference", slug: "troubleshooting", title: "When something goes wrong", match: [] },
+  { group: "Reference", slug: "releasing", title: "Release gates", match: [/^bridge release-/] },
 ];
 
 /**
@@ -119,6 +127,7 @@ async function publish(page, index, dryRun) {
       project: PROJECT,
       slug: page.slug,
       title: page.title,
+      group: page.group,
       summary,
       body: markdown,
       status: "published",
