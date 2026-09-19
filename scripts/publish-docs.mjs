@@ -24,9 +24,10 @@ const PROJECT = "context-bridge";
 
 /** Which commands belong to which page, in reading order. */
 const PAGES = [
+  { slug: "requirements", title: "Requirements", match: [] },
   { slug: "getting-started", title: "Getting started", match: [/^bridge$/, /^bridge (claude|codex|grok|antigravity|opencode)\b/] },
   { slug: "health-checks", title: "Doctor, verify and eval", match: [/^bridge (doctor|verify|eval)\b/] },
-  { slug: "handoffs", title: "Handoffs", match: [/^bridge (handoff|inspect|unlink|clean)\b/] },
+  { slug: "handoffs", title: "Handoffs", match: [/^bridge (handoff|inspect|unlink)\b/] },
   { slug: "lanes", title: "Lanes and worktrees", match: [/^bridge lane\b/] },
   { slug: "storage", title: "Storage and migration", match: [/^bridge storage\b/] },
   { slug: "projects", title: "Project lifecycle", match: [/^bridge project\b/] },
@@ -37,6 +38,9 @@ const PAGES = [
   { slug: "releasing", title: "Release gates", match: [/^bridge release-/] },
   { slug: "adapters", title: "Adapter contract", match: [/^bridge adapters\b/] },
   { slug: "experimental-adapters", title: "Aider and Pi", match: [] },
+  { slug: "configuration", title: "Configuration and exit codes", match: [] },
+  { slug: "privacy", title: "Privacy and what is stored", match: [/^bridge clean\b/] },
+  { slug: "troubleshooting", title: "When something goes wrong", match: [] },
 ];
 
 /**
@@ -136,6 +140,24 @@ function token() {
   return value;
 }
 
+/**
+ * Every command must appear on some page.
+ *
+ * Two pages were published without the adapter contract on them and nobody
+ * noticed until it was pointed out. A reference whose gaps are found by readers
+ * is not a reference, so the gap is now a failed publish.
+ */
+function assertEveryCommandIsCovered() {
+  const orphans = commands()
+    .map((r) => r.cmd)
+    .filter((cmd) => !PAGES.some((p) => p.match.some((m) => m.test(cmd))));
+
+  if (orphans.length) {
+    throw new Error(`No page covers:\n  ${orphans.join("\n  ")}\nAdd a match to PAGES or a page to docs/site.`);
+  }
+}
+
 const dryRun = process.argv.includes("--dry-run");
+assertEveryCommandIsCovered();
 for (const [index, page] of PAGES.entries()) await publish(page, index, dryRun);
 console.log(dryRun ? "Dry run: nothing published." : `Published ${PAGES.length} pages for ${PROJECT} ${version()}.`);
