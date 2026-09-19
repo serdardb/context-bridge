@@ -76,7 +76,16 @@ function prose(slug) {
   const raw = fs.readFileSync(file, "utf8");
   const summary = raw.match(/^>\s*(.+)$/m)?.[1]?.trim();
   if (!summary) throw new Error(`docs/site/${slug}.md needs a one-line summary as a leading blockquote.`);
-  return { summary, body: raw.replace(/^>\s*.+$/m, "").trim() };
+
+  // The file keeps its own `# Title` so it reads on GitHub, but the published
+  // page supplies the heading itself. Two h1 elements saying the same thing is
+  // a duplicate title to a crawler and a stutter to a reader.
+  const body = raw
+    .replace(/^>\s*.+$/m, "")
+    .replace(/^#\s+.+$/m, "")
+    .trim();
+
+  return { summary, body };
 }
 
 async function publish(page, index, dryRun) {
