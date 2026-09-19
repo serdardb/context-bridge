@@ -25,7 +25,7 @@ const PROJECT = "context-bridge";
 /** Which commands belong to which page, in reading order. */
 const PAGES = [
   { slug: "getting-started", title: "Getting started", match: [/^bridge$/, /^bridge (claude|codex|grok|antigravity|opencode)\b/] },
-  { slug: "health-checks", title: "Doctor, verify and adapters", match: [/^bridge (doctor|verify|adapters|eval)\b/] },
+  { slug: "health-checks", title: "Doctor, verify and eval", match: [/^bridge (doctor|verify|eval)\b/] },
   { slug: "handoffs", title: "Handoffs", match: [/^bridge (handoff|inspect|unlink|clean)\b/] },
   { slug: "lanes", title: "Lanes and worktrees", match: [/^bridge lane\b/] },
   { slug: "storage", title: "Storage and migration", match: [/^bridge storage\b/] },
@@ -35,6 +35,8 @@ const PAGES = [
   { slug: "observing", title: "Status, search and watch", match: [/^bridge (status|search|watch)\b/] },
   { slug: "mcp", title: "MCP companion", match: [/^bridge mcp\b/] },
   { slug: "releasing", title: "Release gates", match: [/^bridge release-/] },
+  { slug: "adapters", title: "Adapter contract", match: [/^bridge adapters\b/] },
+  { slug: "experimental-adapters", title: "Aider and Pi", match: [] },
 ];
 
 /**
