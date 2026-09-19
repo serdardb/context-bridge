@@ -589,7 +589,7 @@ an explicitly confirmed older registration in its original directory may leave
 legacy `.bridge` evidence in place: adoption does not read, merge or migrate that
 evidence. Subsequent migration retains its conflict/backup checks. A different
 destination containing legacy data remains ineligible for adoption. Matching
-creation identities preserve same-filesystem rename behavior. Linux64-bit
+creation identities preserve same-filesystem rename behavior. Linux 64-bit
 x64/arm64 little-endian tmpfs has a fallback: `fstatfs` filesystem identity,
 opaque `name_to_handle_at(AT_EMPTY_PATH)` handle and kernel boot UUID. Both
 native queries use the same opened directory; path identity is checked before

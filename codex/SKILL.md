@@ -3,7 +3,7 @@ name: bridge
 description: "Hand this session off to another coding agent via context-bridge (usage: $bridge claude, $bridge grok, $bridge antigravity, $bridge opencode)"
 ---
 
-The user invoked the context-bridge handoff, e.g. `$bridge claude`, `$bridge grok` or `$bridge opencode`.
+The user invoked the context-bridge handoff, e.g. `$bridge claude`, `$bridge grok`, `$bridge antigravity` or `$bridge opencode`.
 
 Follow these steps exactly:
 

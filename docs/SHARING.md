@@ -12,7 +12,7 @@ Create a dedicated private directory and a separate private token file. Token
 contents must be 32-128 cryptographically random URL-safe characters; for
 example, use Node's `crypto.randomBytes(32).toString('hex')`, stored with mode
 0600. Do not put tokens in command arguments, URLs, source control or logs.
-The server directory must already exist with mode0700 on POSIX.
+The server directory must already exist with mode 0700 on POSIX.
 Startup acquires and releases the store's stable `.share.guard` before listening.
 Missing native locking or an unusable guard refuses startup with a diagnostic;
 the server does not report readiness and defer that failure to the first upload.
@@ -59,17 +59,17 @@ Existing local destinations are never overwritten.
 - HTTPS origins only: credentials, query strings, fragments, base paths and
   redirects are rejected. Explicit `--allow-loopback-http` permits only literal
   127.0.0.1 or ::1 for local testing. It does not allow arbitrary plain HTTP.
-- Requests have a30-second deadline. Client responses and server uploads are
-  bounded to 24 MiB. There are no automatic mutation retries; a timeout can mean
+- Requests have a 30-second deadline. Client responses and server uploads are
+  bounded to 24MiB. There are no automatic mutation retries; a timeout can mean
   remote completion is unknown. Repeat the same hash deliberately if needed.
 - Default access lifetime is 86400 seconds; `share send --ttl-seconds` accepts
-  1 through604800. Repeated identical uploads do not extend expiry. Expired
+  1 through 604800. Repeated identical uploads do not extend expiry. Expired
   objects cannot be fetched or revived by an upload; delete them explicitly
   before a new upload. Expiry restricts access, **not physical disk retention**.
 - `share remove HASH --endpoint ...` previews locally. Add `--token-file ...
   --apply` to delete. This cannot revoke copies or decryption keys already held
   by a recipient. There is no remote listing or automatic garbage collector.
-- Disk quota defaults to 256 MiB, configurable with `serve --quota-bytes` up to
+- Disk quota defaults to 256MiB, configurable with `serve --quota-bytes` up to
   1GiB. Stored JSON encoding, retained expired objects and interrupted staging
   count toward disk use. The server refuses further uploads at quota; it never
   silently evicts context. At most four authenticated requests are active per
