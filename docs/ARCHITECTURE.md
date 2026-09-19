@@ -1009,8 +1009,8 @@ Probe commands report an oversized transcript as unreadable. These limits
 are input admission constraints, separate from the delta delivery byte budget.
 
 - Verified on macOS and in selected Linux arm64 acceptance environments,
-  including installed-package operation on Alpine/Node18.18 and native
-  OpenCode1.18.31 snapshot/handoff preparation on Node24. These results do not
+  including installed-package operation on Alpine/Node 18.18 and native
+  OpenCode 1.18.31 snapshot/handoff preparation on Node 24. These results do not
   establish every vendor/provider/terminal combination. Windows installed-package
   and selected native Pi/Aider transport, migration and sharing checks have
   passed CI; authenticated Aider and all built-in Windows workflows are not

@@ -60,20 +60,20 @@ Existing local destinations are never overwritten.
   redirects are rejected. Explicit `--allow-loopback-http` permits only literal
   127.0.0.1 or ::1 for local testing. It does not allow arbitrary plain HTTP.
 - Requests have a30-second deadline. Client responses and server uploads are
-  bounded to24MiB. There are no automatic mutation retries; a timeout can mean
+  bounded to 24 MiB. There are no automatic mutation retries; a timeout can mean
   remote completion is unknown. Repeat the same hash deliberately if needed.
-- Default access lifetime is86400seconds; `share send --ttl-seconds` accepts
+- Default access lifetime is 86400 seconds; `share send --ttl-seconds` accepts
   1 through604800. Repeated identical uploads do not extend expiry. Expired
   objects cannot be fetched or revived by an upload; delete them explicitly
   before a new upload. Expiry restricts access, **not physical disk retention**.
 - `share remove HASH --endpoint ...` previews locally. Add `--token-file ...
   --apply` to delete. This cannot revoke copies or decryption keys already held
   by a recipient. There is no remote listing or automatic garbage collector.
-- Disk quota defaults to256MiB, configurable with `serve --quota-bytes` up to
+- Disk quota defaults to 256 MiB, configurable with `serve --quota-bytes` up to
   1GiB. Stored JSON encoding, retained expired objects and interrupted staging
   count toward disk use. The server refuses further uploads at quota; it never
   silently evicts context. At most four authenticated requests are active per
-  process and32connections are allowed. This is a bounded small-team service,
+  process and 32 connections are allowed. This is a bounded small-team service,
   not a distributed or internet-scale object store.
 
 The storage operator can see size, timing and object hashes, and can delete or

@@ -67,7 +67,7 @@ Example host configuration (adjust executable and project paths):
 Local evidence is untrusted data, not instructions. Read-only tool annotations
 do not sandbox installed adapter plugins: `CONTEXT_BRIDGE_ADAPTERS`, when set,
 still loads trusted executable code at startup. Unset it for built-ins only.
-The companion uses the official MCP SDK, Zod and a Node18-compatible Hono pin;
+The companion uses the official MCP SDK, Zod and a Node 18-compatible Hono pin;
 none are core runtime dependencies. Automatic discovery supports npm sibling
 installations. For isolated layouts (pnpm/Yarn PnP), set the MCP host environment
 `CONTEXT_BRIDGE_MCP_MODULE` to the trusted absolute companion `index.mjs` path,

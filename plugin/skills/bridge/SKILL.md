@@ -1,7 +1,7 @@
 ---
 name: bridge
 description: Hand this session off to another coding agent (context-bridge)
-argument-hint: codex | grok
+argument-hint: codex | grok | antigravity | opencode
 allowed-tools: Bash(bridge handoff:*), Bash(bridge doctor:*), Bash(bridge status:*)
 disable-model-invocation: true
 ---

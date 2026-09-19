@@ -130,7 +130,7 @@ write/flush/publication boundaries; restart must never serve a partial object
 or renew an already-published object's expiry. This uses synthetic local data,
 and also roundtrips an exact 24MiB envelope with maximum-size synthetic
 ciphertext. Both declared-length and chunked uploads one byte over the wire
-limit must return413 without leaving an object or staging file. Shape validation
+limit must return 413 without leaving an object or staging file. Shape validation
 in the opaque store is not cryptographic authentication of that synthetic data.
 The harness uses
 no provider or Git, and runs outside `npm test`. It does not establish distributed
@@ -518,7 +518,7 @@ Separate Windows jobs exercise actual Pi and Aider processes, including selected
 terminal and migration paths, and sharing/publication interruption scenarios.
 Aider model responses use a local fixture, not authenticated provider acceptance.
 Neither layer establishes network-filesystem or physical power-loss durability.
-The last pre-release implementation run was [CI 35405385709](https://github.com/SerdarDB/context-bridge/actions/runs/35405385709)
+A recorded pre-release implementation run is [CI 35405385709](https://github.com/SerdarDB/context-bridge/actions/runs/35405385709)
 at `f9d7e3e793b518f3c98567607cc1d4f65ca57ec1`; the release candidate must pass its own exact-commit gate.
 
 ## Release checklist
@@ -530,7 +530,7 @@ at `f9d7e3e793b518f3c98567607cc1d4f65ca57ec1`; the release candidate must pass i
    The receipt is trusted local evidence, not a cryptographic attestation against its owner. Keep the tree unchanged between acceptance and publish. Do not bypass the lifecycle with `--ignore-scripts`. This does not replace the native handoff exercise below: smoke checks verify responses and route configuration, not actual transfers. No command publishes or authorizes a release automatically.
 4. `npm pack --dry-run` includes `bin/`, `src/`, `plugin/`, `codex/`, `.claude-plugin/`, `docs/`.
    Preserve the preparation toolchain through publication. In a measured Node
-   18.18/npm9 versus Node24/npm11 comparison, identical source produced different
+   18.18/npm 9 versus Node 24/npm 11 comparison, identical source produced different
    gzip bytes while the decompressed tar was byte-identical, including headers.
    Matching extracted files does not authorize substituting a different `.tgz`:
    receipts bind the compressed artifact, not merely its source or file list.
