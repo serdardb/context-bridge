@@ -18,6 +18,8 @@ Vendor session formats are internal. A renamed field ships in a point release wi
 
 For OpenCode it goes one step further and reads the schema of the SQLite store the bridge writes into, reporting incompatibility rather than discovering it mid-handoff.
 
-## Adapters and evaluation
+## Evaluation
 
-`bridge adapters` lists what is registered and what each one declares it can do. `bridge eval` runs deterministic context-quality fixtures with no agent calls; `--live` opts into synthetic recall tests that do use your provider quota, which is why they are not the default.
+`bridge eval` runs deterministic context-quality fixtures with no agent calls. `--live` opts into synthetic recall tests that do use your provider quota, which is why they are not the default: `--scenario decision` checks final decisions, reasons and omitted context, and `--scenario summary` measures an agent-written summary inside a second fresh session.
+
+For what is registered and what each adapter declares it can do, see the [adapter contract](/docs/context-bridge/adapters).
